@@ -1,73 +1,60 @@
 ---
 name: lessons-learned
-description: "Extract and recall learnings from conversation history — bugs, decisions, preferences, patterns. Invoke at session start, after notable events, before decisions, and as the final task when all work is complete."
+description: "Load past experience and memory and extract learnings from conversation. Invoke at session start, before presenting plan, after notable events, before decisions, when changing plan, and as the final task when all work is complete. 
 ---
 
 # Lessons Learned
 
-Monitor conversations and recall knowledge across sessions. When something worth remembering surfaces, delegate saving to the `remember` skill.
+Extract and persist learnings from the current conversation in three phases.
 
-## What to Watch For
+## Phase 1 — Gather
 
-Continuously scan conversation history, user comments, error outputs, and agent reports for:
+Scan conversation history for items worth remembering:
 
-- **Lessons learned** — bugs, pitfalls, failed approaches, workarounds
-- **Architecture decisions** — choices made and their rationale
-- **User preferences** — coding style, tool choices, conventions
-- **Patterns and anti-patterns** — recurring solutions or recurring mistakes
-- **Configuration quirks** — project-specific setup details, environment gotchas
+- Lessons learned — bugs, pitfalls, failed approaches, workarounds
+- Architecture decisions — choices made and their rationale
+- User preferences — coding style, tool choices, conventions
+- Patterns and anti-patterns — recurring solutions or mistakes
+- Configuration quirks — project-specific setup, environment gotchas
 
-When you spot any of these, invoke the `remember` skill to save it.
+Collect as a raw numbered list. Search existing memories (`search_memories`) and drop duplicates. Do NOT save anything yet.
 
-## When to Search
+## Phase 2 — Categorize
 
-- **Session start** — recall project context, recent decisions
-- **Before architecture decisions** — check for prior art or known pitfalls
-- **On errors** — search for similar past issues and fixes
-- **During reviews** — recall coding conventions and preferences
+For each item, assign **scope** and **type**.
 
-## Scoping
+Scope (default = global):
+- **Global** — language/framework knowledge, tooling tips, general patterns, debugging techniques, workflow preferences. Anything useful across projects.
+- **Project-scoped** — project-specific config, architecture unique to this repo, repo-specific conventions that would not apply elsewhere. Set `project` to git repo basename.
 
-- `project` param = git repo basename (e.g., `"penny"`, `"claudius"`)
-- Omit `project` for global memories (cross-project learnings)
+Type: `lesson`, `decision`, or `preference`.
+
+Present the categorized list to the user via `AskUserQuestion`. Format each item as:
+
+```
+1. <summary> — 🌍 global / lesson
+2. <summary> — 📁 project / decision
+```
+
+The user may adjust scopes, types, or remove items before proceeding.
+
+## Phase 3 — Save
+
+For each approved item, invoke the `remember` skill with the determined scope and type.
 
 ## MCP Tools
 
-### `search_memories`
-
-```
-search_memories(query="docker build cache issues", project="penny", limit=5)
-```
-
-### `get_memories`
-
-```
-get_memories(project="penny")       # all penny memories
-get_memories()                       # all global memories
-```
-
-### `add_memory`
-
-```
-add_memory(content="Docker COPY doesn't resolve symlinks in build context", project="penny", metadata={"type": "lesson", "source": "LL-002"})
-```
-
-### `delete_memory`
-
-```
-delete_memory(memory_id="<uuid>")
-```
-
-### `update_memory`
-
-```
-update_memory(memory_id="<uuid>", content="Updated: use 0.0.0.0 not 127.0.0.1 in containers")
-```
+| Tool | Example |
+|------|---------|
+| `search_memories` | `search_memories(query="docker cache", project="penny", limit=5)` |
+| `get_memories` | `get_memories(project="penny")` or `get_memories()` for global |
+| `add_memory` | `add_memory(content="...", project="penny", metadata={"type": "lesson"})` |
+| `delete_memory` | `delete_memory(memory_id="<uuid>")` |
+| `update_memory` | `update_memory(memory_id="<uuid>", content="...")` |
 
 ## Best Practices
 
 1. **Be specific** — "Axum `.layer()` ordering: last added = outermost" beats "middleware ordering matters"
-2. **Include context** — mention the project, framework, language
-3. **Tag with metadata** — `type` (lesson/decision/preference), `source` (LL-NNN, PR#, etc.)
+2. **Include context** — mention framework, language, project when relevant
+3. **Tag metadata** — `type` (lesson/decision/preference), `source` (LL-NNN, PR#)
 4. **Don't duplicate** — search before adding; update existing memories if needed
-5. **Scope correctly** — project-specific stays scoped; universal patterns go global
