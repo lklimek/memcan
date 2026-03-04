@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     # Ollama
     ollama_url: str = "http://localhost:11434"
     ollama_api_key: str = ""
-    ollama_llm_model: str = "qwen2.5:14b"
+    ollama_llm_model: str = "qwen3.5:9b"
     ollama_embed_model: str = "qwen3-embedding:8b"
 
     # Qdrant
