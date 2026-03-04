@@ -5,12 +5,13 @@ Transport: stdio (launched by Claude Code).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-from mem0 import Memory
+from mem0 import AsyncMemory
 
 from .config import settings
 
@@ -21,14 +22,14 @@ mcp = FastMCP(
     instructions="Persistent memory for Claude Code — store and recall learnings, decisions, preferences across sessions.",
 )
 
-_memory: Memory | None = None
+_memory: AsyncMemory | None = None
 
 
-def _get_memory() -> Memory:
-    """Lazy-init mem0 Memory instance."""
+async def _get_memory() -> AsyncMemory:
+    """Lazy-init mem0 AsyncMemory instance."""
     global _memory  # noqa: PLW0603
     if _memory is None:
-        _memory = Memory.from_config(settings.to_mem0_config())
+        _memory = await AsyncMemory.from_config(settings.to_mem0_config())
     return _memory
 
 
@@ -45,7 +46,7 @@ def _resolve_user_id(project: str | None, user_id: str | None) -> str:
 
 
 @mcp.tool()
-def add_memory(
+async def add_memory(
     content: str,
     project: str | None = None,
     user_id: str | None = None,
@@ -60,16 +61,24 @@ def add_memory(
         metadata: Optional metadata dict (e.g., {"source": "penny", "type": "lesson"}).
 
     Returns:
-        JSON string with the stored memory result.
+        JSON string with queued status (write happens in background).
     """
-    mem = _get_memory()
-    resolved_uid = _resolve_user_id(project, user_id)
-    result = mem.add(content, user_id=resolved_uid, metadata=metadata or {})
-    return json.dumps(result, default=str)
+    mem = await _get_memory()
+    uid = _resolve_user_id(project, user_id)
+    meta = metadata or {}
+
+    async def _do_add() -> None:
+        try:
+            await mem.add(content, user_id=uid, metadata=meta)
+        except Exception:
+            logger.exception("Background memory add failed")
+
+    asyncio.create_task(_do_add())
+    return json.dumps({"status": "queued", "user_id": uid})
 
 
 @mcp.tool()
-def search_memories(
+async def search_memories(
     query: str,
     project: str | None = None,
     user_id: str | None = None,
@@ -86,14 +95,14 @@ def search_memories(
     Returns:
         JSON array of matching memories with scores.
     """
-    mem = _get_memory()
+    mem = await _get_memory()
     resolved_uid = _resolve_user_id(project, user_id)
-    results = mem.search(query, user_id=resolved_uid, limit=limit)
+    results = await mem.search(query, user_id=resolved_uid, limit=limit)
     return json.dumps(results, default=str)
 
 
 @mcp.tool()
-def get_memories(
+async def get_memories(
     project: str | None = None,
     user_id: str | None = None,
 ) -> str:
@@ -106,14 +115,14 @@ def get_memories(
     Returns:
         JSON array of all memories in the scope.
     """
-    mem = _get_memory()
+    mem = await _get_memory()
     resolved_uid = _resolve_user_id(project, user_id)
-    results = mem.get_all(user_id=resolved_uid)
+    results = await mem.get_all(user_id=resolved_uid)
     return json.dumps(results, default=str)
 
 
 @mcp.tool()
-def delete_memory(memory_id: str) -> str:
+async def delete_memory(memory_id: str) -> str:
     """Delete a specific memory by ID.
 
     Args:
@@ -122,13 +131,13 @@ def delete_memory(memory_id: str) -> str:
     Returns:
         JSON confirmation of deletion.
     """
-    mem = _get_memory()
-    mem.delete(memory_id)
+    mem = await _get_memory()
+    await mem.delete(memory_id)
     return json.dumps({"status": "deleted", "memory_id": memory_id})
 
 
 @mcp.tool()
-def update_memory(memory_id: str, content: str) -> str:
+async def update_memory(memory_id: str, content: str) -> str:
     """Update an existing memory's content.
 
     Args:
@@ -138,8 +147,8 @@ def update_memory(memory_id: str, content: str) -> str:
     Returns:
         JSON string with the update result.
     """
-    mem = _get_memory()
-    result = mem.update(memory_id, content)
+    mem = await _get_memory()
+    result = await mem.update(memory_id, content)
     return json.dumps(result, default=str)
 
 
