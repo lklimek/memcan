@@ -23,6 +23,9 @@ build/
 .DS_Store
 Thumbs.db
 
+# Local marketplace (not pushed — use github source in lklimek/agents)
+claude-plugin/.claude-plugin/marketplace.json
+
 # Reports (generated)
 *.report.json
 report.json
