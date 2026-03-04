@@ -18,7 +18,7 @@ from pathlib import Path
 from mem0 import Memory
 
 # Import config from sibling MCP server package
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mcp-server" / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "claude-plugin" / "mcp-server" / "src"))
 from mindajo_mcp.config import settings  # noqa: E402
 
 

@@ -10,8 +10,8 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Repo root is two levels up from mcp-server/src/mindajo_mcp/
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+# Repo root is three levels up from claude-plugin/mcp-server/src/mindajo_mcp/
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
 
 
 class Settings(BaseSettings):

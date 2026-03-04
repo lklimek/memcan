@@ -16,7 +16,7 @@ Configures the MindAJO environment. The plugin and MCP server are already instal
 Verify:
 - `uv` is installed (`which uv` or `~/.local/bin/uv --version`)
 - Qdrant is running (`curl -sf http://localhost:6333/healthz`)
-- MCP server deps are installed (`cd ${CLAUDE_PLUGIN_ROOT}/../mcp-server && uv sync`)
+- MCP server deps are installed (`cd ${CLAUDE_PLUGIN_ROOT}/mcp-server && uv sync`)
 
 If any fails, tell the user what's missing and how to fix it, then stop.
 

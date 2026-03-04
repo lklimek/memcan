@@ -9,7 +9,7 @@ MCP server providing persistent memory via [mem0](https://github.com/mem0ai/mem0
 docker compose up -d
 
 # 2. Install dependencies
-cd mcp-server && uv sync && cd ..
+cd claude-plugin/mcp-server && uv sync && cd ../..
 
 # 3. Install plugin in Claude Code
 #    Settings → Plugins → enable mindajo@lklimek
