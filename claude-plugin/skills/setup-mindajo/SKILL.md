@@ -2,7 +2,7 @@
 name: setup-mindajo
 description: Configure MindAJO environment — .env file and user rule. Run once per machine after plugin install.
 user-invocable: true
-allowed-tools: Read, Write, Edit, Bash(mkdir *), Bash(uv *), Bash(curl *), Bash(which *), Bash(cp *), Glob, Grep
+allowed-tools: Read, Write, Edit, Bash(mkdir *), Bash(uv *), Bash(curl *), Bash(which *), Bash(cp *), Glob, Grep, mcp__plugin_mindajo_brain__search_memories
 ---
 
 # Setup MindAJO
@@ -37,6 +37,8 @@ cp ${CLAUDE_PLUGIN_ROOT}/../.env.example ~/.config/mindajo/.env
 ```
 
 Ask the user for their Ollama URL and update `OLLAMA_URL` in `.env`. Verify `QDRANT_URL` — defaults to `http://localhost:6333` which is usually correct.
+
+Then ask if Ollama requires Bearer token authentication (common when behind a reverse proxy like Traefik, Caddy, or nginx). If yes, ask for the `OLLAMA_API_KEY` value and uncomment/set it in `.env`. If no, leave it commented out (the default). Refer to README "Ollama Authentication" for details.
 
 ### 3. Create User Rule
 
@@ -83,5 +85,10 @@ Print a summary:
 - ✅/❌ `.env` exists at `~/.config/mindajo/.env` with `OLLAMA_URL` configured
 - ✅/❌ Qdrant is healthy
 - ✅/❌ User rule exists at `~/.claude/rules/mindajo.md`
+- ✅/❌ MCP server is connected (test: call `search_memories(query="test", limit=1)` — success = connected, failure or tool unavailable = not connected)
 
-Tell the user to restart Claude Code for the MCP server to connect.
+Security warnings (show only when applicable):
+- If `OLLAMA_URL` starts with `https://` and `OLLAMA_API_KEY` is not set: warn that HTTPS endpoints typically require auth — consider setting `OLLAMA_API_KEY`.
+- If `OLLAMA_API_KEY` is set and `OLLAMA_URL` starts with `http://` (not HTTPS): warn that the Bearer token will be sent in plaintext — security risk on untrusted networks. Recommend switching to HTTPS.
+
+If the MCP server check failed, tell the user to restart Claude Code so the plugin's `.mcp.json` gets loaded and the MCP server connects. If all checks passed, no restart needed.
