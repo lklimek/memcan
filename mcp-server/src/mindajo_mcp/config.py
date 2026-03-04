@@ -5,6 +5,7 @@ Reads .env file from repo root, then environment variables (env vars override).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -24,6 +25,7 @@ class Settings(BaseSettings):
 
     # Ollama
     ollama_url: str = "http://localhost:11434"
+    ollama_api_key: str = ""
     ollama_llm_model: str = "qwen2.5:14b"
     ollama_embed_model: str = "qwen3-embedding:8b"
 
@@ -82,3 +84,9 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Export OLLAMA_API_KEY to process env so the ollama Python client picks it up.
+# The client reads os.getenv("OLLAMA_API_KEY") directly — Pydantic settings alone
+# doesn't propagate .env values to the OS environment.
+if settings.ollama_api_key:
+    os.environ.setdefault("OLLAMA_API_KEY", settings.ollama_api_key)
