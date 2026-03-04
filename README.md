@@ -126,9 +126,11 @@ python3 scripts/import_triaged.py --dry-run report.json
 
 All settings via `.env` file (see `.env.example`). Environment variables override `.env`:
 
+**Application:**
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
+| `OLLAMA_URL` | — | Ollama API endpoint (e.g. `http://host:11434`) |
 | `OLLAMA_LLM_MODEL` | `qwen2.5:14b` | LLM model for mem0 |
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint |
@@ -136,6 +138,17 @@ All settings via `.env` file (see `.env.example`). Environment variables overrid
 | `QDRANT_EMBED_DIMS` | `768` | Embedding dimensions |
 | `NEO4J_ENABLED` | `false` | Enable Neo4j graph store |
 | `NEO4J_URL` | `bolt://localhost:7687` | Neo4j bolt endpoint |
+| `NEO4J_USER` | `neo4j` | Neo4j username |
+| `NEO4J_PASSWORD` | — | Neo4j password (required if Neo4j enabled) |
+| `DEFAULT_USER_ID` | `global` | Default user ID for memory scoping |
+
+**Infrastructure (Docker / Traefik):**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `QDRANT_DOMAIN` | — | Domain for Qdrant via Traefik reverse proxy |
+| `NEO4J_DOMAIN` | — | Domain for Neo4j via Traefik reverse proxy |
+| `TRAEFIK_AUTH` | — | htpasswd hash for Traefik basic auth |
 
 ## Docker Services
 
