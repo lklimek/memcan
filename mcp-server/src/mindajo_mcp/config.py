@@ -25,12 +25,12 @@ class Settings(BaseSettings):
     # Ollama
     ollama_url: str = "http://localhost:11434"
     ollama_llm_model: str = "qwen2.5:14b"
-    ollama_embed_model: str = "nomic-embed-text"
+    ollama_embed_model: str = "bge-m3"
 
     # Qdrant
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "mindajo"
-    qdrant_embed_dims: int = 768
+    qdrant_embed_dims: int = 1024
 
     # Neo4j (optional)
     neo4j_enabled: bool = False

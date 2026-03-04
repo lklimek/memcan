@@ -56,7 +56,7 @@ Restart Claude Code after setup to connect the MCP server.
 
 - **mem0** — memory management (add, search, update, delete)
 - **Qdrant** — vector similarity search (port 6333)
-- **Ollama** — LLM (`qwen2.5:14b`) + embeddings (`nomic-embed-text`)
+- **Ollama** — LLM (`qwen2.5:14b`) + embeddings (`bge-m3`)
 - **Neo4j** — optional graph store (`docker compose --profile graph up -d`)
 
 ## MCP Tools
@@ -132,10 +132,10 @@ All settings via `.env` file (see `.env.example`). Environment variables overrid
 |----------|---------|-------------|
 | `OLLAMA_URL` | — | Ollama API endpoint (e.g. `http://host:11434`) |
 | `OLLAMA_LLM_MODEL` | `qwen2.5:14b` | LLM model for mem0 |
-| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
+| `OLLAMA_EMBED_MODEL` | `bge-m3` | Embedding model |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint |
 | `QDRANT_COLLECTION` | `mindajo` | Collection name |
-| `QDRANT_EMBED_DIMS` | `768` | Embedding dimensions |
+| `QDRANT_EMBED_DIMS` | `1024` | Embedding dimensions |
 | `NEO4J_ENABLED` | `false` | Enable Neo4j graph store |
 | `NEO4J_URL` | `bolt://localhost:7687` | Neo4j bolt endpoint |
 | `NEO4J_USER` | `neo4j` | Neo4j username |
