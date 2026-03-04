@@ -56,7 +56,7 @@ Restart Claude Code after setup to connect the MCP server.
 
 - **mem0** — memory management (add, search, update, delete)
 - **Qdrant** — vector similarity search (port 6333)
-- **Ollama** — LLM (`qwen2.5:14b`) + embeddings (`bge-m3`)
+- **Ollama** — LLM (`qwen2.5:14b`) + embeddings (`qwen3-embedding:8b`)
 - **Neo4j** — optional graph store (`docker compose --profile graph up -d`)
 
 ## MCP Tools
@@ -131,11 +131,12 @@ All settings via `.env` file (see `.env.example`). Environment variables overrid
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OLLAMA_URL` | — | Ollama API endpoint (e.g. `http://host:11434`) |
+| `OLLAMA_API_KEY` | — | Bearer token for Ollama auth (see [Ollama Authentication](#ollama-authentication)) |
 | `OLLAMA_LLM_MODEL` | `qwen2.5:14b` | LLM model for mem0 |
-| `OLLAMA_EMBED_MODEL` | `bge-m3` | Embedding model |
+| `OLLAMA_EMBED_MODEL` | `qwen3-embedding:8b` | Embedding model |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint |
 | `QDRANT_COLLECTION` | `mindajo` | Collection name |
-| `QDRANT_EMBED_DIMS` | `1024` | Embedding dimensions |
+| `QDRANT_EMBED_DIMS` | `4096` | Embedding dimensions |
 | `NEO4J_ENABLED` | `false` | Enable Neo4j graph store |
 | `NEO4J_URL` | `bolt://localhost:7687` | Neo4j bolt endpoint |
 | `NEO4J_USER` | `neo4j` | Neo4j username |
@@ -149,6 +150,75 @@ All settings via `.env` file (see `.env.example`). Environment variables overrid
 | `QDRANT_DOMAIN` | — | Domain for Qdrant via Traefik reverse proxy |
 | `NEO4J_DOMAIN` | — | Domain for Neo4j via Traefik reverse proxy |
 | `TRAEFIK_AUTH` | — | htpasswd hash for Traefik basic auth |
+
+## Ollama Authentication
+
+When Ollama runs on a remote host, protect it with a reverse proxy (e.g. Traefik, Caddy, nginx) that requires Bearer token authentication.
+
+### How it works
+
+The `ollama` Python client reads the `OLLAMA_API_KEY` environment variable and sends it as:
+
+```
+Authorization: Bearer <OLLAMA_API_KEY>
+```
+
+This is a static shared secret — no signing, expiry, or cryptographic exchange. Security depends entirely on the transport layer:
+
+| Transport | Security | Recommendation |
+|-----------|----------|----------------|
+| `https://` (TLS) | Token encrypted in transit | ✅ Use for remote/cross-network |
+| `http://` (plain) | Token visible on the wire | ⚠️ Only on trusted private networks |
+
+### Setup
+
+1. **Generate a token:**
+
+   ```bash
+   openssl rand -base64 32
+   ```
+
+2. **Configure your reverse proxy** to accept `Authorization: Bearer <token>`. Example Traefik middleware (file provider):
+
+   ```yaml
+   # traefik/dynamic/ollama.yml
+   http:
+     middlewares:
+       ollama-bearer:
+         plugin:
+           apikey:
+             # Or use forwardAuth / custom middleware for Bearer validation
+             headers:
+               - "Authorization: Bearer <your-token>"
+     routers:
+       ollama:
+         rule: "Host(`ollama.example.com`)"
+         entrypoints: websecure
+         tls:
+           certResolver: letsencrypt
+         middlewares:
+           - ollama-bearer
+         service: ollama
+     services:
+       ollama:
+         loadBalancer:
+           servers:
+             - url: "http://localhost:11434"
+   ```
+
+   > **Note:** Traefik doesn't have built-in Bearer auth middleware. Options:
+   > - [traefik-api-key-auth](https://plugins.traefik.io/plugins/669e514b2e1faa5bb4ec1128/api-key-auth) plugin — validates Bearer tokens against a list
+   > - `forwardAuth` middleware pointing to a small auth service
+   > - Caddy or nginx with simple `if ($http_authorization)` matching
+
+3. **Set in MindAJO `.env`:**
+
+   ```bash
+   OLLAMA_URL=https://ollama.example.com    # no credentials in URL
+   OLLAMA_API_KEY=<your-token>              # read by ollama Python client
+   ```
+
+> **Do not embed credentials in `OLLAMA_URL`** (e.g. `http://user:pass@host`). The ollama Python client silently strips userinfo from URLs. Use `OLLAMA_API_KEY` instead.
 
 ## Docker Services
 

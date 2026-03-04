@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "mem0ai>=0.1.30,<2.0",
     "mcp[cli]>=1.0",
+    "ollama>=0.4",
     "pydantic-settings>=2.0",
 ]
 
