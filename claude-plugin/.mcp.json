@@ -1,11 +1,11 @@
 {
-  "ai-brain": {
+  "mindajo": {
     "command": "uv",
     "args": [
       "--directory",
       "${CLAUDE_PLUGIN_ROOT}/../mcp-server",
       "run",
-      "ai-brain-mcp"
+      "mindajo-mcp"
     ]
   }
 }

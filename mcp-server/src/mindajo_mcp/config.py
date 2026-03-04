@@ -1,4 +1,4 @@
-"""Configuration for AI Brain MCP server.
+"""Configuration for MindAJO MCP server.
 
 Reads .env file from repo root, then environment variables (env vars override).
 """
@@ -9,7 +9,7 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Repo root is two levels up from mcp-server/src/ai_brain_mcp/
+# Repo root is two levels up from mcp-server/src/mindajo_mcp/
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # Qdrant
     qdrant_url: str = "http://localhost:6333"
-    qdrant_collection: str = "ai_brain"
+    qdrant_collection: str = "mindajo"
     qdrant_embed_dims: int = 768
 
     # Neo4j (optional)

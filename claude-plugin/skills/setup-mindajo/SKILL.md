@@ -1,13 +1,13 @@
 ---
-name: setup-ai-brain
-description: Configure ai-brain environment — .env file and user rule. Run once per machine after plugin install.
+name: setup-mindajo
+description: Configure MindAJO environment — .env file and user rule. Run once per machine after plugin install.
 user-invocable: true
 allowed-tools: Read, Write, Edit, Bash(mkdir *), Bash(uv *), Bash(curl *), Bash(which *), Bash(cp *), Glob, Grep
 ---
 
-# Setup AI Brain
+# Setup MindAJO
 
-Configures the ai-brain environment. The plugin and MCP server are already installed — this sets up the `.env` and user rule. Idempotent.
+Configures the MindAJO environment. The plugin and MCP server are already installed — this sets up the `.env` and user rule. Idempotent.
 
 ## Steps
 
@@ -35,14 +35,14 @@ Ask the user for their Ollama URL and update `OLLAMA_URL` in `.env`. Verify `QDR
 
 ### 3. Create User Rule
 
-Create `~/.claude/rules/ai-brain.md` (create `~/.claude/rules/` dir if needed).
+Create `~/.claude/rules/mindajo.md` (create `~/.claude/rules/` dir if needed).
 
 Write this content:
 
 ```markdown
-# AI Brain — Persistent Memory
+# MindAJO — Persistent Memory
 
-Use the ai-brain MCP server to store and recall knowledge across sessions.
+Use the MindAJO MCP server to store and recall knowledge across sessions.
 
 ## Session Start
 - Search memories for the current project: `search_memories(query="project context", project="<repo-name>")`
@@ -77,6 +77,6 @@ Use the ai-brain MCP server to store and recall knowledge across sessions.
 Print a summary:
 - ✅/❌ `.env` exists with `OLLAMA_URL` configured
 - ✅/❌ Qdrant is healthy
-- ✅/❌ User rule exists at `~/.claude/rules/ai-brain.md`
+- ✅/❌ User rule exists at `~/.claude/rules/mindajo.md`
 
 Tell the user to restart Claude Code for the MCP server to connect.

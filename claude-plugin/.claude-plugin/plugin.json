@@ -1,12 +1,12 @@
 {
-  "name": "ai-brain",
+  "name": "mindajo",
   "version": "0.1.0",
   "description": "Persistent memory for Claude Code via mem0 — save and recall learnings, decisions, preferences across sessions.",
   "author": {
     "name": "lklimek",
     "url": "https://github.com/lklimek"
   },
-  "repository": "https://github.com/lklimek/ai-brain",
+  "repository": "https://github.com/lklimek/mindajo",
   "license": "MIT",
   "keywords": ["memory", "mem0", "qdrant", "persistent", "mcp"],
   "mcpServers": "./.mcp.json"

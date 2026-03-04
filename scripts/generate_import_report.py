@@ -141,7 +141,7 @@ def build_report(findings_by_source: dict[str, list[dict]]) -> dict:
     return {
         "schema_version": "1.0.0",
         "metadata": {
-            "project": "ai-brain-import",
+            "project": "mindajo-import",
             "date": date.today().isoformat(),
             "report_type": "code_review",
             "reviewers": ["memory-importer"],

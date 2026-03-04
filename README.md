@@ -1,4 +1,4 @@
-# AI Brain — Persistent Memory for Claude Code
+# MindAJO — Persistent Memory for Claude Code
 
 MCP server providing persistent memory via [mem0](https://github.com/mem0ai/mem0). Store and recall learnings, decisions, and preferences across Claude Code sessions.
 
@@ -12,12 +12,12 @@ docker compose up -d
 cd mcp-server && uv sync && cd ..
 
 # 3. Install plugin in Claude Code
-#    Settings → Plugins → enable ai-brain@lklimek
+#    Settings → Plugins → enable mindajo@lklimek
 #    Or add to ~/.claude/settings.json:
-#      "enabledPlugins": { "ai-brain@lklimek": true }
+#      "enabledPlugins": { "mindajo@lklimek": true }
 
 # 4. Configure environment (in a Claude Code session)
-/setup-ai-brain
+/setup-mindajo
 ```
 
 ## Install
@@ -30,12 +30,12 @@ cd mcp-server && uv sync && cd ..
 
 ### Plugin Install
 
-Enable `ai-brain@lklimek` in `~/.claude/settings.json`:
+Enable `mindajo@lklimek` in `~/.claude/settings.json`:
 
 ```json
 {
   "enabledPlugins": {
-    "ai-brain@lklimek": true
+    "mindajo@lklimek": true
   }
 }
 ```
@@ -44,11 +44,11 @@ The plugin registers the MCP server automatically via `.mcp.json`. No manual `cl
 
 ### Environment Setup
 
-After enabling the plugin, run `/setup-ai-brain` in a Claude Code session. It will:
+After enabling the plugin, run `/setup-mindajo` in a Claude Code session. It will:
 
 1. **Check prerequisites** — uv, Qdrant health, MCP server deps
 2. **Configure `.env`** — copy `.env.example`, set your `OLLAMA_URL`
-3. **Create user rule** — writes `~/.claude/rules/ai-brain.md` so agents know to use memory
+3. **Create user rule** — writes `~/.claude/rules/mindajo.md` so agents know to use memory
 
 Restart Claude Code after setup to connect the MCP server.
 
@@ -76,7 +76,7 @@ Restart Claude Code after setup to connect the MCP server.
 
 ## Claude Code Context Persistence
 
-Claude Code loads context into the attention window via several mechanisms. ai-brain leverages them to ensure agents always know to use memory:
+Claude Code loads context into the attention window via several mechanisms. MindAJO leverages them to ensure agents always know to use memory:
 
 | Mechanism | Location | When Loaded | Shared? |
 |-----------|----------|-------------|---------|
@@ -88,7 +88,7 @@ Claude Code loads context into the attention window via several mechanisms. ai-b
 | **Path-scoped rules** | `.claude/rules/*.md` with `paths:` frontmatter | On-demand, when matching files are touched | Team (via git) |
 | **Auto memory** | `~/.claude/projects/<project>/memory/` | First 200 lines at session start | Just you |
 
-The user rule created by `/setup-ai-brain` lives in `~/.claude/rules/ai-brain.md` — loaded into every session so agents always know to search and save memories.
+The user rule created by `/setup-mindajo` lives in `~/.claude/rules/mindajo.md` — loaded into every session so agents always know to search and save memories.
 
 ### Path-Scoped Rules
 
@@ -100,7 +100,7 @@ paths:
   - "docker-compose.yml"
   - "Dockerfile*"
 ---
-Before modifying Docker configuration, search ai-brain for Docker-related
+Before modifying Docker configuration, search MindAJO for Docker-related
 lessons learned in this project.
 ```
 
@@ -134,7 +134,7 @@ All settings via `.env` file (see `.env.example`). Environment variables overrid
 | `OLLAMA_LLM_MODEL` | `qwen2.5:14b` | LLM model for mem0 |
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint |
-| `QDRANT_COLLECTION` | `ai_brain` | Collection name |
+| `QDRANT_COLLECTION` | `mindajo` | Collection name |
 | `QDRANT_EMBED_DIMS` | `768` | Embedding dimensions |
 | `NEO4J_ENABLED` | `false` | Enable Neo4j graph store |
 | `NEO4J_URL` | `bolt://localhost:7687` | Neo4j bolt endpoint |
