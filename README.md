@@ -104,12 +104,47 @@ Before modifying Docker configuration, search MindAJO for Docker-related
 lessons learned in this project.
 ```
 
-## Import Pipeline
+## Scripts
 
-Import existing knowledge (lessons learned, agent memory) via triage-based moderation:
+Utility scripts in `scripts/` for importing existing knowledge into MindAJO.
+
+### `generate_import_report.py`
+
+Parses `LESSONS_LEARNED.md` files and agent `MEMORY.md` files into the Claudius review-report schema, enabling selective import via the triage-findings UI.
+
+**Sources:**
+- `LESSONS_LEARNED.md` — parsed by `### Title (LL-NNN)` headings with structured fields
+- `~/.claude/agent-memory/*/MEMORY.md` — parsed by `## Heading` sections
 
 ```bash
-# 1. Generate import report
+python3 scripts/generate_import_report.py -o report.json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--output`, `-o` | `report.json` | Output file path |
+
+### `import_triaged.py`
+
+Reads a triage-annotated report (produced by `triage-findings`), filters for findings with action `fix`, and stores them in mem0. Determines memory scope from each finding's recommendation field (`project:<name>` → project-scoped, otherwise global).
+
+```bash
+# Import approved items
+python3 scripts/import_triaged.py report.json
+
+# Preview without storing
+python3 scripts/import_triaged.py --dry-run report.json
+```
+
+| Flag | Description |
+|------|-------------|
+| `report` | Path to triaged `report.json` (required) |
+| `--dry-run` | Show what would be imported without storing |
+
+### Import Workflow
+
+```bash
+# 1. Generate report from memory sources
 python3 scripts/generate_import_report.py -o report.json
 
 # 2. Triage in browser (uses claudius triage-findings)
@@ -117,14 +152,26 @@ python3 scripts/generate_import_report.py -o report.json
 
 # 3. Import approved items
 python3 scripts/import_triaged.py report.json
-
-# Dry run (preview without storing)
-python3 scripts/import_triaged.py --dry-run report.json
 ```
 
 ## Configuration
 
-All settings via `.env` file (see `.env.example`). Environment variables override `.env`:
+The MCP server searches for `.env` in order:
+
+| Priority | Location | Use case |
+|----------|----------|----------|
+| 1 | `~/.config/mindajo/.env` (Linux) / `~/Library/Application Support/mindajo/.env` (macOS) | Production — survives plugin updates |
+| 2 | `./.env` in CWD | Development — running from source checkout |
+| 3 | Defaults | Fallback (localhost Ollama + Qdrant) |
+
+Environment variables always override `.env` values. Run `/setup-mindajo` to create the config file, or copy `.env.example` manually:
+
+```bash
+mkdir -p ~/.config/mindajo
+cp .env.example ~/.config/mindajo/.env
+```
+
+**Settings reference** (see `.env.example`):
 
 **Application:**
 

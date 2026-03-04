@@ -1,6 +1,7 @@
 """Configuration for MindAJO MCP server.
 
-Reads .env file from repo root, then environment variables (env vars override).
+Searches for .env in platform-appropriate config dir, then CWD, then defaults.
+Environment variables always override .env values.
 """
 
 from __future__ import annotations
@@ -8,17 +9,38 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from platformdirs import user_config_dir
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Repo root is three levels up from claude-plugin/mcp-server/src/mindajo_mcp/
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
+_CONFIG_DIR = Path(user_config_dir("mindajo"))
+
+
+def _find_env_file(candidates: list[Path] | None = None) -> Path | None:
+    """Return the first existing .env from candidate paths.
+
+    Default search order:
+      1. Platform config dir  (~/.config/mindajo/.env on Linux)
+      2. CWD .env             (development — running from source checkout)
+    """
+    if candidates is None:
+        candidates = [
+            _CONFIG_DIR / ".env",
+            Path.cwd() / ".env",
+        ]
+    for p in candidates:
+        if p.is_file():
+            return p
+    return None
+
+
+_env_file = _find_env_file()
 
 
 class Settings(BaseSettings):
     """MCP server settings from .env file + environment variables."""
 
     model_config = SettingsConfigDict(
-        env_file=str(_REPO_ROOT / ".env"),
+        env_file=str(_env_file) if _env_file else None,
         env_file_encoding="utf-8",
         extra="ignore",  # ignore vars not in this model (e.g. TRAEFIK_AUTH)
     )

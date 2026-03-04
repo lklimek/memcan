@@ -14,7 +14,7 @@ claude-plugin/           # Claude Code plugin
   mcp-server/            # MCP server (Python, uv-managed)
   skills/                # Plugin skills
 docker-compose.yml       # Qdrant (+ optional Neo4j)
-scripts/                 # Import/migration utilities
+scripts/                 # Import/migration utilities (see README.md § Scripts)
 ```
 
 ## Versioning

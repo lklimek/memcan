@@ -1,6 +1,6 @@
 {
   "name": "mindajo",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Persistent memory for Claude Code via mem0 — save and recall learnings, decisions, preferences across sessions.",
   "author": {
     "name": "lklimek",

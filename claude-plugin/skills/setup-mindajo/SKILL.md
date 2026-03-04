@@ -22,13 +22,18 @@ If any fails, tell the user what's missing and how to fix it, then stop.
 
 ### 2. Configure .env File
 
-The MCP server reads `<repo-root>/.env` via Pydantic Settings. Env vars override `.env` values.
+The MCP server searches for `.env` in order:
+1. **Platform config dir**: `~/.config/mindajo/.env` (Linux), `~/Library/Application Support/mindajo/.env` (macOS)
+2. **CWD**: `./.env` (dev fallback)
 
-Check if `.env` exists at `${CLAUDE_PLUGIN_ROOT}/../.env`.
+Env vars always override `.env` values.
 
-If not, copy from `.env.example`:
+Check if `.env` exists at `~/.config/mindajo/.env` (Linux) or equivalent.
+
+If not, create the config dir and copy from `.env.example`:
 ```bash
-cp ${CLAUDE_PLUGIN_ROOT}/../.env.example ${CLAUDE_PLUGIN_ROOT}/../.env
+mkdir -p ~/.config/mindajo
+cp ${CLAUDE_PLUGIN_ROOT}/../.env.example ~/.config/mindajo/.env
 ```
 
 Ask the user for their Ollama URL and update `OLLAMA_URL` in `.env`. Verify `QDRANT_URL` — defaults to `http://localhost:6333` which is usually correct.
@@ -75,7 +80,7 @@ Use the MindAJO MCP server to store and recall knowledge across sessions.
 ### 4. Verify
 
 Print a summary:
-- ✅/❌ `.env` exists with `OLLAMA_URL` configured
+- ✅/❌ `.env` exists at `~/.config/mindajo/.env` with `OLLAMA_URL` configured
 - ✅/❌ Qdrant is healthy
 - ✅/❌ User rule exists at `~/.claude/rules/mindajo.md`
 
