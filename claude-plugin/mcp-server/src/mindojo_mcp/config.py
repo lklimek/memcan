@@ -1,4 +1,4 @@
-"""Configuration for MindAJO MCP server.
+"""Configuration for MindOJO MCP server.
 
 Searches for .env in platform-appropriate config dir, then CWD, then defaults.
 Environment variables always override .env values.
@@ -12,14 +12,14 @@ from pathlib import Path
 from platformdirs import user_config_dir
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_CONFIG_DIR = Path(user_config_dir("mindajo"))
+_CONFIG_DIR = Path(user_config_dir("mindojo"))
 
 
 def _find_env_file(candidates: list[Path] | None = None) -> Path | None:
     """Return the first existing .env from candidate paths.
 
     Default search order:
-      1. Platform config dir  (~/.config/mindajo/.env on Linux)
+      1. Platform config dir  (~/.config/mindojo/.env on Linux)
       2. CWD .env             (development — running from source checkout)
     """
     if candidates is None:
@@ -53,7 +53,7 @@ class Settings(BaseSettings):
 
     # Qdrant
     qdrant_url: str = "http://localhost:6333"
-    qdrant_collection: str = "mindajo"
+    qdrant_collection: str = "mindojo"
     qdrant_embed_dims: int = 4096
 
     # Neo4j (optional)

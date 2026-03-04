@@ -28,7 +28,7 @@ services:
       - traefik.http.services.qdrant.loadbalancer.server.port=6333
     networks:
       - traefik
-      - mindajo
+      - mindojo
 
   neo4j:
     image: neo4j:5-community
@@ -57,7 +57,7 @@ services:
       - traefik.http.services.neo4j.loadbalancer.server.port=7474
     networks:
       - traefik
-      - mindajo
+      - mindojo
 
 volumes:
   qdrant-data:
@@ -66,4 +66,4 @@ volumes:
 networks:
   traefik:
     external: true
-  mindajo:
+  mindojo:

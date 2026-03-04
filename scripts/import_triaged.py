@@ -19,7 +19,7 @@ from mem0 import Memory
 
 # Import config from sibling MCP server package
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "claude-plugin" / "mcp-server" / "src"))
-from mindajo_mcp.config import settings  # noqa: E402
+from mindojo_mcp.config import settings  # noqa: E402
 
 
 def load_report(path: Path) -> dict:

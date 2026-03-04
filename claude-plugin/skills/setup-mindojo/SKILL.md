@@ -1,13 +1,13 @@
 ---
-name: setup-mindajo
-description: Configure MindAJO environment — .env file and user rule. Run once per machine after plugin install.
+name: setup-mindojo
+description: Configure MindOJO environment — .env file and user rule. Run once per machine after plugin install.
 user-invocable: true
-allowed-tools: Read, Write, Edit, Bash(mkdir *), Bash(uv *), Bash(curl *), Bash(which *), Bash(cp *), Glob, Grep, mcp__plugin_mindajo_brain__search_memories
+allowed-tools: Read, Write, Edit, Bash(mkdir *), Bash(uv *), Bash(curl *), Bash(which *), Bash(cp *), Glob, Grep, mcp__plugin_mindojo_brain__search_memories
 ---
 
-# Setup MindAJO
+# Setup MindOJO
 
-Configures the MindAJO environment. The plugin and MCP server are already installed — this sets up the `.env` and user rule. Idempotent.
+Configures the MindOJO environment. The plugin and MCP server are already installed — this sets up the `.env` and user rule. Idempotent.
 
 ## Steps
 
@@ -23,17 +23,17 @@ If any fails, tell the user what's missing and how to fix it, then stop.
 ### 2. Configure .env File
 
 The MCP server searches for `.env` in order:
-1. **Platform config dir**: `~/.config/mindajo/.env` (Linux), `~/Library/Application Support/mindajo/.env` (macOS)
+1. **Platform config dir**: `~/.config/mindojo/.env` (Linux), `~/Library/Application Support/mindojo/.env` (macOS)
 2. **CWD**: `./.env` (dev fallback)
 
 Env vars always override `.env` values.
 
-Check if `.env` exists at `~/.config/mindajo/.env` (Linux) or equivalent.
+Check if `.env` exists at `~/.config/mindojo/.env` (Linux) or equivalent.
 
 If not, create the config dir and copy from `.env.example`:
 ```bash
-mkdir -p ~/.config/mindajo
-cp ${CLAUDE_PLUGIN_ROOT}/../.env.example ~/.config/mindajo/.env
+mkdir -p ~/.config/mindojo
+cp ${CLAUDE_PLUGIN_ROOT}/../.env.example ~/.config/mindojo/.env
 ```
 
 Ask the user for their Ollama URL and update `OLLAMA_URL` in `.env`. Verify `QDRANT_URL` — defaults to `http://localhost:6333` which is usually correct.
@@ -42,14 +42,14 @@ Then ask if Ollama requires Bearer token authentication (common when behind a re
 
 ### 3. Create User Rule
 
-Create `~/.claude/rules/mindajo.md` (create `~/.claude/rules/` dir if needed).
+Create `~/.claude/rules/mindojo.md` (create `~/.claude/rules/` dir if needed).
 
 Write this content:
 
 ```markdown
-# MindAJO — Persistent Memory
+# MindOJO — Persistent Memory
 
-Use the MindAJO MCP server to store and recall knowledge across sessions.
+Use the MindOJO MCP server to store and recall knowledge across sessions.
 
 ## Session Start
 - Search memories for the current project: `search_memories(query="project context", project="<repo-name>")`
@@ -82,9 +82,9 @@ Use the MindAJO MCP server to store and recall knowledge across sessions.
 ### 4. Verify
 
 Print a summary:
-- ✅/❌ `.env` exists at `~/.config/mindajo/.env` with `OLLAMA_URL` configured
+- ✅/❌ `.env` exists at `~/.config/mindojo/.env` with `OLLAMA_URL` configured
 - ✅/❌ Qdrant is healthy
-- ✅/❌ User rule exists at `~/.claude/rules/mindajo.md`
+- ✅/❌ User rule exists at `~/.claude/rules/mindojo.md`
 - ✅/❌ MCP server is connected (test: call `search_memories(query="test", limit=1)` — success = connected, failure or tool unavailable = not connected)
 
 Security warnings (show only when applicable):

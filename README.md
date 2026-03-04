@@ -1,4 +1,4 @@
-# MindAJO — Persistent Memory for Claude Code
+# MindOJO — Persistent Memory for Claude Code
 
 MCP server providing persistent memory via [mem0](https://github.com/mem0ai/mem0). Store and recall learnings, decisions, and preferences across Claude Code sessions.
 
@@ -12,12 +12,12 @@ docker compose up -d
 cd claude-plugin/mcp-server && uv sync && cd ../..
 
 # 3. Install plugin in Claude Code
-#    Settings → Plugins → enable mindajo@lklimek
+#    Settings → Plugins → enable mindojo@lklimek
 #    Or add to ~/.claude/settings.json:
-#      "enabledPlugins": { "mindajo@lklimek": true }
+#      "enabledPlugins": { "mindojo@lklimek": true }
 
 # 4. Configure environment (in a Claude Code session)
-/setup-mindajo
+/setup-mindojo
 ```
 
 ## Install
@@ -30,12 +30,12 @@ cd claude-plugin/mcp-server && uv sync && cd ../..
 
 ### Plugin Install
 
-Enable `mindajo@lklimek` in `~/.claude/settings.json`:
+Enable `mindojo@lklimek` in `~/.claude/settings.json`:
 
 ```json
 {
   "enabledPlugins": {
-    "mindajo@lklimek": true
+    "mindojo@lklimek": true
   }
 }
 ```
@@ -44,11 +44,11 @@ The plugin registers the MCP server automatically via `.mcp.json`. No manual `cl
 
 ### Environment Setup
 
-After enabling the plugin, run `/setup-mindajo` in a Claude Code session. It will:
+After enabling the plugin, run `/setup-mindojo` in a Claude Code session. It will:
 
 1. **Check prerequisites** — uv, Qdrant health, MCP server deps
 2. **Configure `.env`** — copy `.env.example`, set your `OLLAMA_URL`
-3. **Create user rule** — writes `~/.claude/rules/mindajo.md` so agents know to use memory
+3. **Create user rule** — writes `~/.claude/rules/mindojo.md` so agents know to use memory
 
 Restart Claude Code after setup to connect the MCP server.
 
@@ -76,7 +76,7 @@ Restart Claude Code after setup to connect the MCP server.
 
 ## Claude Code Context Persistence
 
-Claude Code loads context into the attention window via several mechanisms. MindAJO leverages them to ensure agents always know to use memory:
+Claude Code loads context into the attention window via several mechanisms. MindOJO leverages them to ensure agents always know to use memory:
 
 | Mechanism | Location | When Loaded | Shared? |
 |-----------|----------|-------------|---------|
@@ -88,7 +88,7 @@ Claude Code loads context into the attention window via several mechanisms. Mind
 | **Path-scoped rules** | `.claude/rules/*.md` with `paths:` frontmatter | On-demand, when matching files are touched | Team (via git) |
 | **Auto memory** | `~/.claude/projects/<project>/memory/` | First 200 lines at session start | Just you |
 
-The user rule created by `/setup-mindajo` lives in `~/.claude/rules/mindajo.md` — loaded into every session so agents always know to search and save memories.
+The user rule created by `/setup-mindojo` lives in `~/.claude/rules/mindojo.md` — loaded into every session so agents always know to search and save memories.
 
 ### Path-Scoped Rules
 
@@ -100,13 +100,13 @@ paths:
   - "docker-compose.yml"
   - "Dockerfile*"
 ---
-Before modifying Docker configuration, search MindAJO for Docker-related
+Before modifying Docker configuration, search MindOJO for Docker-related
 lessons learned in this project.
 ```
 
 ## Scripts
 
-Utility scripts in `scripts/` for importing existing knowledge into MindAJO.
+Utility scripts in `scripts/` for importing existing knowledge into MindOJO.
 
 ### `generate_import_report.py`
 
@@ -160,15 +160,15 @@ The MCP server searches for `.env` in order:
 
 | Priority | Location | Use case |
 |----------|----------|----------|
-| 1 | `~/.config/mindajo/.env` (Linux) / `~/Library/Application Support/mindajo/.env` (macOS) | Production — survives plugin updates |
+| 1 | `~/.config/mindojo/.env` (Linux) / `~/Library/Application Support/mindojo/.env` (macOS) | Production — survives plugin updates |
 | 2 | `./.env` in CWD | Development — running from source checkout |
 | 3 | Defaults | Fallback (localhost Ollama + Qdrant) |
 
-Environment variables always override `.env` values. Run `/setup-mindajo` to create the config file, or copy `.env.example` manually:
+Environment variables always override `.env` values. Run `/setup-mindojo` to create the config file, or copy `.env.example` manually:
 
 ```bash
-mkdir -p ~/.config/mindajo
-cp .env.example ~/.config/mindajo/.env
+mkdir -p ~/.config/mindojo
+cp .env.example ~/.config/mindojo/.env
 ```
 
 **Settings reference** (see `.env.example`):
@@ -182,7 +182,7 @@ cp .env.example ~/.config/mindajo/.env
 | `OLLAMA_LLM_MODEL` | `qwen2.5:14b` | LLM model for mem0 |
 | `OLLAMA_EMBED_MODEL` | `qwen3-embedding:8b` | Embedding model |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint |
-| `QDRANT_COLLECTION` | `mindajo` | Collection name |
+| `QDRANT_COLLECTION` | `mindojo` | Collection name |
 | `QDRANT_EMBED_DIMS` | `4096` | Embedding dimensions |
 | `NEO4J_ENABLED` | `false` | Enable Neo4j graph store |
 | `NEO4J_URL` | `bolt://localhost:7687` | Neo4j bolt endpoint |
@@ -214,8 +214,8 @@ This is a static shared secret — no signing, expiry, or cryptographic exchange
 
 | Transport | Security | Recommendation |
 |-----------|----------|----------------|
-| `https://` (TLS) | Token encrypted in transit | ✅ Use for remote/cross-network |
-| `http://` (plain) | Token visible on the wire | ⚠️ Only on trusted private networks |
+| `https://` (TLS) | Token encrypted in transit | Use for remote/cross-network |
+| `http://` (plain) | Token visible on the wire | Only on trusted private networks |
 
 ### Setup
 
@@ -258,7 +258,7 @@ This is a static shared secret — no signing, expiry, or cryptographic exchange
    > - `forwardAuth` middleware pointing to a small auth service
    > - Caddy or nginx with simple `if ($http_authorization)` matching
 
-3. **Set in MindAJO `.env`:**
+3. **Set in MindOJO `.env`:**
 
    ```bash
    OLLAMA_URL=https://ollama.example.com    # no credentials in URL
@@ -276,4 +276,4 @@ docker compose --profile graph up -d  # Qdrant + Neo4j
 
 Both services include Traefik labels for reverse proxy with basic auth. Set `QDRANT_DOMAIN`, `NEO4J_DOMAIN`, and `TRAEFIK_AUTH` in `.env`.
 
-<sub>🤖 Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>
+<sub>Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>

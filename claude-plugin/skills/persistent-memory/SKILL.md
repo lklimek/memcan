@@ -5,7 +5,7 @@ description: "Use to save and recall learnings, decisions, preferences across se
 
 # Persistent Memory
 
-Store and retrieve knowledge across Claude Code sessions via the MindAJO MCP server.
+Store and retrieve knowledge across Claude Code sessions via the MindOJO MCP server.
 
 ## When to Save
 

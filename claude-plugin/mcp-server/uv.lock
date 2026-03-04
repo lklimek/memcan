@@ -679,7 +679,7 @@ wheels = [
 ]
 
 [[package]]
-name = "mindajo-mcp"
+name = "mindojo-mcp"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

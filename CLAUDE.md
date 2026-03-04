@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**MindAJO** — Claude Code plugin for persistent memory via mem0. Stores and recalls learnings, decisions, preferences across sessions. MIT license.
+**MindOJO** — Claude Code plugin for persistent memory via mem0. Stores and recalls learnings, decisions, preferences across sessions. MIT license.
 
 Stack: Python MCP server (FastMCP + mem0), Qdrant (vectors), Ollama (LLM + embeddings), optional Neo4j (graph).
 

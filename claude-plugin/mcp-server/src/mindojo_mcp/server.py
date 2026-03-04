@@ -1,4 +1,4 @@
-"""MindAJO MCP Server — 5 tools for persistent memory via mem0.
+"""MindOJO MCP Server — 5 tools for persistent memory via mem0.
 
 Transport: stdio (launched by Claude Code).
 """
@@ -17,7 +17,7 @@ from .config import settings
 logger = logging.getLogger(__name__)
 
 mcp = FastMCP(
-    "mindajo",
+    "mindojo",
     instructions="Persistent memory for Claude Code — store and recall learnings, decisions, preferences across sessions.",
 )
 
