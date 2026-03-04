@@ -1,19 +1,23 @@
 ---
-name: persistent-memory
-description: "Use to save and recall learnings, decisions, preferences across sessions. Invoke at session start and after notable discoveries."
+name: lessons-learned
+description: "Extract and recall learnings from conversation history — bugs, decisions, preferences, patterns. Invoke at session start, after notable events, before decisions, and as the final task when all work is complete."
 ---
 
-# Persistent Memory
+# Lessons Learned
 
-Store and retrieve knowledge across Claude Code sessions via the MindOJO MCP server.
+Monitor conversations and recall knowledge across sessions. When something worth remembering surfaces, delegate saving to the `remember` skill.
 
-## When to Save
+## What to Watch For
 
-- Lessons learned (bugs, pitfalls, workarounds)
-- Architecture decisions and rationale
-- User preferences and conventions
-- Discovered patterns and anti-patterns
-- Project-specific configuration details
+Continuously scan conversation history, user comments, error outputs, and agent reports for:
+
+- **Lessons learned** — bugs, pitfalls, failed approaches, workarounds
+- **Architecture decisions** — choices made and their rationale
+- **User preferences** — coding style, tool choices, conventions
+- **Patterns and anti-patterns** — recurring solutions or recurring mistakes
+- **Configuration quirks** — project-specific setup details, environment gotchas
+
+When you spot any of these, invoke the `remember` skill to save it.
 
 ## When to Search
 
@@ -29,12 +33,6 @@ Store and retrieve knowledge across Claude Code sessions via the MindOJO MCP ser
 
 ## MCP Tools
 
-### `add_memory`
-
-```
-add_memory(content="Docker COPY doesn't resolve symlinks in build context", project="penny", metadata={"type": "lesson", "source": "LL-002"})
-```
-
 ### `search_memories`
 
 ```
@@ -46,6 +44,12 @@ search_memories(query="docker build cache issues", project="penny", limit=5)
 ```
 get_memories(project="penny")       # all penny memories
 get_memories()                       # all global memories
+```
+
+### `add_memory`
+
+```
+add_memory(content="Docker COPY doesn't resolve symlinks in build context", project="penny", metadata={"type": "lesson", "source": "LL-002"})
 ```
 
 ### `delete_memory`
