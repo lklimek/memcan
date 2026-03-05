@@ -14,7 +14,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mem0 import AsyncMemory
 
-from .config import ensure_nothink_model, settings
+from .config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -25,37 +25,12 @@ mcp = FastMCP(
 
 _memory: AsyncMemory | None = None
 
-CUSTOM_FACT_EXTRACTION_PROMPT = """You are a Knowledge Organizer for a software development assistant.
-Extract ALL relevant facts from the input — technical learnings, architecture
-decisions, preferences, conventions, bug fixes, patterns, and any information
-worth remembering for future sessions.
-
-Return a JSON object with a "facts" key containing a list of concise strings.
-
-Input: The deployment uses Docker Compose with Qdrant on port 6333.
-Output: {"facts": ["Deployment uses Docker Compose", "Qdrant runs on port 6333"]}
-
-Input: We switched from qwen3.5 to nothink variant because thinking mode caused JSON parse failures.
-Output: {"facts": ["Switched from qwen3.5 to nothink variant", "qwen3.5 thinking mode caused JSON parse failures in mem0"]}
-
-Input: Hi, how are you?
-Output: {"facts": []}
-
-Rules:
-- Extract facts from ALL messages, including technical details.
-- If no relevant facts exist, return {"facts": []}.
-- Return valid JSON only.
-"""
-
 
 async def _get_memory() -> AsyncMemory:
     """Lazy-init mem0 AsyncMemory instance."""
     global _memory  # noqa: PLW0603
     if _memory is None:
-        await ensure_nothink_model()
-        _memory = await AsyncMemory.from_config(
-            settings.to_mem0_config(custom_prompt=CUSTOM_FACT_EXTRACTION_PROMPT)
-        )
+        _memory = await AsyncMemory.from_config(settings.to_mem0_config())
     return _memory
 
 
@@ -95,7 +70,7 @@ async def add_memory(
     logger.info("add_memory: queued for user_id=%s, len=%d", uid, len(memory))
 
     async def _do_add() -> None:
-        max_attempts = 3
+        max_attempts = 1
         for attempt in range(1, max_attempts + 1):
             try:
                 result = await mem.add(memory, user_id=uid, metadata=meta)

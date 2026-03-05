@@ -24,14 +24,6 @@ def _settings():
     return s
 
 
-@pytest.fixture(autouse=True)
-def _ensure_nothink(_settings):
-    """Ensure the -mindojo-nothink model variant exists before tests run."""
-    from mindojo_mcp.config import ensure_nothink_model
-
-    asyncio.run(ensure_nothink_model())
-
-
 @pytest.fixture()
 def _ollama_client(_settings):
     """Return a configured httpx client for Ollama API calls."""

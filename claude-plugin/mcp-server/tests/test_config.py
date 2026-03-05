@@ -26,7 +26,7 @@ class TestToMem0Config:
             ollama_api_key="test",
         )
         cfg = s.to_mem0_config()
-        assert cfg["llm"]["config"]["model"] == "llama3:8b-mindojo-nothink"
+        assert cfg["llm"]["config"]["model"] == "llama3:8b"
         assert cfg["llm"]["config"]["ollama_base_url"] == "http://custom:11434"
         assert cfg["embedder"]["config"]["model"] == "nomic-embed:latest"
         assert cfg["embedder"]["config"]["ollama_base_url"] == "http://custom:11434"
