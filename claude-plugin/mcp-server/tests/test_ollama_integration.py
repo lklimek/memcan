@@ -43,27 +43,27 @@ def test_ollama_reachable(_ollama_client):
 
 def test_ollama_models_available(_settings, _ollama_client):
     """Configured LLM and embedding models are available."""
+    from mindojo_mcp.config import EMBED_MODEL, LLM_MODEL
+
     resp = _ollama_client.get("/api/tags")
     assert resp.status_code == 200
     model_names = {m["name"] for m in resp.json()["models"]}
-    assert _settings.ollama_llm_model in model_names, (
-        f"{_settings.ollama_llm_model} not found in {model_names}"
-    )
-    assert _settings.ollama_embed_model in model_names, (
-        f"{_settings.ollama_embed_model} not found in {model_names}"
-    )
+    assert LLM_MODEL in model_names, f"{LLM_MODEL} not found in {model_names}"
+    assert EMBED_MODEL in model_names, f"{EMBED_MODEL} not found in {model_names}"
 
 
 def test_embedding_dimension_matches_config(_settings, _ollama_client):
-    """Embedding vector length matches qdrant_embed_dims setting."""
+    """Embedding vector length matches EMBED_DIMS constant."""
+    from mindojo_mcp.config import EMBED_DIMS, EMBED_MODEL
+
     resp = _ollama_client.post(
         "/api/embed",
-        json={"model": _settings.ollama_embed_model, "input": "dimension check"},
+        json={"model": EMBED_MODEL, "input": "dimension check"},
     )
     assert resp.status_code == 200
     embeddings = resp.json()["embeddings"]
     assert len(embeddings) > 0
-    assert len(embeddings[0]) == _settings.qdrant_embed_dims
+    assert len(embeddings[0]) == EMBED_DIMS
 
 
 def test_memory_from_config_initializes(_settings):

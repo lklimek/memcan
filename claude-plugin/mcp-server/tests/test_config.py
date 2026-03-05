@@ -16,20 +16,24 @@ class TestToMem0Config:
         assert cfg["llm"]["provider"] == "ollama"
         assert cfg["embedder"]["provider"] == "ollama"
 
-    def test_to_mem0_config_uses_settings_values(self):
-        from mindojo_mcp.config import Settings
+    def test_to_mem0_config_uses_constants_and_settings(self):
+        from mindojo_mcp.config import (
+            EMBED_MODEL,
+            LLM_MODEL,
+            QDRANT_COLLECTION,
+            Settings,
+        )
 
         s = Settings(
             ollama_url="http://custom:11434",
-            ollama_llm_model="llama3:8b",
-            ollama_embed_model="nomic-embed:latest",
             ollama_api_key="test",
         )
         cfg = s.to_mem0_config()
-        assert cfg["llm"]["config"]["model"] == "llama3:8b"
+        assert cfg["llm"]["config"]["model"] == LLM_MODEL
         assert cfg["llm"]["config"]["ollama_base_url"] == "http://custom:11434"
-        assert cfg["embedder"]["config"]["model"] == "nomic-embed:latest"
+        assert cfg["embedder"]["config"]["model"] == EMBED_MODEL
         assert cfg["embedder"]["config"]["ollama_base_url"] == "http://custom:11434"
+        assert cfg["vector_store"]["config"]["collection_name"] == QDRANT_COLLECTION
 
     def test_to_mem0_config_neo4j_disabled_by_default(self):
         from mindojo_mcp.config import Settings
@@ -55,20 +59,21 @@ class TestToMem0Config:
         assert cfg["graph_store"]["config"]["password"] == "secret"
 
 
-class TestDefaults:
-    """Verify default values for Settings fields."""
+class TestConstants:
+    """Verify hardcoded model and collection constants."""
 
-    def test_default_embed_model(self):
-        from mindojo_mcp.config import Settings
+    def test_model_constants(self):
+        from mindojo_mcp.config import (
+            EMBED_DIMS,
+            EMBED_MODEL,
+            LLM_MODEL,
+            QDRANT_COLLECTION,
+        )
 
-        s = Settings(ollama_api_key="test", _env_file=None)
-        assert s.ollama_embed_model == "qwen3-embedding:4b"
-
-    def test_default_embed_dims(self):
-        from mindojo_mcp.config import Settings
-
-        s = Settings(ollama_api_key="test", _env_file=None)
-        assert s.qdrant_embed_dims == 2560
+        assert LLM_MODEL == "gemma3n:e4b"
+        assert EMBED_MODEL == "qwen3-embedding:4b"
+        assert EMBED_DIMS == 2560
+        assert QDRANT_COLLECTION == "mindojo-memories"
 
     def test_tech_stack_defaults_to_empty(self):
         from mindojo_mcp.config import Settings

@@ -15,6 +15,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _CONFIG_DIR = Path(user_config_dir("mindojo"))
 
+# Hardcoded model and collection constants — change here, not in .env.
+LLM_MODEL = "gemma3n:e4b"
+EMBED_MODEL = "qwen3-embedding:4b"
+EMBED_DIMS = 2560
+QDRANT_COLLECTION = "mindojo-memories"
+
 
 def _find_env_file(candidates: list[Path] | None = None) -> Path | None:
     """Return the first existing .env from candidate paths.
@@ -49,13 +55,9 @@ class Settings(BaseSettings):
     # Ollama
     ollama_url: str = "http://localhost:11434"
     ollama_api_key: str = ""
-    ollama_llm_model: str = "gemma3n:e4b"
-    ollama_embed_model: str = "qwen3-embedding:4b"
 
     # Qdrant
     qdrant_url: str = "http://localhost:6333"
-    qdrant_collection: str = "mindojo-memories"
-    qdrant_embed_dims: int = 2560
 
     # Neo4j (optional)
     neo4j_enabled: bool = False
@@ -76,23 +78,23 @@ class Settings(BaseSettings):
             "llm": {
                 "provider": "ollama",
                 "config": {
-                    "model": self.ollama_llm_model,
+                    "model": LLM_MODEL,
                     "ollama_base_url": self.ollama_url,
                 },
             },
             "embedder": {
                 "provider": "ollama",
                 "config": {
-                    "model": self.ollama_embed_model,
+                    "model": EMBED_MODEL,
                     "ollama_base_url": self.ollama_url,
                 },
             },
             "vector_store": {
                 "provider": "qdrant",
                 "config": {
-                    "collection_name": self.qdrant_collection,
+                    "collection_name": QDRANT_COLLECTION,
                     "url": self.qdrant_url,
-                    "embedding_model_dims": self.qdrant_embed_dims,
+                    "embedding_model_dims": EMBED_DIMS,
                 },
             },
         }
@@ -128,7 +130,7 @@ async def ensure_models(
 
     url = ollama_url or settings.ollama_url
     client = AsyncClient(host=url)
-    for model in (settings.ollama_llm_model, settings.ollama_embed_model):
+    for model in (LLM_MODEL, EMBED_MODEL):
         try:
             await client.show(model)
             logger.debug("Model %s already available", model)
