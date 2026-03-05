@@ -240,17 +240,26 @@ async def update_memory(memory_id: str, memory: str) -> str:
 
 
 def _setup_logging() -> None:
-    """Configure file logging if LOG_FILE is set."""
+    """Configure file logging if LOG_FILE is set.
+
+    Uses an explicit FileHandler on the root logger because libraries
+    (mem0/FastMCP) install a RichHandler at import time, which makes
+    ``logging.basicConfig()`` a no-op.
+    """
     if not settings.log_file:
         return
     log_path = Path(settings.log_file)
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        filename=str(log_path),
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
+    handler = logging.FileHandler(str(log_path))
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
     )
+    logging.root.addHandler(handler)
+    logging.root.setLevel(logging.INFO)
     logger.info("MindOJO MCP server starting, log_file=%s", settings.log_file)
 
 
