@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 
@@ -195,3 +196,105 @@ def test_performance_10_writes_10_reads(_settings):
         all_mems = mem.get_all(user_id=test_uid)
         for entry in _extract_entries(all_mems):
             mem.delete(entry["id"])
+
+
+@pytest.mark.mcp_roundtrip
+@pytest.mark.asyncio
+async def test_mcp_async_add_memory_roundtrip(_settings):
+    """Verify async fire-and-forget add_memory persists end-to-end.
+
+    Exercises the real asyncio.create_task path used by the MCP server.
+    Depends on Ollama LLM distillation — mem0 makes ~2 LLM calls per add
+    (extract facts + dedup check). With cold models expect ~35s per call,
+    so total write time can reach ~70-80s. Timeout is set to 120s.
+
+    Run with: pytest -v -s -m mcp_roundtrip
+    """
+    from mem0 import AsyncMemory
+    from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+    import mindojo_mcp.server as server_mod
+    from mindojo_mcp.server import add_memory
+
+    mem = await AsyncMemory.from_config(_settings.to_mem0_config())
+    tag = uuid.uuid4().hex[:8]
+    test_uid = f"test-mcp-roundtrip-{tag}"
+    content = f"The preferred Python version for project {tag} is 3.14"
+
+    def _extract_entries(result):
+        if isinstance(result, dict):
+            return result.get("results", result.get("memories", []))
+        return result
+
+    def _qdrant_count(uid: str) -> int:
+        vs = mem.vector_store
+        qfilter = Filter(
+            must=[FieldCondition(key="user_id", match=MatchValue(value=uid))]
+        )
+        count_result = vs.client.count(
+            collection_name=vs.collection_name,
+            count_filter=qfilter,
+            exact=True,
+        )
+        return count_result.count
+
+    original_memory = server_mod._memory
+    try:
+        server_mod._memory = mem
+
+        count_before = _qdrant_count(test_uid)
+
+        # Snapshot tasks before calling add_memory so we can isolate the new one.
+        tasks_before = asyncio.all_tasks()
+
+        result_json = await add_memory(memory=content, user_id=test_uid)
+        assert '"queued"' in result_json
+
+        # Find the background task created by add_memory.
+        bg_tasks = asyncio.all_tasks() - tasks_before - {asyncio.current_task()}
+        assert len(bg_tasks) == 1, f"Expected 1 background task, got {len(bg_tasks)}"
+
+        start = time.perf_counter()
+        # mem0 makes ~2 Ollama LLM calls per add (~35s each when cold).
+        timeout = 120.0
+
+        # Wait for the background task to finish (the actual mem0 write).
+        # The server's _do_add catches exceptions internally, so we also
+        # check asyncio task state for unexpected errors.
+        done, pending = await asyncio.wait(bg_tasks, timeout=timeout)
+        if pending:
+            pytest.fail(
+                f"Background add_memory task still running after {timeout:.0f}s"
+            )
+        for t in done:
+            if t.exception():
+                pytest.fail(f"Background add_memory task failed: {t.exception()}")
+
+        # Poll until the memory is visible via get_all (should be immediate
+        # after bg task completes, but mem0 may have internal delays).
+        found = False
+        while time.perf_counter() - start < timeout:
+            all_mems = await mem.get_all(user_id=test_uid)
+            entries = _extract_entries(all_mems)
+            if len(entries) > 0:
+                found = True
+                break
+            await asyncio.sleep(1.0)
+
+        elapsed = time.perf_counter() - start
+        if not found:
+            pytest.fail(
+                f"Memory not found after {timeout:.0f}s — LLM may have returned "
+                f"empty distillation (mem0 decided content isn't worth storing)"
+            )
+
+        count_after = _qdrant_count(test_uid)
+        assert count_after > count_before, (
+            f"Expected count to increase: before={count_before}, after={count_after}"
+        )
+        print(f"\nMCP async roundtrip: memory persisted in {elapsed:.1f}s")
+    finally:
+        server_mod._memory = original_memory
+        all_mems = await mem.get_all(user_id=test_uid)
+        for entry in _extract_entries(all_mems):
+            await mem.delete(entry["id"])

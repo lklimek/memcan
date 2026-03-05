@@ -25,12 +25,52 @@ mcp = FastMCP(
 
 _memory: AsyncMemory | None = None
 
+_NOTHINK_SUFFIX = "-mindojo-nothink"
+
+
+async def _ensure_nothink_model() -> str:
+    """Auto-create the -mindojo-nothink Ollama model variant if needed.
+
+    Derives ``<base>-mindojo-nothink`` from the configured LLM model with a
+    ``/no_think`` system prompt.  This disables qwen3's chain-of-thought mode
+    which causes non-deterministic JSON parsing failures in mem0.
+
+    Returns the model name to use (with suffix appended).
+    """
+    from ollama import AsyncClient, ResponseError
+
+    base_model = settings.ollama_llm_model
+    derived = base_model + _NOTHINK_SUFFIX
+    client = AsyncClient(host=settings.ollama_url)
+
+    try:
+        await client.show(derived)
+        logger.debug("Model %s already exists", derived)
+        return derived
+    except ResponseError:
+        pass  # model doesn't exist yet — create it
+
+    logger.info("Creating %s from %s with /no_think system prompt", derived, base_model)
+    try:
+        await client.create(model=derived, from_=base_model, system="/no_think")
+        logger.info("Model %s created successfully", derived)
+    except ResponseError as exc:
+        logger.error(
+            "Failed to create %s: %s — falling back to %s", derived, exc, base_model
+        )
+        return base_model
+
+    return derived
+
 
 async def _get_memory() -> AsyncMemory:
     """Lazy-init mem0 AsyncMemory instance."""
     global _memory  # noqa: PLW0603
     if _memory is None:
-        _memory = await AsyncMemory.from_config(settings.to_mem0_config())
+        llm_model = await _ensure_nothink_model()
+        config = settings.to_mem0_config()
+        config["llm"]["config"]["model"] = llm_model
+        _memory = await AsyncMemory.from_config(config)
     return _memory
 
 
@@ -70,11 +110,35 @@ async def add_memory(
     logger.info("add_memory: queued for user_id=%s, len=%d", uid, len(memory))
 
     async def _do_add() -> None:
-        try:
-            await mem.add(memory, user_id=uid, metadata=meta)
-            logger.info("add_memory: persisted for user_id=%s", uid)
-        except Exception:
-            logger.exception("Background memory add failed")
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                result = await mem.add(memory, user_id=uid, metadata=meta)
+                entries = (result or {}).get("results", [])
+                if entries:
+                    logger.info(
+                        "add_memory: persisted for user_id=%s (attempt %d/%d)",
+                        uid,
+                        attempt,
+                        max_attempts,
+                    )
+                    return
+                logger.warning(
+                    "add_memory: empty result for user_id=%s (attempt %d/%d)",
+                    uid,
+                    attempt,
+                    max_attempts,
+                )
+            except Exception:
+                logger.exception(
+                    "add_memory: failed for user_id=%s (attempt %d/%d)",
+                    uid,
+                    attempt,
+                    max_attempts,
+                )
+        logger.error(
+            "add_memory: gave up after %d attempts for user_id=%s", max_attempts, uid
+        )
 
     asyncio.create_task(_do_add())
     return json.dumps({"status": "queued", "user_id": uid})

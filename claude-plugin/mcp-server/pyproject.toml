@@ -34,5 +34,6 @@ testpaths = ["tests"]
 markers = [
     "integration: requires live Ollama + Qdrant",
     "benchmark: slow performance benchmarks, run with -m benchmark",
+    "mcp_roundtrip: async MCP roundtrip tests, run with -m mcp_roundtrip",
 ]
-addopts = "-m 'not benchmark'"
+addopts = "-m 'not benchmark and not mcp_roundtrip'"

@@ -56,7 +56,7 @@ Restart Claude Code after setup to connect the MCP server.
 
 - **mem0** — memory management (add, search, update, delete)
 - **Qdrant** — vector similarity search (port 6333)
-- **Ollama** — LLM (`qwen3.5:9b`) + embeddings (`qwen3-embedding:8b`)
+- **Ollama** — LLM (`qwen3.5:9b`, auto-derived as `qwen3.5:9b-mindojo-nothink`) + embeddings (`qwen3-embedding:8b`)
 - **Neo4j** — optional graph store (`docker compose --profile graph up -d`)
 
 ## MCP Tools
@@ -151,7 +151,7 @@ cp .env.example ~/.config/mindojo/.env
 |----------|---------|-------------|
 | `OLLAMA_URL` | — | Ollama API endpoint (e.g. `http://host:11434`) |
 | `OLLAMA_API_KEY` | — | Bearer token for Ollama auth (see [Ollama Authentication](#ollama-authentication)) |
-| `OLLAMA_LLM_MODEL` | `qwen3.5:9b` | LLM model for mem0 |
+| `OLLAMA_LLM_MODEL` | `qwen3.5:9b` | Base LLM model — server auto-derives `-mindojo-nothink` variant |
 | `OLLAMA_EMBED_MODEL` | `qwen3-embedding:8b` | Embedding model |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint |
 | `QDRANT_COLLECTION` | `mindojo` | Collection name |
