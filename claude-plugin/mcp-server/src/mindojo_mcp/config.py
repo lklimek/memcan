@@ -85,8 +85,13 @@ class Settings(BaseSettings):
             return base
         return base + NOTHINK_SUFFIX
 
-    def to_mem0_config(self) -> dict:
-        """Build mem0 Memory config dict from settings."""
+    def to_mem0_config(self, custom_prompt: str | None = None) -> dict:
+        """Build mem0 Memory config dict from settings.
+
+        Args:
+            custom_prompt: Custom fact extraction prompt. Passed as
+                ``custom_fact_extraction_prompt`` in the mem0 config.
+        """
         config: dict = {
             "llm": {
                 "provider": "ollama",
@@ -111,6 +116,9 @@ class Settings(BaseSettings):
                 },
             },
         }
+
+        if custom_prompt:
+            config["custom_fact_extraction_prompt"] = custom_prompt
 
         if self.neo4j_enabled:
             config["graph_store"] = {
