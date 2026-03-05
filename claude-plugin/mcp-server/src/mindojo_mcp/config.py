@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     # Defaults
     default_user_id: str = "global"
 
+    # Logging
+    log_file: str = ""
+
     def to_mem0_config(self) -> dict:
         """Build mem0 Memory config dict from settings."""
         config: dict = {

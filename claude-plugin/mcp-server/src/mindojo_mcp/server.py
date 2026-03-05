@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -66,10 +67,12 @@ async def add_memory(
     mem = await _get_memory()
     uid = _resolve_user_id(project, user_id)
     meta = metadata or {}
+    logger.info("add_memory: queued for user_id=%s, len=%d", uid, len(memory))
 
     async def _do_add() -> None:
         try:
             await mem.add(memory, user_id=uid, metadata=meta)
+            logger.info("add_memory: persisted for user_id=%s", uid)
         except Exception:
             logger.exception("Background memory add failed")
 
@@ -98,6 +101,7 @@ async def search_memories(
     limit = max(1, min(limit, 1000))
     mem = await _get_memory()
     uid = _resolve_user_id(project, user_id)
+    logger.info("search_memories: query=%r user_id=%s limit=%d", query, uid, limit)
     results = await mem.search(query, user_id=uid, limit=limit)
     return json.dumps(results, default=str)
 
@@ -121,6 +125,7 @@ async def get_memories(
     limit = max(1, min(limit, 1000))
     mem = await _get_memory()
     uid = _resolve_user_id(project, user_id)
+    logger.info("get_memories: user_id=%s limit=%d", uid, limit)
     results = await mem.get_all(user_id=uid, limit=limit)
     return json.dumps(results, default=str)
 
@@ -144,6 +149,7 @@ async def count_memories(
     """
     mem = await _get_memory()
     uid = _resolve_user_id(project, user_id)
+    logger.info("count_memories: user_id=%s", uid)
 
     # NOTE: Reaches into mem0 internals (vector_store.client) for efficient
     # counting. May break on mem0 upgrades — pin mem0 version.
@@ -171,6 +177,7 @@ async def count_memories(
     except TimeoutError:
         logger.warning("count_memories timed out after 30s")
         return json.dumps({"error": "count_memories timed out"})
+    logger.info("count_memories: user_id=%s count=%d", uid, result.count)
     return json.dumps({"count": result.count, "user_id": uid})
 
 
@@ -184,6 +191,7 @@ async def delete_memory(memory_id: str) -> str:
     Returns:
         JSON confirmation of deletion.
     """
+    logger.info("delete_memory: id=%s", memory_id)
     mem = await _get_memory()
     await mem.delete(memory_id)
     return json.dumps({"status": "deleted", "memory_id": memory_id})
@@ -200,13 +208,30 @@ async def update_memory(memory_id: str, memory: str) -> str:
     Returns:
         JSON string with the update result.
     """
+    logger.info("update_memory: id=%s", memory_id)
     mem = await _get_memory()
     result = await mem.update(memory_id, memory)
     return json.dumps(result, default=str)
 
 
+def _setup_logging() -> None:
+    """Configure file logging if LOG_FILE is set."""
+    if not settings.log_file:
+        return
+    log_path = Path(settings.log_file)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        filename=str(log_path),
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    logger.info("MindOJO MCP server starting, log_file=%s", settings.log_file)
+
+
 def main() -> None:
     """Entry point — run MCP server over stdio."""
+    _setup_logging()
     mcp.run(transport="stdio")
 
 
