@@ -7,6 +7,7 @@ and metadata. Idempotent — skips points that already exist in target.
 Usage:
     uv run python scripts/migrate-collection.py [--dry-run]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -24,15 +25,20 @@ EMBED_DIMS = 2560
 
 def main():
     parser = argparse.ArgumentParser(description="Migrate Qdrant collection")
-    parser.add_argument("--dry-run", action="store_true", help="Print plan without writing")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print plan without writing"
+    )
     parser.add_argument("--qdrant-url", default="http://localhost:6333")
-    parser.add_argument("--ollama-url", default=None, help="Ollama URL (reads .env if omitted)")
+    parser.add_argument(
+        "--ollama-url", default=None, help="Ollama URL (reads .env if omitted)"
+    )
     args = parser.parse_args()
 
     # Resolve Ollama URL from .env if not provided
     ollama_url = args.ollama_url
     if not ollama_url:
         from mindojo_mcp.config import settings
+
         ollama_url = settings.ollama_url
 
     qdrant = QdrantClient(url=args.qdrant_url)
@@ -49,9 +55,7 @@ def main():
         if not args.dry_run:
             qdrant.create_collection(
                 collection_name=NEW_COLLECTION,
-                vectors_config=VectorParams(
-                    size=EMBED_DIMS, distance=Distance.COSINE
-                ),
+                vectors_config=VectorParams(size=EMBED_DIMS, distance=Distance.COSINE),
             )
     else:
         print(f"Collection '{NEW_COLLECTION}' already exists.")
@@ -84,7 +88,9 @@ def main():
             data = p.payload.get("data", "?")[:80]
             uid = p.payload.get("user_id", "?")
             print(f"  [{uid}] {data}")
-        print(f"\nDry run: would migrate {len(all_points)} points. Re-run without --dry-run.")
+        print(
+            f"\nDry run: would migrate {len(all_points)} points. Re-run without --dry-run."
+        )
         return
 
     # Embed all texts with new model
@@ -97,7 +103,9 @@ def main():
     response = ollama.embed(model=EMBED_MODEL, input=texts)
     embeddings = response["embeddings"]
     assert len(embeddings) == len(all_points), "Embedding count mismatch"
-    assert len(embeddings[0]) == EMBED_DIMS, f"Expected {EMBED_DIMS}d, got {len(embeddings[0])}d"
+    assert len(embeddings[0]) == EMBED_DIMS, (
+        f"Expected {EMBED_DIMS}d, got {len(embeddings[0])}d"
+    )
 
     # Upsert into new collection (idempotent)
     new_points = [
@@ -118,11 +126,21 @@ def main():
     # Verify
     new_count = qdrant.count(collection_name=NEW_COLLECTION, exact=True).count
     print(f"\n✓ Migration complete: {new_count} points in '{NEW_COLLECTION}'.")
-    print(f"  Old collection '{OLD_COLLECTION}' left intact. Delete manually when ready:")
+    print(
+        f"  Old collection '{OLD_COLLECTION}' left intact. Delete manually when ready:"
+    )
     print(f"  curl -X DELETE {args.qdrant_url}/collections/{OLD_COLLECTION}")
 
 
 if __name__ == "__main__":
     # Add mcp-server src to path for config import
-    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "claude-plugin" / "mcp-server" / "src"))
+    sys.path.insert(
+        0,
+        str(
+            __import__("pathlib").Path(__file__).resolve().parent.parent
+            / "claude-plugin"
+            / "mcp-server"
+            / "src"
+        ),
+    )
     main()

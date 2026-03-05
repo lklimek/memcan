@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 HEADING_RE = re.compile(r"^(#{2,3})\s+(.+)", re.MULTILINE)
 VALID_TYPES = ("security", "coding", "cve", "guideline")
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9\-.:_/]+$")
 
 KEYWORD_INDEXES = (
     "standard_id",
@@ -106,6 +107,65 @@ def chunk_markdown(text: str) -> list[dict[str, str]]:
     return chunks
 
 
+def _validate_metadata(meta: dict) -> dict:
+    """Sanitize LLM-produced metadata to enforce types and safe values."""
+    dirty = False
+
+    # ref_ids: list of strings matching safe pattern
+    ref_ids = meta.get("ref_ids", [])
+    if not isinstance(ref_ids, list):
+        ref_ids = []
+        dirty = True
+    clean_ids = []
+    for rid in ref_ids:
+        if isinstance(rid, str) and _SAFE_ID_RE.match(rid):
+            clean_ids.append(rid)
+        else:
+            dirty = True
+    meta["ref_ids"] = clean_ids
+
+    # section_id: string matching safe pattern
+    section_id = meta.get("section_id", "")
+    if not isinstance(section_id, str) or (
+        section_id and not _SAFE_ID_RE.match(section_id)
+    ):
+        section_id = ""
+        dirty = True
+    meta["section_id"] = section_id
+
+    # section_title: string, max 200 chars
+    section_title = meta.get("section_title", "")
+    if not isinstance(section_title, str):
+        section_title = str(section_title)
+        dirty = True
+    if len(section_title) > 200:
+        section_title = section_title[:200]
+        dirty = True
+    meta["section_title"] = section_title.strip()
+
+    # chapter: string, max 200 chars
+    chapter = meta.get("chapter", "")
+    if not isinstance(chapter, str):
+        chapter = str(chapter)
+        dirty = True
+    if len(chapter) > 200:
+        chapter = chapter[:200]
+        dirty = True
+    meta["chapter"] = chapter.strip()
+
+    # code_patterns: must be a string
+    code_patterns = meta.get("code_patterns", "")
+    if not isinstance(code_patterns, str):
+        code_patterns = str(code_patterns)
+        dirty = True
+    meta["code_patterns"] = code_patterns
+
+    if dirty:
+        logger.warning("Sanitized LLM metadata: %s", meta)
+
+    return meta
+
+
 def extract_metadata(
     chunk_text: str,
     model: str,
@@ -113,7 +173,7 @@ def extract_metadata(
 ) -> dict | None:
     """Call Ollama to extract metadata from a chunk. Returns parsed dict or None."""
     prompt = _load("metadata-extraction.md", chunk_text=chunk_text)
-    client = OllamaClient(host=settings.ollama_url)
+    client = OllamaClient(host=settings.ollama_url, timeout=float(timeout))
     resp = client.chat(
         model=model,
         messages=[{"role": "user", "content": prompt}],
@@ -121,7 +181,8 @@ def extract_metadata(
         format="json",
     )
     raw = resp.message.content.strip()
-    return json.loads(raw)
+    meta = json.loads(raw)
+    return _validate_metadata(meta)
 
 
 def fallback_metadata(heading: str, parent_heading: str) -> dict:

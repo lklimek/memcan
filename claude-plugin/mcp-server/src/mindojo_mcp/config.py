@@ -138,7 +138,7 @@ async def ensure_models(
 
     url = ollama_url or settings.ollama_url
     client = AsyncClient(host=url)
-    for model in (LLM_MODEL, EMBED_MODEL, EXTRACTION_MODEL):
+    for model in (LLM_MODEL, EMBED_MODEL):
         try:
             await client.show(model)
             logger.debug("Model %s already available", model)

@@ -17,8 +17,11 @@ import time
 import uuid
 
 # Allow importing mindojo_mcp from the mcp-server src dir.
-sys.path.insert(0, str(__file__).replace("scripts/test-concurrent-qwen.py", "")
-    + "claude-plugin/mcp-server/src")
+sys.path.insert(
+    0,
+    str(__file__).replace("scripts/test-concurrent-qwen.py", "")
+    + "claude-plugin/mcp-server/src",
+)
 
 from mindojo_mcp.config import EMBED_DIMS, EMBED_MODEL, settings
 
@@ -73,10 +76,22 @@ async def do_add(mem, idx: int, uid: str) -> dict:
         elapsed = time.perf_counter() - start
         entries = extract_entries(result) if result else []
         ok = len(entries) > 0
-        return {"idx": idx, "ok": ok, "entries": len(entries), "elapsed": elapsed, "error": None}
+        return {
+            "idx": idx,
+            "ok": ok,
+            "entries": len(entries),
+            "elapsed": elapsed,
+            "error": None,
+        }
     except Exception as e:
         elapsed = time.perf_counter() - start
-        return {"idx": idx, "ok": False, "entries": 0, "elapsed": elapsed, "error": str(e)}
+        return {
+            "idx": idx,
+            "ok": False,
+            "entries": 0,
+            "elapsed": elapsed,
+            "error": str(e),
+        }
 
 
 TOPICS = [
@@ -114,7 +129,9 @@ async def main():
     for r in results:
         status = "OK" if r["ok"] else "FAIL"
         err = f" — {r['error']}" if r["error"] else ""
-        print(f"  [{status}] item {r['idx']}: {r['entries']} entries in {r['elapsed']:.1f}s{err}")
+        print(
+            f"  [{status}] item {r['idx']}: {r['entries']} entries in {r['elapsed']:.1f}s{err}"
+        )
 
     ok_count = sum(1 for r in results if r["ok"])
     print(f"\n  {ok_count}/5 succeeded in {total:.1f}s total")

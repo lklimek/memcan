@@ -691,6 +691,12 @@ dependencies = [
     { name = "qdrant-client" },
 ]
 
+[package.optional-dependencies]
+indexing = [
+    { name = "tree-sitter" },
+    { name = "tree-sitter-language-pack" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "httpx" },
@@ -709,7 +715,10 @@ requires-dist = [
     { name = "platformdirs", specifier = ">=4.9.2" },
     { name = "pydantic-settings", specifier = ">=2.0" },
     { name = "qdrant-client", specifier = ">=1.7" },
+    { name = "tree-sitter", marker = "extra == 'indexing'", specifier = ">=0.24" },
+    { name = "tree-sitter-language-pack", marker = "extra == 'indexing'", specifier = ">=0.2" },
 ]
+provides-extras = ["indexing"]
 
 [package.metadata.requires-dev]
 dev = [

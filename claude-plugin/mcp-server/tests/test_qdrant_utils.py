@@ -119,12 +119,12 @@ class TestDropByFilter:
 class TestEmbed:
     """embed() calls Ollama synchronously and returns vectors."""
 
-    @patch("mindojo_mcp.qdrant_utils.OllamaClient")
-    def test_embed_single(self, mock_cls):
+    @patch("mindojo_mcp.qdrant_utils._get_ollama_sync")
+    def test_embed_single(self, mock_get):
         from mindojo_mcp.qdrant_utils import embed
 
         mock_client = MagicMock()
-        mock_cls.return_value = mock_client
+        mock_get.return_value = mock_client
         mock_resp = MagicMock()
         mock_resp.embeddings = [[0.1, 0.2, 0.3]]
         mock_client.embed.return_value = mock_resp
@@ -134,12 +134,12 @@ class TestEmbed:
         assert result == [[0.1, 0.2, 0.3]]
         mock_client.embed.assert_called_once()
 
-    @patch("mindojo_mcp.qdrant_utils.OllamaClient")
-    def test_embed_multiple(self, mock_cls):
+    @patch("mindojo_mcp.qdrant_utils._get_ollama_sync")
+    def test_embed_multiple(self, mock_get):
         from mindojo_mcp.qdrant_utils import embed
 
         mock_client = MagicMock()
-        mock_cls.return_value = mock_client
+        mock_get.return_value = mock_client
         mock_resp1 = MagicMock()
         mock_resp1.embeddings = [[1.0, 2.0]]
         mock_resp2 = MagicMock()
@@ -156,12 +156,12 @@ class TestAembed:
     """aembed() calls Ollama asynchronously."""
 
     @pytest.mark.asyncio
-    @patch("mindojo_mcp.qdrant_utils.AsyncOllamaClient")
-    async def test_aembed(self, mock_cls):
+    @patch("mindojo_mcp.qdrant_utils._get_ollama_async")
+    async def test_aembed(self, mock_get):
         from mindojo_mcp.qdrant_utils import aembed
 
         mock_client = AsyncMock()
-        mock_cls.return_value = mock_client
+        mock_get.return_value = mock_client
         mock_resp = MagicMock()
         mock_resp.embeddings = [[0.5, 0.6]]
         mock_client.embed.return_value = mock_resp

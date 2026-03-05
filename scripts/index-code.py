@@ -13,6 +13,7 @@ Usage (run from claude-plugin/mcp-server/):
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import logging
 import subprocess
@@ -285,6 +286,12 @@ def main() -> None:
     parser.add_argument(
         "--error-file", type=Path, default=None, help="Write errors to file"
     )
+    parser.add_argument(
+        "--max-file-size",
+        type=int,
+        default=1_048_576,
+        help="Skip files larger than this many bytes (default: 1 MB)",
+    )
     args = parser.parse_args()
 
     # Logging setup
@@ -295,10 +302,6 @@ def main() -> None:
     logging.basicConfig(
         level=log_level, format="%(levelname)s %(message)s", handlers=handlers
     )
-
-    error_fh = None
-    if args.error_file:
-        error_fh = open(args.error_file, "w")  # noqa: SIM115
 
     collection = CODE_COLLECTION
 
@@ -358,67 +361,85 @@ def main() -> None:
         batch = []
         return count
 
-    for file_path in files:
-        rel_path = str(file_path.relative_to(project_dir))
-        current_file_paths.add(rel_path)
-        lang = _ext_to_lang(file_path.suffix)
+    with contextlib.ExitStack() as stack:
+        error_fh = None
+        if args.error_file:
+            error_fh = stack.enter_context(open(args.error_file, "w"))
 
-        try:
-            source_bytes = file_path.read_bytes()
-            source_text = source_bytes.decode(errors="replace")
-        except Exception as exc:
-            msg = f"Failed to read {rel_path}: {exc}"
-            logger.error(msg)
-            if error_fh:
-                error_fh.write(msg + "\n")
-            total_errors += 1
-            continue
+        for file_path in files:
+            rel_path = str(file_path.relative_to(project_dir))
+            current_file_paths.add(rel_path)
+            lang = _ext_to_lang(file_path.suffix)
 
-        # Extract symbols or fall back to chunks
-        symbols = []
-        if lang:
-            symbols = _extract_symbols(source_bytes, lang, rel_path)
-        if not symbols:
-            symbols = _chunk_fallback(source_text, rel_path)
-        if not symbols:
-            continue
-
-        effective_lang = lang or "unknown"
-
-        for sym in symbols:
-            ctx = _context_line(rel_path, effective_lang, args.tech_stack)
-            data = f"{ctx}\n{sym['text']}"
-            chash = _content_hash(data)
-            pid = _point_id(
-                args.project, rel_path, sym["symbol_name"], sym["start_line"]
-            )
-
-            # Skip if content unchanged
-            if pid in existing and existing[pid]["content_hash"] == chash:
-                total_skipped += 1
+            if file_path.is_symlink():
+                logger.warning("Skipping symlink: %s", rel_path)
                 continue
 
-            payload = {
-                "data": data,
-                "project": args.project,
-                "file_path": rel_path,
-                "tech_stack": args.tech_stack,
-                "chunk_type": sym["chunk_type"],
-                "symbol_name": sym["symbol_name"],
-                "start_line": sym["start_line"],
-                "end_line": sym["end_line"],
-                "content_hash": chash,
-                "git_hash": git_hash,
-                "indexed_at": now,
-            }
+            if file_path.stat().st_size > args.max_file_size:
+                logger.warning(
+                    "Skipping %s: size %d exceeds limit %d",
+                    rel_path,
+                    file_path.stat().st_size,
+                    args.max_file_size,
+                )
+                continue
 
-            batch.append(
-                PointStruct(id=pid, vector=[0.0] * EMBED_DIMS, payload=payload)
-            )
+            try:
+                source_bytes = file_path.read_bytes()
+                source_text = source_bytes.decode(errors="replace")
+            except Exception as exc:
+                msg = f"Failed to read {rel_path}: {exc}"
+                logger.error(msg)
+                if error_fh:
+                    error_fh.write(msg + "\n")
+                total_errors += 1
+                continue
 
-            if len(batch) >= BATCH_SIZE:
-                total_upserted += flush_batch()
-                logger.info("  Upserted %d symbols so far...", total_upserted)
+            # Extract symbols or fall back to chunks
+            symbols = []
+            if lang:
+                symbols = _extract_symbols(source_bytes, lang, rel_path)
+            if not symbols:
+                symbols = _chunk_fallback(source_text, rel_path)
+            if not symbols:
+                continue
+
+            effective_lang = lang or "unknown"
+
+            for sym in symbols:
+                ctx = _context_line(rel_path, effective_lang, args.tech_stack)
+                data = f"{ctx}\n{sym['text']}"
+                chash = _content_hash(data)
+                pid = _point_id(
+                    args.project, rel_path, sym["symbol_name"], sym["start_line"]
+                )
+
+                # Skip if content unchanged
+                if pid in existing and existing[pid]["content_hash"] == chash:
+                    total_skipped += 1
+                    continue
+
+                payload = {
+                    "data": data,
+                    "project": args.project,
+                    "file_path": rel_path,
+                    "tech_stack": args.tech_stack,
+                    "chunk_type": sym["chunk_type"],
+                    "symbol_name": sym["symbol_name"],
+                    "start_line": sym["start_line"],
+                    "end_line": sym["end_line"],
+                    "content_hash": chash,
+                    "git_hash": git_hash,
+                    "indexed_at": now,
+                }
+
+                batch.append(
+                    PointStruct(id=pid, vector=[0.0] * EMBED_DIMS, payload=payload)
+                )
+
+                if len(batch) >= BATCH_SIZE:
+                    total_upserted += flush_batch()
+                    logger.info("  Upserted %d symbols so far...", total_upserted)
 
     total_upserted += flush_batch()
 
@@ -434,9 +455,6 @@ def main() -> None:
         total_errors,
         deleted,
     )
-
-    if error_fh:
-        error_fh.close()
 
 
 if __name__ == "__main__":

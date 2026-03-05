@@ -37,12 +37,31 @@ def get_qdrant() -> QdrantClient:
     return _qdrant
 
 
+# --- Lazy singleton Ollama clients ---
+_ollama_sync: OllamaClient | None = None
+_ollama_async: AsyncOllamaClient | None = None
+
+
+def _get_ollama_sync() -> OllamaClient:
+    global _ollama_sync  # noqa: PLW0603
+    if _ollama_sync is None:
+        _ollama_sync = OllamaClient(host=settings.ollama_url)
+    return _ollama_sync
+
+
+def _get_ollama_async() -> AsyncOllamaClient:
+    global _ollama_async  # noqa: PLW0603
+    if _ollama_async is None:
+        _ollama_async = AsyncOllamaClient(host=settings.ollama_url)
+    return _ollama_async
+
+
 # --- Embedding ---
 
 
 def embed(texts: list[str]) -> list[list[float]]:
     """Embed texts via Ollama (synchronous)."""
-    client = OllamaClient(host=settings.ollama_url)
+    client = _get_ollama_sync()
     results: list[list[float]] = []
     for text in texts:
         resp = client.embed(model=EMBED_MODEL, input=text)
@@ -52,7 +71,7 @@ def embed(texts: list[str]) -> list[list[float]]:
 
 async def aembed(texts: list[str]) -> list[list[float]]:
     """Embed texts via Ollama (async)."""
-    client = AsyncOllamaClient(host=settings.ollama_url)
+    client = _get_ollama_async()
     results: list[list[float]] = []
     for text in texts:
         resp = await client.embed(model=EMBED_MODEL, input=text)
