@@ -20,6 +20,11 @@ LLM_MODEL = "gemma3n:e4b"
 EMBED_MODEL = "qwen3-embedding:4b"
 EMBED_DIMS = 2560
 QDRANT_COLLECTION = "mindojo-memories"
+STANDARDS_COLLECTION = "mindojo-standards"
+CODE_COLLECTION = "mindojo-code"
+
+# Model for metadata extraction in indexing scripts (not mem0's LLM)
+EXTRACTION_MODEL = "qwen3.5:4b"
 
 
 def _find_env_file(candidates: list[Path] | None = None) -> Path | None:
@@ -133,7 +138,7 @@ async def ensure_models(
 
     url = ollama_url or settings.ollama_url
     client = AsyncClient(host=url)
-    for model in (LLM_MODEL, EMBED_MODEL):
+    for model in (LLM_MODEL, EMBED_MODEL, EXTRACTION_MODEL):
         try:
             await client.show(model)
             logger.debug("Model %s already available", model)

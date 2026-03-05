@@ -75,6 +75,17 @@ class TestConstants:
         assert EMBED_DIMS == 2560
         assert QDRANT_COLLECTION == "mindojo-memories"
 
+    def test_new_collection_constants(self):
+        from mindojo_mcp.config import (
+            CODE_COLLECTION,
+            EXTRACTION_MODEL,
+            STANDARDS_COLLECTION,
+        )
+
+        assert STANDARDS_COLLECTION == "mindojo-standards"
+        assert CODE_COLLECTION == "mindojo-code"
+        assert EXTRACTION_MODEL == "qwen3.5:4b"
+
     def test_tech_stack_defaults_to_empty(self):
         from mindojo_mcp.config import Settings
 
