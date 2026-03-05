@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 
 @pytest.fixture()
@@ -34,7 +35,7 @@ class TestAddMemoryFireAndForget:
     async def test_returns_queued_status(self, _mock_memory):
         from mindojo_mcp.server import add_memory
 
-        result = await add_memory(content="test memory")
+        result = await add_memory(memory="test memory")
         parsed = json.loads(result)
         assert parsed["status"] == "queued"
         assert "user_id" in parsed
@@ -43,7 +44,7 @@ class TestAddMemoryFireAndForget:
     async def test_does_not_await_mem_add_inline(self, _mock_memory):
         from mindojo_mcp.server import add_memory
 
-        await add_memory(content="test memory")
+        await add_memory(memory="test memory")
 
         # mem.add should not have been called yet (it's in a background task)
         _mock_memory.add.assert_not_called()
@@ -58,7 +59,7 @@ class TestAddMemoryFireAndForget:
         from mindojo_mcp.server import add_memory
 
         await add_memory(
-            content="important lesson",
+            memory="important lesson",
             project="myrepo",
             metadata={"type": "lesson"},
         )
@@ -96,6 +97,20 @@ class TestGetMemories:
         assert "results" in parsed
         _mock_memory.get_all.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_default_limit(self, _mock_memory):
+        from mindojo_mcp.server import get_memories
+
+        await get_memories()
+        _mock_memory.get_all.assert_called_once_with(user_id="global", limit=100)
+
+    @pytest.mark.asyncio
+    async def test_passes_limit_to_get_all(self, _mock_memory):
+        from mindojo_mcp.server import get_memories
+
+        await get_memories(limit=5)
+        _mock_memory.get_all.assert_called_once_with(user_id="global", limit=5)
+
 
 class TestDeleteMemory:
     """delete_memory should await and return confirmation."""
@@ -117,7 +132,72 @@ class TestUpdateMemory:
     async def test_returns_update_result(self, _mock_memory):
         from mindojo_mcp.server import update_memory
 
-        result = await update_memory(memory_id="abc123", content="new content")
+        result = await update_memory(memory_id="abc123", memory="new content")
         parsed = json.loads(result)
         assert parsed["id"] == "abc123"
         _mock_memory.update.assert_called_once_with("abc123", "new content")
+
+
+class TestCountMemories:
+    """count_memories should return count from Qdrant."""
+
+    @pytest.mark.asyncio
+    async def test_returns_count(self, _mock_memory):
+        from mindojo_mcp.server import count_memories
+
+        # Use MagicMock for vector_store so client.count is sync (called via to_thread)
+        vs = MagicMock()
+        count_result = MagicMock()
+        count_result.count = 42
+        vs.client.count.return_value = count_result
+        vs.collection_name = "mindojo"
+        _mock_memory.vector_store = vs
+
+        result = await count_memories()
+        parsed = json.loads(result)
+        assert parsed["count"] == 42
+        assert "user_id" in parsed
+        vs.client.count.assert_called_once_with(
+            collection_name="mindojo",
+            count_filter=Filter(
+                must=[FieldCondition(key="user_id", match=MatchValue(value="global"))]
+            ),
+            exact=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_scoped_count(self, _mock_memory):
+        from mindojo_mcp.server import count_memories
+
+        vs = MagicMock()
+        count_result = MagicMock()
+        count_result.count = 7
+        vs.client.count.return_value = count_result
+        vs.collection_name = "mindojo"
+        _mock_memory.vector_store = vs
+
+        result = await count_memories(project="myrepo")
+        parsed = json.loads(result)
+        assert parsed["count"] == 7
+        assert parsed["user_id"] == "project:myrepo"
+        vs.client.count.assert_called_once_with(
+            collection_name="mindojo",
+            count_filter=Filter(
+                must=[
+                    FieldCondition(
+                        key="user_id", match=MatchValue(value="project:myrepo")
+                    )
+                ]
+            ),
+            exact=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_returns_error_on_missing_vector_store(self, _mock_memory):
+        from mindojo_mcp.server import count_memories
+
+        _mock_memory.vector_store = None
+
+        result = await count_memories()
+        parsed = json.loads(result)
+        assert "error" in parsed

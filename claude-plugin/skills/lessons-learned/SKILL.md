@@ -47,10 +47,11 @@ For each approved item, invoke the `remember` skill with the determined scope an
 | Tool | Example |
 |------|---------|
 | `search_memories` | `search_memories(query="docker cache", project="penny", limit=5)` |
-| `get_memories` | `get_memories(project="penny")` or `get_memories()` for global |
-| `add_memory` | `add_memory(content="...", project="penny", metadata={"type": "lesson"})` |
+| `get_memories` | `get_memories(project="penny", limit=50)` or `get_memories()` for global |
+| `add_memory` | `add_memory(memory="...", project="penny", metadata={"type": "lesson"})` |
 | `delete_memory` | `delete_memory(memory_id="<uuid>")` |
-| `update_memory` | `update_memory(memory_id="<uuid>", content="...")` |
+| `update_memory` | `update_memory(memory_id="<uuid>", memory="...")` |
+| `count_memories` | `count_memories(project="penny")` or `count_memories()` for global |
 
 ## Best Practices
 

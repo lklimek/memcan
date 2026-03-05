@@ -68,6 +68,7 @@ Restart Claude Code after setup to connect the MCP server.
 | `get_memories` | List all memories for a scope |
 | `delete_memory` | Remove a memory by ID |
 | `update_memory` | Modify existing memory content |
+| `count_memories` | Count memories for a scope (without fetching content) |
 
 ## Memory Scoping
 

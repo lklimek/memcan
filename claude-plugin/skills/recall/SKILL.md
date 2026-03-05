@@ -4,6 +4,7 @@ description: "Search and retrieve memories. Use when preparing plan, before arch
 allowed-tools:
   - mcp__plugin_mindojo_brain__search_memories
   - mcp__plugin_mindojo_brain__get_memories
+  - mcp__plugin_mindojo_brain__count_memories
 ---
 
 # Recall
@@ -30,4 +31,5 @@ Search and retrieve memories from past sessions.
 | Tool | Example |
 |------|---------|
 | `search_memories` | `search_memories(query="docker cache", project="penny", limit=5)` |
-| `get_memories` | `get_memories(project="penny")` or `get_memories()` for global |
+| `get_memories` | `get_memories(project="penny", limit=50)` or `get_memories()` for global |
+| `count_memories` | `count_memories(project="penny")` or `count_memories()` for global |

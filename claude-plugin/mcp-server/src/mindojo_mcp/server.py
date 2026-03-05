@@ -1,4 +1,4 @@
-"""MindOJO MCP Server — 5 tools for persistent memory via mem0.
+"""MindOJO MCP Server — 6 tools for persistent memory via mem0.
 
 Transport: stdio (launched by Claude Code).
 """
@@ -47,7 +47,7 @@ def _resolve_user_id(project: str | None, user_id: str | None) -> str:
 
 @mcp.tool()
 async def add_memory(
-    content: str,
+    memory: str,
     project: str | None = None,
     user_id: str | None = None,
     metadata: dict[str, Any] | None = None,
@@ -55,7 +55,7 @@ async def add_memory(
     """Store a memory — lesson learned, decision, preference, or pattern.
 
     Args:
-        content: The memory content to store.
+        memory: The memory content to store.
         project: Git repo name for project-scoped memory. Omit for global.
         user_id: Explicit user ID override.
         metadata: Optional metadata dict (e.g., {"source": "penny", "type": "lesson"}).
@@ -69,7 +69,7 @@ async def add_memory(
 
     async def _do_add() -> None:
         try:
-            await mem.add(content, user_id=uid, metadata=meta)
+            await mem.add(memory, user_id=uid, metadata=meta)
         except Exception:
             logger.exception("Background memory add failed")
 
@@ -95,9 +95,10 @@ async def search_memories(
     Returns:
         JSON array of matching memories with scores.
     """
+    limit = max(1, min(limit, 1000))
     mem = await _get_memory()
-    resolved_uid = _resolve_user_id(project, user_id)
-    results = await mem.search(query, user_id=resolved_uid, limit=limit)
+    uid = _resolve_user_id(project, user_id)
+    results = await mem.search(query, user_id=uid, limit=limit)
     return json.dumps(results, default=str)
 
 
@@ -105,20 +106,72 @@ async def search_memories(
 async def get_memories(
     project: str | None = None,
     user_id: str | None = None,
+    limit: int = 100,
 ) -> str:
-    """List all memories for a given scope.
+    """List memories for a given scope (up to limit).
 
     Args:
         project: Git repo name for project-scoped listing. Omit for global.
         user_id: Explicit user ID override.
+        limit: Max memories to return (default 100).
 
     Returns:
-        JSON array of all memories in the scope.
+        JSON array of memories in the scope (capped by limit).
+    """
+    limit = max(1, min(limit, 1000))
+    mem = await _get_memory()
+    uid = _resolve_user_id(project, user_id)
+    results = await mem.get_all(user_id=uid, limit=limit)
+    return json.dumps(results, default=str)
+
+
+@mcp.tool()
+async def count_memories(
+    project: str | None = None,
+    user_id: str | None = None,
+) -> str:
+    """Count total memories for a given scope.
+
+    Efficient count without fetching memory content. Useful for reporting
+    collection size without the overhead of get_memories.
+
+    Args:
+        project: Git repo name for project-scoped count. Omit for global.
+        user_id: Explicit user ID override.
+
+    Returns:
+        JSON string with count and user_id.
     """
     mem = await _get_memory()
-    resolved_uid = _resolve_user_id(project, user_id)
-    results = await mem.get_all(user_id=resolved_uid)
-    return json.dumps(results, default=str)
+    uid = _resolve_user_id(project, user_id)
+
+    # NOTE: Reaches into mem0 internals (vector_store.client) for efficient
+    # counting. May break on mem0 upgrades — pin mem0 version.
+    try:
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+        vs = mem.vector_store
+        qfilter = Filter(
+            must=[FieldCondition(key="user_id", match=MatchValue(value=uid))]
+        )
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                vs.client.count,
+                collection_name=vs.collection_name,
+                count_filter=qfilter,
+                exact=True,
+            ),
+            timeout=30.0,
+        )
+    except AttributeError:
+        logger.exception("count_memories failed — mem0 internals may have changed")
+        return json.dumps(
+            {"error": "count_memories unavailable — mem0 internal API changed"}
+        )
+    except TimeoutError:
+        logger.warning("count_memories timed out after 30s")
+        return json.dumps({"error": "count_memories timed out"})
+    return json.dumps({"count": result.count, "user_id": uid})
 
 
 @mcp.tool()
@@ -137,18 +190,18 @@ async def delete_memory(memory_id: str) -> str:
 
 
 @mcp.tool()
-async def update_memory(memory_id: str, content: str) -> str:
+async def update_memory(memory_id: str, memory: str) -> str:
     """Update an existing memory's content.
 
     Args:
         memory_id: The ID of the memory to update.
-        content: New content for the memory.
+        memory: New content for the memory.
 
     Returns:
         JSON string with the update result.
     """
     mem = await _get_memory()
-    result = await mem.update(memory_id, content)
+    result = await mem.update(memory_id, memory)
     return json.dumps(result, default=str)
 
 
