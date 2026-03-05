@@ -275,7 +275,7 @@ def _setup_logging() -> None:
     log_path = Path(settings.log_file)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     handler = logging.FileHandler(str(log_path))
-    handler.setLevel(logging.INFO)
+    handler.setLevel(logging.DEBUG)
     handler.setFormatter(
         logging.Formatter(
             "%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -283,7 +283,7 @@ def _setup_logging() -> None:
         )
     )
     logging.root.addHandler(handler)
-    logging.root.setLevel(logging.INFO)
+    logging.root.setLevel(logging.DEBUG)
     logger.info("MindOJO MCP server starting, log_file=%s", settings.log_file)
 
 
