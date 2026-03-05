@@ -16,6 +16,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 _CONFIG_DIR = Path(user_config_dir("mindojo"))
 
 NOTHINK_SUFFIX = "-mindojo-nothink"
+_NOTHINK_SYSTEM = (
+    "/no_think\nAlways respond with valid JSON only. No markdown, no commentary."
+)
 
 
 def _find_env_file(candidates: list[Path] | None = None) -> Path | None:
@@ -162,7 +165,7 @@ async def ensure_nothink_model(
     real_base = derived.removesuffix(NOTHINK_SUFFIX)
     logger.info("Creating %s from %s with /no_think system prompt", derived, real_base)
     try:
-        await client.create(model=derived, from_=real_base, system="/no_think")
+        await client.create(model=derived, from_=real_base, system=_NOTHINK_SYSTEM)
         logger.info("Model %s created successfully", derived)
     except ResponseError as exc:
         logger.error("Failed to create %s: %s", derived, exc)
