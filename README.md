@@ -109,22 +109,6 @@ lessons learned in this project.
 
 Utility scripts in `scripts/` for importing existing knowledge into MindOJO.
 
-### `generate_import_report.py`
-
-Parses `LESSONS_LEARNED.md` files and agent `MEMORY.md` files into the Claudius review-report schema, enabling selective import via the triage-findings UI.
-
-**Sources:**
-- `LESSONS_LEARNED.md` — parsed by `### Title (LL-NNN)` headings with structured fields
-- `~/.claude/agent-memory/*/MEMORY.md` — parsed by `## Heading` sections
-
-```bash
-python3 scripts/generate_import_report.py -o report.json
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--output`, `-o` | `report.json` | Output file path |
-
 ### `import_triaged.py`
 
 Reads a triage-annotated report (produced by `triage-findings`), filters for findings with action `fix`, and stores them in mem0. Determines memory scope from each finding's recommendation field (`project:<name>` → project-scoped, otherwise global).
@@ -141,19 +125,6 @@ python3 scripts/import_triaged.py --dry-run report.json
 |------|-------------|
 | `report` | Path to triaged `report.json` (required) |
 | `--dry-run` | Show what would be imported without storing |
-
-### Import Workflow
-
-```bash
-# 1. Generate report from memory sources
-python3 scripts/generate_import_report.py -o report.json
-
-# 2. Triage in browser (uses claudius triage-findings)
-# /triage-findings report.json
-
-# 3. Import approved items
-python3 scripts/import_triaged.py report.json
-```
 
 ## Configuration
 

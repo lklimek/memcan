@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     neo4j_enabled: bool = False
     neo4j_url: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
-    neo4j_password: str = "changeme"
+    neo4j_password: str = ""
 
     # Defaults
     default_user_id: str = "global"
