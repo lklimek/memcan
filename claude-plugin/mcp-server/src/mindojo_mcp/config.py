@@ -54,7 +54,7 @@ class Settings(BaseSettings):
 
     # Qdrant
     qdrant_url: str = "http://localhost:6333"
-    qdrant_collection: str = "mindojo"
+    qdrant_collection: str = "mindojo-memories"
     qdrant_embed_dims: int = 2560
 
     # Neo4j (optional)
