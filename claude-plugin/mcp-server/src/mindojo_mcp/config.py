@@ -74,7 +74,10 @@ class Settings(BaseSettings):
 
     def to_mem0_config(self) -> dict:
         """Build mem0 Memory config dict from settings."""
+        from .prompts import FACT_EXTRACTION_PROMPT
+
         config: dict = {
+            "custom_fact_extraction_prompt": FACT_EXTRACTION_PROMPT,
             "llm": {
                 "provider": "ollama",
                 "config": {
