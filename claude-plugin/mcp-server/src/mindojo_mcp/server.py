@@ -14,7 +14,8 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mem0 import AsyncMemory
 
-from .config import ensure_models, settings
+from .config import CODE_COLLECTION, STANDARDS_COLLECTION, ensure_models, settings
+from .qdrant_utils import asearch_collection
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +238,84 @@ async def update_memory(memory_id: str, memory: str) -> str:
     mem = await _get_memory()
     result = await mem.update(memory_id, memory)
     return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def search_standards(
+    query: str,
+    standard_type: str | None = None,
+    standard_id: str | None = None,
+    ref_id: str | None = None,
+    tech_stack: str | None = None,
+    lang: str | None = None,
+    limit: int = 10,
+) -> str:
+    """Search indexed standards (CWE, OWASP, etc.) by semantic similarity.
+
+    Args:
+        query: Natural language search query.
+        standard_type: Filter by standard type (e.g. "cwe", "owasp").
+        standard_id: Filter by standard ID (e.g. "CWE-79").
+        ref_id: Filter by referenced ID — matched against ref_ids list.
+        tech_stack: Filter by technology stack (e.g. "python", "rust").
+        lang: Filter by language code (e.g. "en").
+        limit: Max results (1-100, default 10).
+
+    Returns:
+        JSON array of matching standards with scores.
+    """
+    limit = max(1, min(limit, 100))
+    filters: dict[str, Any] = {
+        "standard_type": standard_type,
+        "standard_id": standard_id,
+        "ref_ids": [ref_id] if ref_id else None,
+        "tech_stack": tech_stack,
+        "lang": lang,
+    }
+    logger.info("search_standards: query=%r limit=%d", query, limit)
+    results = await asearch_collection(
+        collection=STANDARDS_COLLECTION,
+        query=query,
+        filters=filters,
+        limit=limit,
+    )
+    return json.dumps(results, default=str)
+
+
+@mcp.tool()
+async def search_code(
+    query: str,
+    project: str | None = None,
+    tech_stack: str | None = None,
+    file_path: str | None = None,
+    limit: int = 10,
+) -> str:
+    """Search indexed code snippets by semantic similarity.
+
+    Args:
+        query: Natural language search query.
+        project: Filter by project name.
+        tech_stack: Filter by technology stack (e.g. "python", "rust").
+        file_path: Filter by source file path.
+        limit: Max results (1-100, default 10).
+
+    Returns:
+        JSON array of matching code snippets with scores.
+    """
+    limit = max(1, min(limit, 100))
+    filters: dict[str, Any] = {
+        "project": project,
+        "tech_stack": tech_stack,
+        "file_path": file_path,
+    }
+    logger.info("search_code: query=%r limit=%d", query, limit)
+    results = await asearch_collection(
+        collection=CODE_COLLECTION,
+        query=query,
+        filters=filters,
+        limit=limit,
+    )
+    return json.dumps(results, default=str)
 
 
 def _setup_logging() -> None:
