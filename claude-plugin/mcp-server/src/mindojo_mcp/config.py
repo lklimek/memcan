@@ -50,12 +50,12 @@ class Settings(BaseSettings):
     ollama_url: str = "http://localhost:11434"
     ollama_api_key: str = ""
     ollama_llm_model: str = "gemma3n:e4b"
-    ollama_embed_model: str = "qwen3-embedding:8b"
+    ollama_embed_model: str = "qwen3-embedding:4b"
 
     # Qdrant
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "mindojo"
-    qdrant_embed_dims: int = 4096
+    qdrant_embed_dims: int = 2560
 
     # Neo4j (optional)
     neo4j_enabled: bool = False
@@ -65,6 +65,7 @@ class Settings(BaseSettings):
 
     # Defaults
     default_user_id: str = "global"
+    tech_stack: str = ""  # e.g. "rust", "python", "react"; empty = none/mixed
 
     # Logging
     log_file: str = ""

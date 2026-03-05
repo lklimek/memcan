@@ -55,6 +55,28 @@ class TestToMem0Config:
         assert cfg["graph_store"]["config"]["password"] == "secret"
 
 
+class TestDefaults:
+    """Verify default values for Settings fields."""
+
+    def test_default_embed_model(self):
+        from mindojo_mcp.config import Settings
+
+        s = Settings(ollama_api_key="test", _env_file=None)
+        assert s.ollama_embed_model == "qwen3-embedding:4b"
+
+    def test_default_embed_dims(self):
+        from mindojo_mcp.config import Settings
+
+        s = Settings(ollama_api_key="test", _env_file=None)
+        assert s.qdrant_embed_dims == 2560
+
+    def test_tech_stack_defaults_to_empty(self):
+        from mindojo_mcp.config import Settings
+
+        s = Settings(ollama_api_key="test", _env_file=None)
+        assert s.tech_stack == ""
+
+
 class TestOllamaApiKeyExport:
     """Verify OLLAMA_API_KEY propagation to os.environ."""
 
