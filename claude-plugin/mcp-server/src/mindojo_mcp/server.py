@@ -14,7 +14,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mem0 import AsyncMemory
 
-from .config import settings
+from .config import ensure_nothink_model, settings
 
 logger = logging.getLogger(__name__)
 
@@ -25,52 +25,13 @@ mcp = FastMCP(
 
 _memory: AsyncMemory | None = None
 
-_NOTHINK_SUFFIX = "-mindojo-nothink"
-
-
-async def _ensure_nothink_model() -> str:
-    """Auto-create the -mindojo-nothink Ollama model variant if needed.
-
-    Derives ``<base>-mindojo-nothink`` from the configured LLM model with a
-    ``/no_think`` system prompt.  This disables qwen3's chain-of-thought mode
-    which causes non-deterministic JSON parsing failures in mem0.
-
-    Returns the model name to use (with suffix appended).
-    """
-    from ollama import AsyncClient, ResponseError
-
-    base_model = settings.ollama_llm_model
-    derived = base_model + _NOTHINK_SUFFIX
-    client = AsyncClient(host=settings.ollama_url)
-
-    try:
-        await client.show(derived)
-        logger.debug("Model %s already exists", derived)
-        return derived
-    except ResponseError:
-        pass  # model doesn't exist yet — create it
-
-    logger.info("Creating %s from %s with /no_think system prompt", derived, base_model)
-    try:
-        await client.create(model=derived, from_=base_model, system="/no_think")
-        logger.info("Model %s created successfully", derived)
-    except ResponseError as exc:
-        logger.error(
-            "Failed to create %s: %s — falling back to %s", derived, exc, base_model
-        )
-        return base_model
-
-    return derived
-
 
 async def _get_memory() -> AsyncMemory:
     """Lazy-init mem0 AsyncMemory instance."""
     global _memory  # noqa: PLW0603
     if _memory is None:
-        llm_model = await _ensure_nothink_model()
-        config = settings.to_mem0_config()
-        config["llm"]["config"]["model"] = llm_model
-        _memory = await AsyncMemory.from_config(config)
+        await ensure_nothink_model()
+        _memory = await AsyncMemory.from_config(settings.to_mem0_config())
     return _memory
 
 

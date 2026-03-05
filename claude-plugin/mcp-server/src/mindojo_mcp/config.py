@@ -6,6 +6,7 @@ Environment variables always override .env values.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -13,6 +14,8 @@ from platformdirs import user_config_dir
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _CONFIG_DIR = Path(user_config_dir("mindojo"))
+
+NOTHINK_SUFFIX = "-mindojo-nothink"
 
 
 def _find_env_file(candidates: list[Path] | None = None) -> Path | None:
@@ -68,13 +71,24 @@ class Settings(BaseSettings):
     # Logging
     log_file: str = ""
 
+    @property
+    def nothink_llm_model(self) -> str:
+        """LLM model name with ``-mindojo-nothink`` suffix.
+
+        If the user already set the suffix, return as-is.
+        """
+        base = self.ollama_llm_model
+        if base.endswith(NOTHINK_SUFFIX):
+            return base
+        return base + NOTHINK_SUFFIX
+
     def to_mem0_config(self) -> dict:
         """Build mem0 Memory config dict from settings."""
         config: dict = {
             "llm": {
                 "provider": "ollama",
                 "config": {
-                    "model": self.ollama_llm_model,
+                    "model": self.nothink_llm_model,
                     "ollama_base_url": self.ollama_url,
                 },
             },
@@ -109,6 +123,53 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+logger = logging.getLogger(__name__)
+
+
+async def ensure_nothink_model(
+    ollama_url: str | None = None,
+    base_model: str | None = None,
+) -> str:
+    """Ensure the ``-mindojo-nothink`` Ollama model variant exists.
+
+    Creates it from the base model with ``/no_think`` system prompt if missing.
+    Disables qwen3's chain-of-thought mode which causes non-deterministic JSON
+    parsing failures in mem0.
+
+    Args:
+        ollama_url: Ollama API endpoint. Defaults to ``settings.ollama_url``.
+        base_model: Base model name. Defaults to ``settings.ollama_llm_model``.
+
+    Returns:
+        The derived model name (e.g. ``qwen3.5:9b-mindojo-nothink``).
+    """
+    from ollama import AsyncClient, ResponseError
+
+    url = ollama_url or settings.ollama_url
+    base = base_model or settings.ollama_llm_model
+    derived = base + NOTHINK_SUFFIX if not base.endswith(NOTHINK_SUFFIX) else base
+    client = AsyncClient(host=url)
+
+    try:
+        await client.show(derived)
+        logger.debug("Model %s already exists", derived)
+        return derived
+    except ResponseError:
+        pass  # model doesn't exist yet — create it
+
+    # Strip suffix to get real base for creation
+    real_base = derived.removesuffix(NOTHINK_SUFFIX)
+    logger.info("Creating %s from %s with /no_think system prompt", derived, real_base)
+    try:
+        await client.create(model=derived, from_=real_base, system="/no_think")
+        logger.info("Model %s created successfully", derived)
+    except ResponseError as exc:
+        logger.error("Failed to create %s: %s", derived, exc)
+        raise
+
+    return derived
+
 
 # Export OLLAMA_API_KEY to process env so the ollama Python client picks it up.
 # The client reads os.getenv("OLLAMA_API_KEY") directly — Pydantic settings alone
