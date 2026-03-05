@@ -688,6 +688,7 @@ dependencies = [
     { name = "ollama" },
     { name = "platformdirs" },
     { name = "pydantic-settings" },
+    { name = "qdrant-client" },
 ]
 
 [package.dev-dependencies]
@@ -707,6 +708,7 @@ requires-dist = [
     { name = "ollama", specifier = ">=0.4" },
     { name = "platformdirs", specifier = ">=4.9.2" },
     { name = "pydantic-settings", specifier = ">=2.0" },
+    { name = "qdrant-client", specifier = ">=1.7" },
 ]
 
 [package.metadata.requires-dev]

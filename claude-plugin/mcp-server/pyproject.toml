@@ -9,6 +9,7 @@ dependencies = [
     "ollama>=0.4",
     "pydantic-settings>=2.0",
     "platformdirs>=4.9.2",
+    "qdrant-client>=1.7",
 ]
 
 [project.scripts]
