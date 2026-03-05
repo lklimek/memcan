@@ -71,7 +71,7 @@ async def add_memory(
     logger.info("add_memory: queued for user_id=%s, len=%d", uid, len(memory))
 
     async def _do_add() -> None:
-        max_attempts = 3
+        max_attempts = 1  # bump to 3 if nothink model proves insufficient
         for attempt in range(1, max_attempts + 1):
             try:
                 result = await mem.add(memory, user_id=uid, metadata=meta)
