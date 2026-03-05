@@ -6,6 +6,7 @@ Environment variables always override .env values.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -48,7 +49,7 @@ class Settings(BaseSettings):
     # Ollama
     ollama_url: str = "http://localhost:11434"
     ollama_api_key: str = ""
-    ollama_llm_model: str = "qwen3.5:9b"
+    ollama_llm_model: str = "gemma3n:e4b"
     ollama_embed_model: str = "qwen3-embedding:8b"
 
     # Qdrant
@@ -111,12 +112,33 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
-async def ensure_nothink_model(
+logger = logging.getLogger(__name__)
+
+
+async def ensure_models(
     ollama_url: str | None = None,
-    base_model: str | None = None,
-) -> str:
-    """Return the configured LLM model name. No-op placeholder."""
-    return base_model or settings.ollama_llm_model
+) -> None:
+    """Pull configured Ollama models if not already present.
+
+    Checks both LLM and embedding models. Skips models that already exist.
+    Called once during lazy init of the AsyncMemory instance.
+    """
+    from ollama import AsyncClient, ResponseError
+
+    url = ollama_url or settings.ollama_url
+    client = AsyncClient(host=url)
+    for model in (settings.ollama_llm_model, settings.ollama_embed_model):
+        try:
+            await client.show(model)
+            logger.debug("Model %s already available", model)
+        except ResponseError:
+            logger.info("Pulling model %s …", model)
+            try:
+                await client.pull(model)
+                logger.info("Model %s pulled successfully", model)
+            except ResponseError as exc:
+                logger.error("Failed to pull %s: %s", model, exc)
+                raise
 
 
 # Export OLLAMA_API_KEY to process env so the ollama Python client picks it up.

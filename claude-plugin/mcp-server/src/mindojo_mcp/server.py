@@ -14,7 +14,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mem0 import AsyncMemory
 
-from .config import settings
+from .config import ensure_models, settings
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,7 @@ async def _get_memory() -> AsyncMemory:
     """Lazy-init mem0 AsyncMemory instance."""
     global _memory  # noqa: PLW0603
     if _memory is None:
+        await ensure_models()
         _memory = await AsyncMemory.from_config(settings.to_mem0_config())
     return _memory
 
