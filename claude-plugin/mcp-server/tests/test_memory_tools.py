@@ -578,6 +578,18 @@ class TestDeleteMemory:
     """Test delete_memory MCP tool."""
 
     @pytest.mark.asyncio
+    async def test_delete_nonexistent_succeeds_idempotent(self):
+        """delete_memory with non-existent ID still returns deleted (idempotent)."""
+        from mindojo_mcp.server import delete_memory
+
+        mock_qd = MagicMock()
+
+        with patch("mindojo_mcp.server.get_qdrant", return_value=mock_qd):
+            result_json = await delete_memory(memory_id="nonexistent")
+            result = json.loads(result_json)
+            assert result["status"] == "deleted"
+
+    @pytest.mark.asyncio
     async def test_delete_returns_status_and_id(self):
         """delete_memory returns {"status": "deleted", "memory_id": "..."}."""
         from mindojo_mcp.server import delete_memory
@@ -601,6 +613,22 @@ class TestDeleteMemory:
 
 class TestUpdateMemory:
     """Test update_memory MCP tool."""
+
+    @pytest.mark.asyncio
+    async def test_update_nonexistent_returns_error(self):
+        """update_memory with non-existent ID returns error."""
+        from mindojo_mcp.server import update_memory
+
+        mock_qd = MagicMock()
+        mock_qd.retrieve.return_value = []
+
+        with patch("mindojo_mcp.server.get_qdrant", return_value=mock_qd):
+            result_json = await update_memory(
+                memory_id="nonexistent", memory="new content"
+            )
+            result = json.loads(result_json)
+            assert "error" in result
+            mock_qd.upsert.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_update_preserves_created_at_sets_updated_at(self):
@@ -636,3 +664,79 @@ class TestUpdateMemory:
             assert payload["created_at"] == original_created
             assert payload["updated_at"] is not None
             datetime.fromisoformat(payload["updated_at"])
+
+
+# ===========================================================================
+# TestDedupMemoryIdValidation
+# ===========================================================================
+
+
+class TestDedupMemoryIdValidation:
+    """Test that hallucinated memory_ids from LLM are rejected."""
+
+    @pytest.mark.asyncio
+    async def test_update_with_invalid_memory_id_skipped(self):
+        """UPDATE event with memory_id not in search results is skipped."""
+        from mindojo_mcp.server import _dedup_and_store
+
+        mock_response = MagicMock()
+        mock_response.message.content = json.dumps(
+            {
+                "events": [
+                    {
+                        "type": "UPDATE",
+                        "data": "Updated",
+                        "memory_id": "hallucinated-id",
+                    }
+                ]
+            }
+        )
+
+        mock_qd = MagicMock()
+        mock_search_result = MagicMock()
+        mock_search_result.points = []  # No matching points
+        mock_qd.query_points.return_value = mock_search_result
+
+        with (
+            patch("mindojo_mcp.server._get_ollama_async") as mock_get_client,
+            patch("mindojo_mcp.server.get_qdrant", return_value=mock_qd),
+            patch("mindojo_mcp.server.aembed", new_callable=AsyncMock) as mock_aembed,
+        ):
+            mock_client = AsyncMock()
+            mock_client.chat.return_value = mock_response
+            mock_get_client.return_value = mock_client
+            mock_aembed.return_value = [[0.1] * 10]
+
+            await _dedup_and_store(facts=["test"], user_id="test-user", metadata={})
+
+            mock_qd.upsert.assert_not_called()
+            mock_qd.delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_with_invalid_memory_id_skipped(self):
+        """DELETE event with memory_id not in search results is skipped."""
+        from mindojo_mcp.server import _dedup_and_store
+
+        mock_response = MagicMock()
+        mock_response.message.content = json.dumps(
+            {"events": [{"type": "DELETE", "memory_id": "hallucinated-id"}]}
+        )
+
+        mock_qd = MagicMock()
+        mock_search_result = MagicMock()
+        mock_search_result.points = []
+        mock_qd.query_points.return_value = mock_search_result
+
+        with (
+            patch("mindojo_mcp.server._get_ollama_async") as mock_get_client,
+            patch("mindojo_mcp.server.get_qdrant", return_value=mock_qd),
+            patch("mindojo_mcp.server.aembed", new_callable=AsyncMock) as mock_aembed,
+        ):
+            mock_client = AsyncMock()
+            mock_client.chat.return_value = mock_response
+            mock_get_client.return_value = mock_client
+            mock_aembed.return_value = [[0.1] * 10]
+
+            await _dedup_and_store(facts=["test"], user_id="test-user", metadata={})
+
+            mock_qd.delete.assert_not_called()

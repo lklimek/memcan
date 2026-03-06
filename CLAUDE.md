@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-**MindOJO** — Claude Code plugin for persistent memory via mem0. Stores and recalls learnings, decisions, preferences across sessions. MIT license.
+**MindOJO** — Claude Code plugin for persistent memory via Qdrant + Ollama. Stores and recalls learnings, decisions, preferences across sessions. MIT license.
 
-Stack: Python MCP server (FastMCP + mem0), Qdrant (vectors), Ollama (LLM + embeddings), optional Neo4j (graph).
+Stack: Python MCP server (FastMCP), Qdrant (vectors), Ollama (LLM + embeddings).
 
 ## Structure
 
@@ -13,7 +13,7 @@ claude-plugin/           # Claude Code plugin
   .claude-plugin/        # Manifest
   mcp-server/            # MCP server (Python, uv-managed)
   skills/                # Plugin skills
-docker-compose.yml       # Qdrant (+ optional Neo4j)
+docker-compose.yml       # Qdrant
 scripts/                 # Import/migration utilities (see README.md § Scripts)
 ```
 

@@ -23,7 +23,7 @@ QDRANT_COLLECTION = "mindojo-memories"
 STANDARDS_COLLECTION = "mindojo-standards"
 CODE_COLLECTION = "mindojo-code"
 
-# Model for metadata extraction in indexing scripts (not mem0's LLM)
+# Model for metadata extraction in indexing scripts (not the main LLM)
 EXTRACTION_MODEL = "qwen3.5:4b"
 
 
@@ -64,60 +64,15 @@ class Settings(BaseSettings):
     # Qdrant
     qdrant_url: str = "http://localhost:6333"
 
-    # Neo4j (optional)
-    neo4j_enabled: bool = False
-    neo4j_url: str = "bolt://localhost:7687"
-    neo4j_user: str = "neo4j"
-    neo4j_password: str = ""
-
     # Defaults
     default_user_id: str = "global"
     tech_stack: str = ""  # e.g. "rust", "python", "react"; empty = none/mixed
 
+    # Memory distillation (LLM fact extraction + dedup)
+    distill_memories: bool = True
+
     # Logging
     log_file: str = ""
-
-    def to_mem0_config(self) -> dict:
-        """Build mem0 Memory config dict from settings."""
-        from .prompts import FACT_EXTRACTION_PROMPT
-
-        config: dict = {
-            "custom_fact_extraction_prompt": FACT_EXTRACTION_PROMPT,
-            "llm": {
-                "provider": "ollama",
-                "config": {
-                    "model": LLM_MODEL,
-                    "ollama_base_url": self.ollama_url,
-                },
-            },
-            "embedder": {
-                "provider": "ollama",
-                "config": {
-                    "model": EMBED_MODEL,
-                    "ollama_base_url": self.ollama_url,
-                },
-            },
-            "vector_store": {
-                "provider": "qdrant",
-                "config": {
-                    "collection_name": QDRANT_COLLECTION,
-                    "url": self.qdrant_url,
-                    "embedding_model_dims": EMBED_DIMS,
-                },
-            },
-        }
-
-        if self.neo4j_enabled:
-            config["graph_store"] = {
-                "provider": "neo4j",
-                "config": {
-                    "url": self.neo4j_url,
-                    "username": self.neo4j_user,
-                    "password": self.neo4j_password,
-                },
-            }
-
-        return config
 
 
 settings = Settings()
@@ -132,7 +87,7 @@ async def ensure_models(
     """Pull configured Ollama models if not already present.
 
     Checks both LLM and embedding models. Skips models that already exist.
-    Called once during lazy init of the AsyncMemory instance.
+    Called once during lazy init.
     """
     from ollama import AsyncClient, ResponseError
 

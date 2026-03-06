@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Import triaged memory candidates into mem0.
+"""Import triaged memory candidates into Qdrant.
 
 Reads a triage-annotated review-report.json (produced by triage-findings),
-filters for findings with action == "fix", and stores them in mem0.
+filters for findings with action == "fix", and stores them via embed + upsert.
 
 Usage:
     python3 import_triaged.py report.json [--dry-run]
@@ -11,11 +11,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
-
-from mem0 import Memory
+from uuid import uuid4
 
 # Import config from sibling MCP server package
 sys.path.insert(
@@ -24,7 +25,10 @@ sys.path.insert(
         Path(__file__).resolve().parent.parent / "claude-plugin" / "mcp-server" / "src"
     ),
 )
-from mindojo_mcp.config import settings  # noqa: E402
+from mindojo_mcp.config import QDRANT_COLLECTION  # noqa: E402
+from mindojo_mcp.qdrant_utils import embed, ensure_collection, get_qdrant  # noqa: E402
+
+from qdrant_client.models import PointStruct  # noqa: E402
 
 
 def load_report(path: Path) -> dict:
@@ -54,12 +58,15 @@ def build_findings_map(report: dict) -> dict[str, dict]:
 
 
 def import_memories(report: dict, *, dry_run: bool = False) -> tuple[int, int]:
-    """Import fix-marked findings into mem0.
+    """Import fix-marked findings into Qdrant.
 
     Returns:
         (imported_count, skipped_count)
     """
-    mem = None if dry_run else Memory.from_config(settings.to_mem0_config())
+    if not dry_run:
+        ensure_collection(QDRANT_COLLECTION)
+
+    qd = None if dry_run else get_qdrant()
 
     findings_map = build_findings_map(report)
     triage_decisions = report["triage"].get("decisions", [])
@@ -99,7 +106,20 @@ def import_memories(report: dict, *, dry_run: bool = False) -> tuple[int, int]:
             print(f"    Title: {finding['title']}")
             print(f"    Content length: {len(content)} chars")
         else:
-            mem.add(content, user_id=user_id, metadata=metadata)  # type: ignore[union-attr]
+            vectors = embed([content])
+            point_id = str(uuid4())
+            payload = {
+                "data": content,
+                "hash": hashlib.md5(content.encode()).hexdigest(),
+                "user_id": user_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": None,
+                **metadata,
+            }
+            qd.upsert(  # type: ignore[union-attr]
+                collection_name=QDRANT_COLLECTION,
+                points=[PointStruct(id=point_id, vector=vectors[0], payload=payload)],
+            )
             print(f"  Imported {finding_id} → {user_id}: {finding['title']}")
 
         imported += 1
@@ -108,7 +128,7 @@ def import_memories(report: dict, *, dry_run: bool = False) -> tuple[int, int]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Import triaged memories into mem0")
+    parser = argparse.ArgumentParser(description="Import triaged memories into Qdrant")
     parser.add_argument("report", help="Path to triaged report.json")
     parser.add_argument(
         "--dry-run",

@@ -1,12 +1,6 @@
-"""Custom prompts for mem0 integration.
-
-Replaces mem0's default USER_MEMORY_EXTRACTION_PROMPT which is designed for
-personal assistant use cases ("Personal Information Organizer").  That prompt
-causes some models (e.g. qwen3.5:9b) to discard technical facts because they
-don't look like "personal preferences".
+"""Prompt templates for LLM-based memory operations.
 
 Prompts are stored as .md files and loaded at import time.
-Injected via mem0's custom_fact_extraction_prompt config key.
 """
 
 from datetime import datetime
@@ -26,3 +20,5 @@ FACT_EXTRACTION_PROMPT = _load(
     "fact-extraction.md",
     today=datetime.now().strftime("%Y-%m-%d"),
 )
+
+MEMORY_UPDATE_PROMPT = _load("memory-update.md")

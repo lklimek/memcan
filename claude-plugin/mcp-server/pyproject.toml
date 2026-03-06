@@ -1,10 +1,9 @@
 [project]
 name = "mindojo-mcp"
 version = "0.1.0"
-description = "MCP server for persistent memory via mem0"
+description = "MCP server for persistent memory via Qdrant and Ollama"
 requires-python = ">=3.11"
 dependencies = [
-    "mem0ai>=0.1.30,<2.0",
     "mcp[cli]>=1.0",
     "ollama>=0.4",
     "pydantic-settings>=2.0",

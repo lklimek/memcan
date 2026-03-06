@@ -30,38 +30,8 @@ services:
       - traefik
       - mindojo
 
-  neo4j:
-    image: neo4j:5-community
-    restart: unless-stopped
-    profiles:
-      - graph
-    ports:
-      - "7474:7474"
-      - "7687:7687"
-    environment:
-      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:?Set NEO4J_PASSWORD in .env}
-    volumes:
-      - neo4j-data:/data
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.neo4j.rule=Host(`${NEO4J_DOMAIN}`)
-      - traefik.http.routers.neo4j.entrypoints=websecure
-      - traefik.http.routers.neo4j.tls.certresolver=letsencrypt
-      - traefik.http.routers.neo4j.middlewares=neo4j-auth
-      - traefik.http.middlewares.neo4j-auth.basicauth.users=${TRAEFIK_AUTH}
-      - traefik.http.services.neo4j.loadbalancer.server.port=7474
-    networks:
-      - traefik
-      - mindojo
-
 volumes:
   qdrant-data:
-  neo4j-data:
 
 networks:
   traefik:

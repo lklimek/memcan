@@ -1,4 +1,4 @@
-"""Direct Qdrant + Ollama embedding utilities (no mem0 dependency).
+"""Qdrant + Ollama embedding utilities.
 
 Used by search MCP tools and indexing scripts.
 """

@@ -1,4 +1,4 @@
-"""Unit tests for Settings (direct Qdrant, no mem0)."""
+"""Unit tests for Settings."""
 
 from __future__ import annotations
 

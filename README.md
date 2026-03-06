@@ -1,6 +1,6 @@
 # MindOJO — Persistent Memory for Claude Code
 
-MCP server providing persistent memory via [mem0](https://github.com/mem0ai/mem0). Store and recall learnings, decisions, and preferences across Claude Code sessions.
+MCP server providing persistent memory via direct Qdrant + Ollama integration. Store and recall learnings, decisions, and preferences across Claude Code sessions.
 
 ## Quick Start
 
@@ -54,10 +54,9 @@ Restart Claude Code after setup to connect the MCP server.
 
 ## Architecture
 
-- **mem0** — memory management (add, search, update, delete)
 - **Qdrant** — vector similarity search (port 6333)
 - **Ollama** — LLM (`qwen3.5:9b`) + embeddings (`qwen3-embedding:8b`)
-- **Neo4j** — optional graph store (`docker compose --profile graph up -d`)
+- **DISTILL_MEMORIES** — when enabled (default: `true`), the LLM extracts structured facts from raw text before storing
 
 ## MCP Tools
 
@@ -111,7 +110,7 @@ Utility scripts in `scripts/` for importing existing knowledge into MindOJO.
 
 ### `import_triaged.py`
 
-Reads a triage-annotated report (produced by `triage-findings`), filters for findings with action `fix`, and stores them in mem0. Determines memory scope from each finding's recommendation field (`project:<name>` → project-scoped, otherwise global).
+Reads a triage-annotated report (produced by `triage-findings`), filters for findings with action `fix`, and stores them as memories. Determines memory scope from each finding's recommendation field (`project:<name>` → project-scoped, otherwise global).
 
 ```bash
 # Import approved items
@@ -156,10 +155,7 @@ cp .env.example ~/.config/mindojo/.env
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint |
 | `QDRANT_COLLECTION` | `mindojo` | Collection name |
 | `QDRANT_EMBED_DIMS` | `4096` | Embedding dimensions |
-| `NEO4J_ENABLED` | `false` | Enable Neo4j graph store |
-| `NEO4J_URL` | `bolt://localhost:7687` | Neo4j bolt endpoint |
-| `NEO4J_USER` | `neo4j` | Neo4j username |
-| `NEO4J_PASSWORD` | — | Neo4j password (required if Neo4j enabled) |
+| `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction before storing |
 | `DEFAULT_USER_ID` | `global` | Default user ID for memory scoping |
 
 **Infrastructure (Docker / Traefik):**
@@ -167,7 +163,6 @@ cp .env.example ~/.config/mindojo/.env
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `QDRANT_DOMAIN` | — | Domain for Qdrant via Traefik reverse proxy |
-| `NEO4J_DOMAIN` | — | Domain for Neo4j via Traefik reverse proxy |
 | `TRAEFIK_AUTH` | — | htpasswd hash for Traefik basic auth |
 
 ## Ollama Authentication
@@ -242,10 +237,9 @@ This is a static shared secret — no signing, expiry, or cryptographic exchange
 ## Docker Services
 
 ```bash
-docker compose up -d              # Qdrant only
-docker compose --profile graph up -d  # Qdrant + Neo4j
+docker compose up -d              # Qdrant
 ```
 
-Both services include Traefik labels for reverse proxy with basic auth. Set `QDRANT_DOMAIN`, `NEO4J_DOMAIN`, and `TRAEFIK_AUTH` in `.env`.
+Qdrant includes Traefik labels for reverse proxy with basic auth. Set `QDRANT_DOMAIN` and `TRAEFIK_AUTH` in `.env`.
 
 <sub>Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>

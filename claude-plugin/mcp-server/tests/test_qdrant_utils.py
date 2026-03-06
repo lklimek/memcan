@@ -10,6 +10,12 @@ import pytest
 class TestGetQdrant:
     """get_qdrant() returns a lazy singleton QdrantClient."""
 
+    def setup_method(self):
+        # Reset singleton before each test so patching works
+        import mindojo_mcp.qdrant_utils as qu
+
+        qu._qdrant = None
+
     def teardown_method(self):
         # Reset singleton between tests
         import mindojo_mcp.qdrant_utils as qu
