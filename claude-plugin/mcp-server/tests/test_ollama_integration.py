@@ -66,61 +66,100 @@ def test_embedding_dimension_matches_config(_settings, _ollama_client):
     assert len(embeddings[0]) == EMBED_DIMS
 
 
-def test_memory_from_config_initializes(_settings):
-    """Memory.from_config() succeeds with live settings."""
-    from mem0 import Memory
+def test_qdrant_connection_and_collection(_settings):
+    """get_qdrant() connects and the memories collection exists."""
+    from mindojo_mcp.config import QDRANT_COLLECTION
+    from mindojo_mcp.qdrant_utils import ensure_collection, get_qdrant
 
-    mem = Memory.from_config(_settings.to_mem0_config())
-    assert mem is not None
+    qd = get_qdrant()
+    ensure_collection(QDRANT_COLLECTION)
+    collections = [c.name for c in qd.get_collections().collections]
+    assert QDRANT_COLLECTION in collections
 
 
 def test_memory_add_and_search_roundtrip(_settings):
-    """Add a memory, search for it, verify match, clean up."""
-    from mem0 import Memory
+    """Add a point via embed+upsert, search for it, verify match, clean up."""
+    from qdrant_client.models import (
+        FieldCondition,
+        Filter,
+        MatchValue,
+        PointStruct,
+    )
 
-    mem = Memory.from_config(_settings.to_mem0_config())
+    from mindojo_mcp.config import QDRANT_COLLECTION
+    from mindojo_mcp.qdrant_utils import embed, ensure_collection, get_qdrant
+
+    ensure_collection(QDRANT_COLLECTION)
+    qd = get_qdrant()
+
     tag = uuid.uuid4().hex[:8]
     test_uid = f"test-roundtrip-{tag}"
+    point_id = str(uuid.uuid4())
     content = f"Bilby integration test marker {tag}: always check the beer fridge"
 
-    def _extract_entries(result):
-        """Unwrap mem0 result into a flat list of entries."""
-        if isinstance(result, dict):
-            return result.get("results", result.get("memories", []))
-        return result
-
     try:
-        add_result = mem.add(content, user_id=test_uid)
-        assert add_result is not None
-
-        # Verify memory was stored (get_all is deterministic, unlike search
-        # which depends on LLM-distilled content matching the query).
-        all_mems = mem.get_all(user_id=test_uid)
-        entries_list = _extract_entries(all_mems)
-
-        # mem0 distills content via LLM, so the tag may be stripped.
-        # Verify we got at least one result scoped to our test user.
-        assert len(entries_list) > 0, (
-            f"Expected memories for user {test_uid}, got: {all_mems}"
+        vectors = embed([content])
+        payload = {
+            "data": content,
+            "hash": __import__("hashlib").md5(content.encode()).hexdigest(),
+            "user_id": test_uid,
+            "created_at": __import__("datetime")
+            .datetime.now(__import__("datetime").timezone.utc)
+            .isoformat(),
+            "updated_at": None,
+        }
+        qd.upsert(
+            collection_name=QDRANT_COLLECTION,
+            points=[PointStruct(id=point_id, vector=vectors[0], payload=payload)],
         )
-        assert entries_list[0]["user_id"] == test_uid
+
+        # Search for the point
+        results = qd.query_points(
+            collection_name=QDRANT_COLLECTION,
+            query=vectors[0],
+            query_filter=Filter(
+                must=[FieldCondition(key="user_id", match=MatchValue(value=test_uid))]
+            ),
+            limit=5,
+            with_payload=True,
+        )
+
+        assert len(results.points) > 0
+        top = results.points[0]
+        assert top.payload["user_id"] == test_uid
+        assert top.payload["data"] == content
     finally:
-        all_mems = mem.get_all(user_id=test_uid)
-        for entry in _extract_entries(all_mems):
-            mem.delete(entry["id"])
+        qd.delete(
+            collection_name=QDRANT_COLLECTION,
+            points_selector=[point_id],
+        )
 
 
 @pytest.mark.benchmark
 def test_performance_10_writes_10_reads(_settings):
-    """Benchmark 10 writes and 10 reads, print timing report.
+    """Benchmark 10 writes and 10 reads using direct Qdrant+Ollama.
 
     Run with: pytest -v -s -m benchmark
     """
-    from mem0 import Memory
+    import hashlib
+    from datetime import datetime, timezone
 
-    mem = Memory.from_config(_settings.to_mem0_config())
+    from qdrant_client.models import (
+        FieldCondition,
+        Filter,
+        MatchValue,
+        PointStruct,
+    )
+
+    from mindojo_mcp.config import QDRANT_COLLECTION
+    from mindojo_mcp.qdrant_utils import embed, ensure_collection, get_qdrant
+
+    ensure_collection(QDRANT_COLLECTION)
+    qd = get_qdrant()
+
     tag = uuid.uuid4().hex[:8]
     test_uid = f"test-perf-{tag}"
+    point_ids: list[str] = []
 
     write_contents = [
         f"Performance test {tag} item {i}: {topic}"
@@ -153,24 +192,43 @@ def test_performance_10_writes_10_reads(_settings):
         "API versioning",
     ]
 
-    def _extract_entries(result):
-        if isinstance(result, dict):
-            return result.get("results", result.get("memories", []))
-        return result
-
     write_times: list[float] = []
     read_times: list[float] = []
 
     try:
-        for i, content in enumerate(write_contents):
+        for content in write_contents:
             start = time.perf_counter()
-            mem.add(content, user_id=test_uid)
+            vectors = embed([content])
+            pid = str(uuid.uuid4())
+            point_ids.append(pid)
+            payload = {
+                "data": content,
+                "hash": hashlib.md5(content.encode()).hexdigest(),
+                "user_id": test_uid,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": None,
+            }
+            qd.upsert(
+                collection_name=QDRANT_COLLECTION,
+                points=[PointStruct(id=pid, vector=vectors[0], payload=payload)],
+            )
             elapsed = time.perf_counter() - start
             write_times.append(elapsed)
 
-        for i, query in enumerate(search_queries):
+        for query in search_queries:
             start = time.perf_counter()
-            mem.search(query, user_id=test_uid, limit=5)
+            vectors = embed([query])
+            qd.query_points(
+                collection_name=QDRANT_COLLECTION,
+                query=vectors[0],
+                query_filter=Filter(
+                    must=[
+                        FieldCondition(key="user_id", match=MatchValue(value=test_uid))
+                    ]
+                ),
+                limit=5,
+                with_payload=True,
+            )
             elapsed = time.perf_counter() - start
             read_times.append(elapsed)
 
@@ -179,7 +237,7 @@ def test_performance_10_writes_10_reads(_settings):
         total = sum(write_times) + sum(read_times)
 
         print("\n" + "=" * 60)
-        print("PERFORMANCE REPORT")
+        print("PERFORMANCE REPORT (direct Qdrant)")
         print("=" * 60)
         print("\nWrites:")
         for i, t in enumerate(write_times):
@@ -193,9 +251,11 @@ def test_performance_10_writes_10_reads(_settings):
         print("=" * 60)
 
     finally:
-        all_mems = mem.get_all(user_id=test_uid)
-        for entry in _extract_entries(all_mems):
-            mem.delete(entry["id"])
+        if point_ids:
+            qd.delete(
+                collection_name=QDRANT_COLLECTION,
+                points_selector=point_ids,
+            )
 
 
 @pytest.mark.mcp_roundtrip
@@ -203,64 +263,44 @@ def test_performance_10_writes_10_reads(_settings):
 async def test_mcp_async_add_memory_roundtrip(_settings):
     """Verify async fire-and-forget add_memory persists end-to-end.
 
-    Exercises the real asyncio.create_task path used by the MCP server.
-    Depends on Ollama LLM distillation — mem0 makes ~2 LLM calls per add
-    (extract facts + dedup check). With cold models expect ~35s per call,
-    so total write time can reach ~70-80s. Timeout is set to 120s.
+    Calls the add_memory MCP tool directly, waits for background task,
+    verifies the point exists in Qdrant via count with user_id filter.
 
     Run with: pytest -v -s -m mcp_roundtrip
     """
-    from mem0 import AsyncMemory
     from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-    import mindojo_mcp.server as server_mod
+    from mindojo_mcp.config import QDRANT_COLLECTION
+    from mindojo_mcp.qdrant_utils import ensure_collection, get_qdrant
     from mindojo_mcp.server import add_memory
 
-    mem = await AsyncMemory.from_config(_settings.to_mem0_config())
+    ensure_collection(QDRANT_COLLECTION)
+    qd = get_qdrant()
+
     tag = uuid.uuid4().hex[:8]
     test_uid = f"test-mcp-roundtrip-{tag}"
     content = f"The preferred Python version for project {tag} is 3.14"
 
-    def _extract_entries(result):
-        if isinstance(result, dict):
-            return result.get("results", result.get("memories", []))
-        return result
+    qfilter = Filter(
+        must=[FieldCondition(key="user_id", match=MatchValue(value=test_uid))]
+    )
 
-    def _qdrant_count(uid: str) -> int:
-        vs = mem.vector_store
-        qfilter = Filter(
-            must=[FieldCondition(key="user_id", match=MatchValue(value=uid))]
-        )
-        count_result = vs.client.count(
-            collection_name=vs.collection_name,
-            count_filter=qfilter,
-            exact=True,
-        )
-        return count_result.count
-
-    original_memory = server_mod._memory
     try:
-        server_mod._memory = mem
+        count_before = qd.count(
+            collection_name=QDRANT_COLLECTION, count_filter=qfilter, exact=True
+        ).count
 
-        count_before = _qdrant_count(test_uid)
-
-        # Snapshot tasks before calling add_memory so we can isolate the new one.
         tasks_before = asyncio.all_tasks()
 
         result_json = await add_memory(memory=content, user_id=test_uid)
         assert '"queued"' in result_json
 
-        # Find the background task created by add_memory.
         bg_tasks = asyncio.all_tasks() - tasks_before - {asyncio.current_task()}
         assert len(bg_tasks) == 1, f"Expected 1 background task, got {len(bg_tasks)}"
 
         start = time.perf_counter()
-        # mem0 makes ~2 Ollama LLM calls per add (~35s each when cold).
         timeout = 120.0
 
-        # Wait for the background task to finish (the actual mem0 write).
-        # The server's _do_add catches exceptions internally, so we also
-        # check asyncio task state for unexpected errors.
         done, pending = await asyncio.wait(bg_tasks, timeout=timeout)
         if pending:
             pytest.fail(
@@ -270,31 +310,19 @@ async def test_mcp_async_add_memory_roundtrip(_settings):
             if t.exception():
                 pytest.fail(f"Background add_memory task failed: {t.exception()}")
 
-        # Poll until the memory is visible via get_all (should be immediate
-        # after bg task completes, but mem0 may have internal delays).
-        found = False
-        while time.perf_counter() - start < timeout:
-            all_mems = await mem.get_all(user_id=test_uid)
-            entries = _extract_entries(all_mems)
-            if len(entries) > 0:
-                found = True
-                break
-            await asyncio.sleep(1.0)
-
+        count_after = qd.count(
+            collection_name=QDRANT_COLLECTION, count_filter=qfilter, exact=True
+        ).count
         elapsed = time.perf_counter() - start
-        if not found:
-            pytest.fail(
-                f"Memory not found after {timeout:.0f}s — LLM may have returned "
-                f"empty distillation (mem0 decided content isn't worth storing)"
-            )
 
-        count_after = _qdrant_count(test_uid)
         assert count_after > count_before, (
             f"Expected count to increase: before={count_before}, after={count_after}"
         )
         print(f"\nMCP async roundtrip: memory persisted in {elapsed:.1f}s")
     finally:
-        server_mod._memory = original_memory
-        all_mems = await mem.get_all(user_id=test_uid)
-        for entry in _extract_entries(all_mems):
-            await mem.delete(entry["id"])
+        # Clean up test points
+        count = qd.count(
+            collection_name=QDRANT_COLLECTION, count_filter=qfilter, exact=True
+        ).count
+        if count > 0:
+            qd.delete(collection_name=QDRANT_COLLECTION, points_selector=qfilter)

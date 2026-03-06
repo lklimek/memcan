@@ -1,62 +1,24 @@
-"""Unit tests for Settings and to_mem0_config()."""
+"""Unit tests for Settings (direct Qdrant, no mem0)."""
 
 from __future__ import annotations
 
 import os
 
 
-class TestToMem0Config:
-    """Verify to_mem0_config() builds correct mem0 config dicts."""
+class TestDistillMemories:
+    """Verify distill_memories setting."""
 
-    def test_to_mem0_config_has_ollama_provider(self):
+    def test_distill_memories_defaults_to_true(self):
         from mindojo_mcp.config import Settings
 
-        s = Settings(ollama_api_key="test")
-        cfg = s.to_mem0_config()
-        assert cfg["llm"]["provider"] == "ollama"
-        assert cfg["embedder"]["provider"] == "ollama"
+        s = Settings(ollama_api_key="test", _env_file=None)
+        assert s.distill_memories is True
 
-    def test_to_mem0_config_uses_constants_and_settings(self):
-        from mindojo_mcp.config import (
-            EMBED_MODEL,
-            LLM_MODEL,
-            QDRANT_COLLECTION,
-            Settings,
-        )
-
-        s = Settings(
-            ollama_url="http://custom:11434",
-            ollama_api_key="test",
-        )
-        cfg = s.to_mem0_config()
-        assert cfg["llm"]["config"]["model"] == LLM_MODEL
-        assert cfg["llm"]["config"]["ollama_base_url"] == "http://custom:11434"
-        assert cfg["embedder"]["config"]["model"] == EMBED_MODEL
-        assert cfg["embedder"]["config"]["ollama_base_url"] == "http://custom:11434"
-        assert cfg["vector_store"]["config"]["collection_name"] == QDRANT_COLLECTION
-
-    def test_to_mem0_config_neo4j_disabled_by_default(self):
+    def test_distill_memories_can_be_disabled(self):
         from mindojo_mcp.config import Settings
 
-        s = Settings(ollama_api_key="test")
-        cfg = s.to_mem0_config()
-        assert "graph_store" not in cfg
-
-    def test_to_mem0_config_neo4j_enabled(self):
-        from mindojo_mcp.config import Settings
-
-        s = Settings(
-            neo4j_enabled=True,
-            neo4j_url="bolt://db:7687",
-            neo4j_user="admin",
-            neo4j_password="secret",
-            ollama_api_key="test",
-        )
-        cfg = s.to_mem0_config()
-        assert cfg["graph_store"]["provider"] == "neo4j"
-        assert cfg["graph_store"]["config"]["url"] == "bolt://db:7687"
-        assert cfg["graph_store"]["config"]["username"] == "admin"
-        assert cfg["graph_store"]["config"]["password"] == "secret"
+        s = Settings(ollama_api_key="test", distill_memories=False, _env_file=None)
+        assert s.distill_memories is False
 
 
 class TestConstants:
