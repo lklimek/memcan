@@ -523,6 +523,20 @@ async def list_collections() -> str:
     return json.dumps({"collections": collections}, default=str)
 
 
+def _empty_hint(filters: dict[str, Any]) -> dict:
+    """Build a diagnostic hint object for empty search results."""
+    active = {k: v for k, v in filters.items() if v is not None}
+    if active:
+        summary = ", ".join(f"{k}='{v}'" for k, v in active.items())
+        hint = (
+            f"No matches found. Applied filters: {summary}. "
+            "Use list_collections() to discover valid filter values."
+        )
+    else:
+        hint = "No semantic matches found. Try broadening your query."
+    return {"results": [], "hint": hint}
+
+
 @mcp.tool()
 async def search_standards(
     query: str,
@@ -540,13 +554,27 @@ async def search_standards(
         standard_type: Filter by category ("security", "coding", "cve", "guideline").
         standard_id: Filter by standard ID. Use list_collections() to discover
             available values.
-        ref_id: Filter by referenced ID — matched against ref_ids list.
+        ref_id: Filter by a cross-reference ID (e.g. "CWE-89", "V5.3.4").
+            Matches against the ref_ids list stored on each document.
         tech_stack: Filter by technology stack (e.g. "python", "rust").
         lang: Filter by language code (e.g. "en").
         limit: Max results (1-100, default 10).
 
     Returns:
-        JSON array of matching standards with scores.
+        JSON array of matching standards, each with:
+        - score (float): semantic similarity 0-1
+        - data (str): section content text
+        - standard_id (str): e.g. "owasp-asvs"
+        - standard_type (str): e.g. "security"
+        - section_id (str): e.g. "V2.1.1"
+        - section_title (str): section heading
+        - chapter (str): parent chapter
+        - ref_ids (list[str]): cross-reference IDs
+        - version (str): standard version
+        - tech_stack (str): technology if applicable
+        - lang (str): language code
+        - url (str): source URL
+        Returns empty object with hint when no results found.
     """
     limit = max(1, min(limit, 100))
 
@@ -570,7 +598,9 @@ async def search_standards(
         filters=filters,
         limit=limit,
     )
-    return json.dumps(results, default=str)
+    if results:
+        return json.dumps(results, default=str)
+    return json.dumps(_empty_hint(filters), default=str)
 
 
 @mcp.tool()
@@ -587,13 +617,27 @@ async def search_code(
         query: Natural language search query.
         project: Filter by project name.
         tech_stack: Filter by technology stack (e.g. "python", "rust").
-        file_path: Filter by source file path.
+        file_path: Filter by source file path (substring match).
         limit: Max results (1-100, default 10).
 
     Returns:
-        JSON array of matching code snippets with scores.
+        JSON array of matching code snippets, each with:
+        - score (float): semantic similarity 0-1
+        - data (str): code snippet content
+        - project (str): project/repo name
+        - tech_stack (str): technology stack
+        - file_path (str): source file path
+        - line_start (int): starting line number
+        - line_end (int): ending line number
+        Returns empty object with hint when no results found.
     """
     limit = max(1, min(limit, 100))
+
+    if tech_stack:
+        tech_stack = tech_stack.lower()
+    if project:
+        project = project.lower()
+
     filters: dict[str, Any] = {
         "project": project,
         "tech_stack": tech_stack,
@@ -605,8 +649,11 @@ async def search_code(
         query=query,
         filters=filters,
         limit=limit,
+        prefix_fields={"file_path"},
     )
-    return json.dumps(results, default=str)
+    if results:
+        return json.dumps(results, default=str)
+    return json.dumps(_empty_hint(filters), default=str)
 
 
 def _setup_logging() -> None:

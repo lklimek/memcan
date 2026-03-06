@@ -22,6 +22,17 @@ def _mock_asearch():
         yield mock
 
 
+@pytest.fixture()
+def _mock_asearch_empty():
+    """Patch asearch_collection to return empty results."""
+    with patch(
+        "mindojo_mcp.server.asearch_collection",
+        new_callable=AsyncMock,
+        return_value=[],
+    ) as mock:
+        yield mock
+
+
 class TestSearchStandards:
     """search_standards tool tests."""
 
@@ -101,6 +112,38 @@ class TestSearchStandards:
         await search_standards(query="xss", limit=999)
         assert _mock_asearch.call_args.kwargs["limit"] == 100
 
+    @pytest.mark.asyncio
+    async def test_empty_results_with_filters_returns_hint(self, _mock_asearch_empty):
+        from mindojo_mcp.server import search_standards
+
+        result = await search_standards(query="xss", standard_type="owasp-top-10")
+        parsed = json.loads(result)
+        assert parsed["results"] == []
+        assert "hint" in parsed
+        assert "standard_type='owasp-top-10'" in parsed["hint"]
+        assert "list_collections()" in parsed["hint"]
+
+    @pytest.mark.asyncio
+    async def test_empty_results_without_filters_returns_hint(
+        self, _mock_asearch_empty
+    ):
+        from mindojo_mcp.server import search_standards
+
+        result = await search_standards(query="xss")
+        parsed = json.loads(result)
+        assert parsed["results"] == []
+        assert "broadening" in parsed["hint"]
+
+    @pytest.mark.asyncio
+    async def test_nonempty_results_returns_array(self, _mock_asearch):
+        """When results are found, return a plain array (no wrapper)."""
+        from mindojo_mcp.server import search_standards
+
+        result = await search_standards(query="xss")
+        parsed = json.loads(result)
+        assert isinstance(parsed, list)
+        assert len(parsed) > 0
+
 
 class TestSearchCode:
     """search_code tool tests."""
@@ -149,6 +192,63 @@ class TestSearchCode:
 
         await search_code(query="test", limit=200)
         assert _mock_asearch.call_args.kwargs["limit"] == 100
+
+    @pytest.mark.asyncio
+    async def test_case_insensitive_filters(self, _mock_asearch):
+        """tech_stack and project are lowercased; file_path is NOT."""
+        from mindojo_mcp.server import search_code
+
+        await search_code(
+            query="test",
+            project="MyRepo",
+            tech_stack="Python",
+            file_path="Src/Main.py",
+        )
+        filters = _mock_asearch.call_args.kwargs["filters"]
+        assert filters["project"] == "myrepo"
+        assert filters["tech_stack"] == "python"
+        assert filters["file_path"] == "Src/Main.py"
+
+    @pytest.mark.asyncio
+    async def test_empty_results_with_filters_returns_hint(self, _mock_asearch_empty):
+        from mindojo_mcp.server import search_code
+
+        result = await search_code(query="test", project="myrepo")
+        parsed = json.loads(result)
+        assert parsed["results"] == []
+        assert "hint" in parsed
+        assert "project='myrepo'" in parsed["hint"]
+        assert "list_collections()" in parsed["hint"]
+
+    @pytest.mark.asyncio
+    async def test_empty_results_without_filters_returns_hint(
+        self, _mock_asearch_empty
+    ):
+        from mindojo_mcp.server import search_code
+
+        result = await search_code(query="test")
+        parsed = json.loads(result)
+        assert parsed["results"] == []
+        assert "broadening" in parsed["hint"]
+
+    @pytest.mark.asyncio
+    async def test_nonempty_results_returns_array(self, _mock_asearch):
+        """When results are found, return a plain array (no wrapper)."""
+        from mindojo_mcp.server import search_code
+
+        result = await search_code(query="test")
+        parsed = json.loads(result)
+        assert isinstance(parsed, list)
+
+    @pytest.mark.asyncio
+    async def test_file_path_uses_prefix_fields(self, _mock_asearch):
+        """file_path should be passed via prefix_fields kwarg."""
+        from mindojo_mcp.server import search_code
+
+        await search_code(query="test", file_path="src/main.rs")
+        call_kwargs = _mock_asearch.call_args.kwargs
+        assert "prefix_fields" in call_kwargs
+        assert "file_path" in call_kwargs["prefix_fields"]
 
 
 class TestListCollections:

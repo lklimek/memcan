@@ -16,6 +16,7 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     MatchAny,
+    MatchText,
     MatchValue,
     PointStruct,  # noqa: F401 — re-exported for consumers
     VectorParams,
@@ -112,6 +113,7 @@ async def asearch_collection(
     query: str,
     filters: dict[str, Any] | None = None,
     limit: int = 10,
+    prefix_fields: set[str] | None = None,
 ) -> list[dict]:
     """Semantic search with optional payload filters.
 
@@ -122,6 +124,8 @@ async def asearch_collection(
             Values can be str (MatchValue) or list[str] (MatchAny).
             None values are skipped.
         limit: Max results.
+        prefix_fields: Field names that should use MatchText (substring)
+            instead of MatchValue (exact).
 
     Returns:
         List of dicts with 'score' and all payload fields.
@@ -137,6 +141,10 @@ async def asearch_collection(
             if isinstance(value, list):
                 must_conditions.append(
                     FieldCondition(key=key, match=MatchAny(any=value))
+                )
+            elif prefix_fields and key in prefix_fields:
+                must_conditions.append(
+                    FieldCondition(key=key, match=MatchText(text=value))
                 )
             else:
                 must_conditions.append(

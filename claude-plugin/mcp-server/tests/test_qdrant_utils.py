@@ -268,3 +268,31 @@ class TestAsearchCollection:
 
         call_kwargs = mock_qd.query_points.call_args.kwargs
         assert call_kwargs["query_filter"] is None
+
+    @pytest.mark.asyncio
+    @patch("mindojo_mcp.qdrant_utils.get_qdrant")
+    @patch("mindojo_mcp.qdrant_utils.aembed")
+    async def test_prefix_fields_uses_match_text(self, mock_aembed, mock_get_qd):
+        from qdrant_client.models import MatchText, MatchValue
+
+        from mindojo_mcp.qdrant_utils import asearch_collection
+
+        mock_aembed.return_value = [[0.1, 0.2]]
+        mock_qd = MagicMock()
+        mock_get_qd.return_value = mock_qd
+        mock_qd.query_points.return_value.points = []
+
+        await asearch_collection(
+            "col",
+            "query",
+            filters={"file_path": "src/main.rs", "project": "myrepo"},
+            prefix_fields={"file_path"},
+        )
+
+        call_kwargs = mock_qd.query_points.call_args.kwargs
+        qf = call_kwargs["query_filter"]
+        assert len(qf.must) == 2
+        conditions_by_key = {c.key: c for c in qf.must}
+        assert isinstance(conditions_by_key["file_path"].match, MatchText)
+        assert conditions_by_key["file_path"].match.text == "src/main.rs"
+        assert isinstance(conditions_by_key["project"].match, MatchValue)
