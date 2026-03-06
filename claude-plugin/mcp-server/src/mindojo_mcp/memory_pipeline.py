@@ -187,19 +187,24 @@ async def do_add_memory(
     metadata: dict,
     *,
     extraction_prompt: str | None = None,
-) -> None:
-    """Orchestrate memory storage: optionally distill via LLM, then store."""
+) -> list[str] | None:
+    """Orchestrate memory storage: optionally distill via LLM, then store.
+
+    Returns the extracted facts list when distillation is on, or None when
+    distillation is off or on error fallback (raw store).
+    """
     await ensure_models_once()
 
     if not settings.distill_memories:
         await store_raw(content, user_id, metadata)
-        return
+        return None
 
     facts = await extract_facts(content, extraction_prompt=extraction_prompt)
     if facts is None:
         await store_raw(content, user_id, metadata)
-        return
+        return None
     if not facts:
-        return
+        return facts  # empty list []
 
     await dedup_and_store(facts, user_id, metadata)
+    return facts

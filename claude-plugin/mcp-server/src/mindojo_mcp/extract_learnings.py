@@ -12,6 +12,7 @@ import json
 import logging
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from .config import settings
@@ -21,6 +22,36 @@ from .prompts import FACT_EXTRACTION_HOOK_PROMPT
 logger = logging.getLogger(__name__)
 
 _MIN_MESSAGE_LENGTH = 70
+_HOOK_DATA_LOG_PATH = Path.home() / ".claude" / "logs" / "mindojo-hook-data.jsonl"
+
+
+def _log_hook_data(
+    *,
+    log_path: Path,
+    hook: str,
+    project: str | None,
+    user_id: str,
+    content: str,
+    facts: list[str] | None,
+    decision: str,
+) -> None:
+    """Append one JSONL entry to the hook data log. Never raises."""
+    try:
+        entry = {
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "hook": hook,
+            "project": project,
+            "user_id": user_id,
+            "content_length": len(content),
+            "content": content,
+            "facts": facts,
+            "decision": decision,
+            "prompt_file": "fact-extraction-hook.md",
+        }
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        logger.error("Failed to write hook data log", exc_info=True)
 
 
 def _repo_name_from_url(url: str) -> str | None:
@@ -127,6 +158,18 @@ async def _run(payload: dict) -> None:
             "SubagentStop hook: message too short (%d chars), skipping",
             len(message or ""),
         )
+        cwd = payload.get("cwd", "")
+        project = _resolve_project(cwd) if cwd else None
+        user_id = f"project:{project}" if project else settings.default_user_id
+        _log_hook_data(
+            log_path=_HOOK_DATA_LOG_PATH,
+            hook="SubagentStop",
+            project=project,
+            user_id=user_id,
+            content=message or "",
+            facts=None,
+            decision="skipped_short",
+        )
         return
 
     cwd = payload.get("cwd", "")
@@ -138,13 +181,30 @@ async def _run(payload: dict) -> None:
     logger.info(
         "SubagentStop hook: sending to memory pipeline, content_len=%d", len(message)
     )
-    await do_add_memory(
+    facts = await do_add_memory(
         content=message,
         user_id=user_id,
         metadata=metadata,
         extraction_prompt=FACT_EXTRACTION_HOOK_PROMPT,
     )
-    logger.info("SubagentStop hook: memory pipeline complete")
+
+    if facts is None:
+        decision = "error"
+    elif facts:
+        decision = "kept"
+    else:
+        decision = "rejected"
+
+    _log_hook_data(
+        log_path=_HOOK_DATA_LOG_PATH,
+        hook="SubagentStop",
+        project=project,
+        user_id=user_id,
+        content=message,
+        facts=facts,
+        decision=decision,
+    )
+    logger.info("SubagentStop hook: memory pipeline complete, decision=%s", decision)
 
 
 async def _run_precompact(payload: dict) -> None:
@@ -187,6 +247,18 @@ async def _run_precompact(payload: dict) -> None:
             "PreCompact hook: last assistant message too short (%d chars), skipping",
             len(last_text or ""),
         )
+        cwd = payload.get("cwd", "")
+        project = _resolve_project(cwd) if cwd else None
+        user_id = f"project:{project}" if project else settings.default_user_id
+        _log_hook_data(
+            log_path=_HOOK_DATA_LOG_PATH,
+            hook="PreCompact",
+            project=project,
+            user_id=user_id,
+            content=last_text or "",
+            facts=None,
+            decision="skipped_short",
+        )
         return
 
     logger.info("PreCompact hook: extracted message len=%d", len(last_text))
@@ -197,13 +269,30 @@ async def _run_precompact(payload: dict) -> None:
     logger.info("PreCompact hook: project=%s, user_id=%s", project, user_id)
 
     metadata = {"type": "lesson", "source": "auto-pre-compact"}
-    await do_add_memory(
+    facts = await do_add_memory(
         content=last_text,
         user_id=user_id,
         metadata=metadata,
         extraction_prompt=FACT_EXTRACTION_HOOK_PROMPT,
     )
-    logger.info("PreCompact hook: memory pipeline complete")
+
+    if facts is None:
+        decision = "error"
+    elif facts:
+        decision = "kept"
+    else:
+        decision = "rejected"
+
+    _log_hook_data(
+        log_path=_HOOK_DATA_LOG_PATH,
+        hook="PreCompact",
+        project=project,
+        user_id=user_id,
+        content=last_text,
+        facts=facts,
+        decision=decision,
+    )
+    logger.info("PreCompact hook: memory pipeline complete, decision=%s", decision)
 
 
 def main() -> None:

@@ -8,6 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# Default JSONL log path used in tests (overridden via env/patch)
+_HOOK_DATA_LOG = "mindojo-hook-data.jsonl"
+
 
 # ---------------------------------------------------------------------------
 # _resolve_project
@@ -425,3 +428,262 @@ class TestMain:
         with patch("sys.stdin") as mock_stdin:
             mock_stdin.read.return_value = "not json"
             main()
+
+
+# ---------------------------------------------------------------------------
+# _log_hook_data
+# ---------------------------------------------------------------------------
+
+
+class TestLogHookData:
+    def test_writes_correct_jsonl(self, tmp_path):
+        from mindojo_mcp.extract_learnings import _log_hook_data
+
+        log_file = tmp_path / _HOOK_DATA_LOG
+        _log_hook_data(
+            log_path=log_file,
+            hook="SubagentStop",
+            project="myrepo",
+            user_id="project:myrepo",
+            content="some agent output text here",
+            facts=["fact one", "fact two"],
+            decision="kept",
+        )
+        lines = log_file.read_text().strip().splitlines()
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["hook"] == "SubagentStop"
+        assert entry["project"] == "myrepo"
+        assert entry["user_id"] == "project:myrepo"
+        assert entry["content"] == "some agent output text here"
+        assert entry["content_length"] == len("some agent output text here")
+        assert entry["facts"] == ["fact one", "fact two"]
+        assert entry["decision"] == "kept"
+        assert entry["prompt_file"] == "fact-extraction-hook.md"
+        assert "ts" in entry
+
+    def test_appends_multiple_entries(self, tmp_path):
+        from mindojo_mcp.extract_learnings import _log_hook_data
+
+        log_file = tmp_path / _HOOK_DATA_LOG
+        _log_hook_data(
+            log_path=log_file,
+            hook="SubagentStop",
+            project="repo1",
+            user_id="project:repo1",
+            content="text1",
+            facts=[],
+            decision="rejected",
+        )
+        _log_hook_data(
+            log_path=log_file,
+            hook="PreCompact",
+            project="repo2",
+            user_id="project:repo2",
+            content="text2",
+            facts=None,
+            decision="error",
+        )
+        lines = log_file.read_text().strip().splitlines()
+        assert len(lines) == 2
+        assert json.loads(lines[0])["decision"] == "rejected"
+        assert json.loads(lines[1])["decision"] == "error"
+
+    def test_never_crashes_on_write_error(self, tmp_path):
+        from mindojo_mcp.extract_learnings import _log_hook_data
+
+        # Point to a non-existent directory so open() fails
+        bad_path = tmp_path / "nonexistent" / "subdir" / _HOOK_DATA_LOG
+        _log_hook_data(
+            log_path=bad_path,
+            hook="SubagentStop",
+            project="x",
+            user_id="project:x",
+            content="text",
+            facts=[],
+            decision="rejected",
+        )
+        # Should not raise — just logs the error
+
+
+# ---------------------------------------------------------------------------
+# _run with hook data logging
+# ---------------------------------------------------------------------------
+
+
+class TestRunLogging:
+    @pytest.mark.asyncio
+    async def test_logs_kept_entry(self, tmp_path):
+        from mindojo_mcp.extract_learnings import _run
+
+        log_file = tmp_path / _HOOK_DATA_LOG
+        message = "A" * 400
+        with (
+            patch(
+                "mindojo_mcp.extract_learnings.do_add_memory",
+                new_callable=AsyncMock,
+                return_value=["fact1", "fact2"],
+            ),
+            patch(
+                "mindojo_mcp.extract_learnings._resolve_project",
+                return_value="myrepo",
+            ),
+            patch(
+                "mindojo_mcp.extract_learnings._HOOK_DATA_LOG_PATH",
+                log_file,
+            ),
+        ):
+            await _run({"last_assistant_message": message, "cwd": "/home/user/myrepo"})
+
+        lines = log_file.read_text().strip().splitlines()
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["decision"] == "kept"
+        assert entry["facts"] == ["fact1", "fact2"]
+        assert entry["hook"] == "SubagentStop"
+
+    @pytest.mark.asyncio
+    async def test_logs_rejected_entry(self, tmp_path):
+        from mindojo_mcp.extract_learnings import _run
+
+        log_file = tmp_path / _HOOK_DATA_LOG
+        message = "B" * 400
+        with (
+            patch(
+                "mindojo_mcp.extract_learnings.do_add_memory",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "mindojo_mcp.extract_learnings._resolve_project",
+                return_value="myrepo",
+            ),
+            patch(
+                "mindojo_mcp.extract_learnings._HOOK_DATA_LOG_PATH",
+                log_file,
+            ),
+        ):
+            await _run({"last_assistant_message": message, "cwd": "/home/user/myrepo"})
+
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["decision"] == "rejected"
+        assert entry["facts"] == []
+
+    @pytest.mark.asyncio
+    async def test_logs_error_entry(self, tmp_path):
+        from mindojo_mcp.extract_learnings import _run
+
+        log_file = tmp_path / _HOOK_DATA_LOG
+        message = "C" * 400
+        with (
+            patch(
+                "mindojo_mcp.extract_learnings.do_add_memory",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "mindojo_mcp.extract_learnings._resolve_project",
+                return_value="myrepo",
+            ),
+            patch(
+                "mindojo_mcp.extract_learnings._HOOK_DATA_LOG_PATH",
+                log_file,
+            ),
+        ):
+            await _run({"last_assistant_message": message, "cwd": "/home/user/myrepo"})
+
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["decision"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_logs_skipped_short_entry(self, tmp_path):
+        from mindojo_mcp.extract_learnings import _run
+
+        log_file = tmp_path / _HOOK_DATA_LOG
+        short_msg = "x" * 50
+        with (
+            patch(
+                "mindojo_mcp.extract_learnings.do_add_memory",
+                new_callable=AsyncMock,
+            ) as mock_add,
+            patch(
+                "mindojo_mcp.extract_learnings._HOOK_DATA_LOG_PATH",
+                log_file,
+            ),
+        ):
+            await _run(
+                {"last_assistant_message": short_msg, "cwd": "/home/user/myrepo"}
+            )
+            mock_add.assert_not_called()
+
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["decision"] == "skipped_short"
+        assert entry["content"] == short_msg
+
+    @pytest.mark.asyncio
+    async def test_precompact_logs_kept_entry(self, tmp_path):
+        from mindojo_mcp.extract_learnings import _run_precompact
+
+        log_file = tmp_path / _HOOK_DATA_LOG
+        transcript = tmp_path / "session.jsonl"
+        text = "Final conclusions " + "X" * 400
+        lines = [_make_jsonl_line("assistant", role="assistant", text=text)]
+        transcript.write_text("\n".join(lines) + "\n")
+
+        payload = {
+            "hook_event_name": "PreCompact",
+            "transcript_path": str(transcript),
+            "cwd": "/home/user/myrepo",
+        }
+        with (
+            patch(
+                "mindojo_mcp.extract_learnings.do_add_memory",
+                new_callable=AsyncMock,
+                return_value=["lesson1"],
+            ),
+            patch(
+                "mindojo_mcp.extract_learnings._resolve_project",
+                return_value="myrepo",
+            ),
+            patch(
+                "mindojo_mcp.extract_learnings._HOOK_DATA_LOG_PATH",
+                log_file,
+            ),
+        ):
+            await _run_precompact(payload)
+
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["decision"] == "kept"
+        assert entry["hook"] == "PreCompact"
+        assert entry["facts"] == ["lesson1"]
+
+    @pytest.mark.asyncio
+    async def test_precompact_logs_skipped_short(self, tmp_path):
+        from mindojo_mcp.extract_learnings import _run_precompact
+
+        log_file = tmp_path / _HOOK_DATA_LOG
+        transcript = tmp_path / "session.jsonl"
+        lines = [_make_jsonl_line("assistant", role="assistant", text="Short")]
+        transcript.write_text("\n".join(lines) + "\n")
+
+        payload = {
+            "hook_event_name": "PreCompact",
+            "transcript_path": str(transcript),
+            "cwd": "/tmp/x",
+        }
+        with (
+            patch(
+                "mindojo_mcp.extract_learnings.do_add_memory",
+                new_callable=AsyncMock,
+            ) as mock_add,
+            patch(
+                "mindojo_mcp.extract_learnings._HOOK_DATA_LOG_PATH",
+                log_file,
+            ),
+        ):
+            await _run_precompact(payload)
+            mock_add.assert_not_called()
+
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["decision"] == "skipped_short"
+        assert entry["hook"] == "PreCompact"
