@@ -1,6 +1,6 @@
 {
   "extraKnownMarketplaces": {
-    "agents": {
+    "lklimek": {
       "source": {
         "source": "github",
         "repo": "lklimek/agents"
@@ -8,6 +8,6 @@
     }
   },
   "enabledPlugins": {
-    "claudius@agents": true
+    "claudius@lklimek": true
   }
 }
