@@ -16,10 +16,11 @@ from pathlib import Path, PurePosixPath
 
 from .config import settings
 from .memory_pipeline import do_add_memory
+from .prompts import FACT_EXTRACTION_HOOK_PROMPT
 
 logger = logging.getLogger(__name__)
 
-_MIN_MESSAGE_LENGTH = 300
+_MIN_MESSAGE_LENGTH = 70
 
 
 def _repo_name_from_url(url: str) -> str | None:
@@ -137,7 +138,12 @@ async def _run(payload: dict) -> None:
     logger.info(
         "SubagentStop hook: sending to memory pipeline, content_len=%d", len(message)
     )
-    await do_add_memory(content=message, user_id=user_id, metadata=metadata)
+    await do_add_memory(
+        content=message,
+        user_id=user_id,
+        metadata=metadata,
+        extraction_prompt=FACT_EXTRACTION_HOOK_PROMPT,
+    )
     logger.info("SubagentStop hook: memory pipeline complete")
 
 
@@ -191,7 +197,12 @@ async def _run_precompact(payload: dict) -> None:
     logger.info("PreCompact hook: project=%s, user_id=%s", project, user_id)
 
     metadata = {"type": "lesson", "source": "auto-pre-compact"}
-    await do_add_memory(content=last_text, user_id=user_id, metadata=metadata)
+    await do_add_memory(
+        content=last_text,
+        user_id=user_id,
+        metadata=metadata,
+        extraction_prompt=FACT_EXTRACTION_HOOK_PROMPT,
+    )
     logger.info("PreCompact hook: memory pipeline complete")
 
 

@@ -16,9 +16,10 @@ def _load(name: str, **kwargs: str) -> str:
     return Template(text).safe_substitute(**kwargs) if kwargs else text
 
 
-FACT_EXTRACTION_PROMPT = _load(
-    "fact-extraction.md",
-    today=datetime.now().strftime("%Y-%m-%d"),
-)
+_today = datetime.now().strftime("%Y-%m-%d")
+
+FACT_EXTRACTION_PROMPT = _load("fact-extraction.md", today=_today)
+
+FACT_EXTRACTION_HOOK_PROMPT = _load("fact-extraction-hook.md", today=_today)
 
 MEMORY_UPDATE_PROMPT = _load("memory-update.md")

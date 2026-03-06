@@ -139,7 +139,7 @@ class TestRun:
         with patch(
             "mindojo_mcp.extract_learnings.do_add_memory", new_callable=AsyncMock
         ) as mock_add:
-            await _run({"last_assistant_message": "x" * 299})
+            await _run({"last_assistant_message": "x" * 69})
             mock_add.assert_not_called()
 
     @pytest.mark.asyncio
@@ -157,11 +157,12 @@ class TestRun:
             ),
         ):
             await _run({"last_assistant_message": message, "cwd": "/home/user/myrepo"})
-            mock_add.assert_called_once_with(
-                content=message,
-                user_id="project:myrepo",
-                metadata={"type": "lesson", "source": "auto-agent-stop"},
-            )
+            mock_add.assert_called_once()
+            kwargs = mock_add.call_args.kwargs
+            assert kwargs["content"] == message
+            assert kwargs["user_id"] == "project:myrepo"
+            assert kwargs["metadata"] == {"type": "lesson", "source": "auto-agent-stop"}
+            assert kwargs["extraction_prompt"] is not None  # hook uses strict prompt
 
     @pytest.mark.asyncio
     async def test_global_scope_when_no_project(self):

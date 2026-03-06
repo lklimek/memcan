@@ -34,14 +34,17 @@ async def ensure_models_once() -> None:
         _models_checked = True
 
 
-async def extract_facts(content: str) -> list[str] | None:
+async def extract_facts(
+    content: str, *, extraction_prompt: str | None = None
+) -> list[str] | None:
     """LLM call #1: extract facts from content. Returns None on failure."""
     try:
+        prompt = extraction_prompt or FACT_EXTRACTION_PROMPT
         client = _get_ollama_async()
         response = await client.chat(
             model=LLM_MODEL,
             messages=[
-                {"role": "system", "content": FACT_EXTRACTION_PROMPT},
+                {"role": "system", "content": prompt},
                 {"role": "user", "content": content},
             ],
         )
@@ -178,7 +181,13 @@ async def store_raw(content: str, user_id: str, metadata: dict) -> None:
     )
 
 
-async def do_add_memory(content: str, user_id: str, metadata: dict) -> None:
+async def do_add_memory(
+    content: str,
+    user_id: str,
+    metadata: dict,
+    *,
+    extraction_prompt: str | None = None,
+) -> None:
     """Orchestrate memory storage: optionally distill via LLM, then store."""
     await ensure_models_once()
 
@@ -186,7 +195,7 @@ async def do_add_memory(content: str, user_id: str, metadata: dict) -> None:
         await store_raw(content, user_id, metadata)
         return
 
-    facts = await extract_facts(content)
+    facts = await extract_facts(content, extraction_prompt=extraction_prompt)
     if facts is None:
         await store_raw(content, user_id, metadata)
         return
