@@ -264,12 +264,27 @@ class TestMemoryDedup:
             mock_qd.upsert.assert_not_called()
             mock_qd.delete.assert_not_called()
 
-    def test_hash_dedup_same_content_same_hash(self):
-        """Same content produces same md5 hash."""
-        content = "Always use ruff for Python linting"
-        h1 = hashlib.md5(content.encode()).hexdigest()
-        h2 = hashlib.md5(content.encode()).hexdigest()
-        assert h1 == h2
+    @pytest.mark.asyncio
+    async def test_add_produces_consistent_hash(self):
+        """Two ADD events with identical content produce the same payload hash."""
+        from mindojo_mcp.server import _store_raw
+
+        mock_qd = MagicMock()
+
+        with (
+            patch("mindojo_mcp.server.get_qdrant", return_value=mock_qd),
+            patch("mindojo_mcp.server.aembed", new_callable=AsyncMock) as mock_aembed,
+        ):
+            mock_aembed.return_value = [[0.1] * 10]
+
+            await _store_raw("Always use ruff for Python linting", "u1", {})
+            await _store_raw("Always use ruff for Python linting", "u1", {})
+
+            assert mock_qd.upsert.call_count == 2
+            h1 = mock_qd.upsert.call_args_list[0].kwargs["points"][0].payload["hash"]
+            h2 = mock_qd.upsert.call_args_list[1].kwargs["points"][0].payload["hash"]
+            assert h1 == h2
+            assert h1 == hashlib.md5(b"Always use ruff for Python linting").hexdigest()
 
 
 # ===========================================================================
