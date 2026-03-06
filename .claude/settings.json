@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "lklimek": {
+      "source": {
+        "source": "github",
+        "repo": "lklimek/agents"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "claudius@lklimek": true
+  }
+}
