@@ -19,7 +19,7 @@ from .memory_pipeline import do_add_memory
 
 logger = logging.getLogger(__name__)
 
-_MIN_MESSAGE_LENGTH = 100
+_MIN_MESSAGE_LENGTH = 300
 
 
 def _repo_name_from_url(url: str) -> str | None:

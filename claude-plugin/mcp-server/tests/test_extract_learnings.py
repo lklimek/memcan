@@ -139,14 +139,14 @@ class TestRun:
         with patch(
             "mindojo_mcp.extract_learnings.do_add_memory", new_callable=AsyncMock
         ) as mock_add:
-            await _run({"last_assistant_message": "x" * 99})
+            await _run({"last_assistant_message": "x" * 299})
             mock_add.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_calls_full_pipeline(self):
         from mindojo_mcp.extract_learnings import _run
 
-        message = "A" * 200
+        message = "A" * 400
         with (
             patch(
                 "mindojo_mcp.extract_learnings.do_add_memory", new_callable=AsyncMock
@@ -167,7 +167,7 @@ class TestRun:
     async def test_global_scope_when_no_project(self):
         from mindojo_mcp.extract_learnings import _run
 
-        message = "B" * 200
+        message = "B" * 400
         with (
             patch(
                 "mindojo_mcp.extract_learnings.do_add_memory", new_callable=AsyncMock
@@ -205,13 +205,13 @@ class TestRunPrecompact:
         lines = [
             _make_jsonl_line("user", role="user", text="Hello"),
             _make_jsonl_line(
-                "assistant", role="assistant", text="First response " + "A" * 200
+                "assistant", role="assistant", text="First response " + "A" * 400
             ),
             _make_jsonl_line("user", role="user", text="More input"),
             _make_jsonl_line(
                 "assistant",
                 role="assistant",
-                text="Final conclusions with learnings " + "B" * 200,
+                text="Final conclusions with learnings " + "B" * 400,
             ),
         ]
         transcript.write_text("\n".join(lines) + "\n")
@@ -285,7 +285,7 @@ class TestRunPrecompact:
             },
         }
         text_msg = _make_jsonl_line(
-            "assistant", role="assistant", text="Good analysis " + "X" * 200
+            "assistant", role="assistant", text="Good analysis " + "X" * 400
         )
         lines = [json.dumps(tool_msg), text_msg]
         transcript.write_text("\n".join(lines) + "\n")
@@ -350,7 +350,7 @@ class TestMain:
         payload = json.dumps(
             {
                 "hook_event_name": "SubagentStop",
-                "last_assistant_message": "C" * 200,
+                "last_assistant_message": "C" * 400,
                 "cwd": "/tmp/x",
             }
         )
@@ -396,7 +396,7 @@ class TestMain:
         payload = json.dumps(
             {
                 "hook_event_name": "SubagentStop",
-                "last_assistant_message": "C" * 200,
+                "last_assistant_message": "C" * 400,
                 "cwd": "/tmp/x",
             }
         )
