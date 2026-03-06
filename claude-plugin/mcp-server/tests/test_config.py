@@ -32,7 +32,7 @@ class TestConstants:
             QDRANT_COLLECTION,
         )
 
-        assert LLM_MODEL == "gemma3n:e4b"
+        assert LLM_MODEL == "qwen3.5:4b"
         assert EMBED_MODEL == "qwen3-embedding:4b"
         assert EMBED_DIMS == 2560
         assert QDRANT_COLLECTION == "mindojo-memories"

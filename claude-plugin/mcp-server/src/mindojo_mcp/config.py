@@ -16,7 +16,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 _CONFIG_DIR = Path(user_config_dir("mindojo"))
 
 # Hardcoded model and collection constants — change here, not in .env.
-LLM_MODEL = "gemma3n:e4b"
+LLM_MODEL = "qwen3.5:4b"
 EMBED_MODEL = "qwen3-embedding:4b"
 EMBED_DIMS = 2560
 QDRANT_COLLECTION = "mindojo-memories"
