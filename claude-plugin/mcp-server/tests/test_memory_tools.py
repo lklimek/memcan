@@ -47,51 +47,51 @@ class TestFactExtraction:
     @pytest.mark.asyncio
     async def test_facts_parsed_from_llm_response(self):
         """LLM returns {"facts": ["f1", "f2"]} -- verify parsed correctly."""
-        from mindojo_mcp.server import _extract_facts
+        from mindojo_mcp.memory_pipeline import extract_facts
 
         mock_response = MagicMock()
         mock_response.message.content = json.dumps(
             {"facts": ["Python 3.14 is preferred", "Use ruff for linting"]}
         )
 
-        with patch("mindojo_mcp.server._get_ollama_async") as mock_get_client:
+        with patch("mindojo_mcp.memory_pipeline._get_ollama_async") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.chat.return_value = mock_response
             mock_get_client.return_value = mock_client
 
-            facts = await _extract_facts("We use Python 3.14 and ruff for linting")
+            facts = await extract_facts("We use Python 3.14 and ruff for linting")
             assert facts == ["Python 3.14 is preferred", "Use ruff for linting"]
 
     @pytest.mark.asyncio
     async def test_empty_facts_returns_empty_list(self):
         """LLM returns {"facts": []} -- no facts extracted."""
-        from mindojo_mcp.server import _extract_facts
+        from mindojo_mcp.memory_pipeline import extract_facts
 
         mock_response = MagicMock()
         mock_response.message.content = json.dumps({"facts": []})
 
-        with patch("mindojo_mcp.server._get_ollama_async") as mock_get_client:
+        with patch("mindojo_mcp.memory_pipeline._get_ollama_async") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.chat.return_value = mock_response
             mock_get_client.return_value = mock_client
 
-            facts = await _extract_facts("nothing useful here")
+            facts = await extract_facts("nothing useful here")
             assert facts == []
 
     @pytest.mark.asyncio
     async def test_malformed_llm_response_returns_none(self):
         """LLM returns non-JSON -- fallback returns None (raw storage)."""
-        from mindojo_mcp.server import _extract_facts
+        from mindojo_mcp.memory_pipeline import extract_facts
 
         mock_response = MagicMock()
         mock_response.message.content = "I cannot extract facts from this."
 
-        with patch("mindojo_mcp.server._get_ollama_async") as mock_get_client:
+        with patch("mindojo_mcp.memory_pipeline._get_ollama_async") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.chat.return_value = mock_response
             mock_get_client.return_value = mock_client
 
-            facts = await _extract_facts("some content")
+            facts = await extract_facts("some content")
             assert facts is None
 
 
@@ -106,7 +106,7 @@ class TestMemoryDedup:
     @pytest.mark.asyncio
     async def test_add_event_upserts_new_point(self):
         """Dedup returns ADD event -- new point upserted with uuid4 ID."""
-        from mindojo_mcp.server import _dedup_and_store
+        from mindojo_mcp.memory_pipeline import dedup_and_store
 
         mock_response = MagicMock()
         mock_response.message.content = json.dumps(
@@ -119,16 +119,18 @@ class TestMemoryDedup:
         mock_qd.query_points.return_value = mock_search_result
 
         with (
-            patch("mindojo_mcp.server._get_ollama_async") as mock_get_client,
-            patch("mindojo_mcp.server.get_qdrant", return_value=mock_qd),
-            patch("mindojo_mcp.server.aembed", new_callable=AsyncMock) as mock_aembed,
+            patch("mindojo_mcp.memory_pipeline._get_ollama_async") as mock_get_client,
+            patch("mindojo_mcp.memory_pipeline.get_qdrant", return_value=mock_qd),
+            patch(
+                "mindojo_mcp.memory_pipeline.aembed", new_callable=AsyncMock
+            ) as mock_aembed,
         ):
             mock_client = AsyncMock()
             mock_client.chat.return_value = mock_response
             mock_get_client.return_value = mock_client
             mock_aembed.return_value = [[0.1] * 10]
 
-            await _dedup_and_store(
+            await dedup_and_store(
                 facts=["New fact about testing"],
                 user_id="test-user",
                 metadata={},
@@ -146,7 +148,7 @@ class TestMemoryDedup:
     @pytest.mark.asyncio
     async def test_update_event_upserts_with_updated_at(self):
         """Dedup returns UPDATE -- existing point re-embedded with updated_at."""
-        from mindojo_mcp.server import _dedup_and_store
+        from mindojo_mcp.memory_pipeline import dedup_and_store
 
         existing_point = _make_point(
             str(uuid4()),
@@ -174,16 +176,18 @@ class TestMemoryDedup:
         mock_qd.query_points.return_value = mock_search_result
 
         with (
-            patch("mindojo_mcp.server._get_ollama_async") as mock_get_client,
-            patch("mindojo_mcp.server.get_qdrant", return_value=mock_qd),
-            patch("mindojo_mcp.server.aembed", new_callable=AsyncMock) as mock_aembed,
+            patch("mindojo_mcp.memory_pipeline._get_ollama_async") as mock_get_client,
+            patch("mindojo_mcp.memory_pipeline.get_qdrant", return_value=mock_qd),
+            patch(
+                "mindojo_mcp.memory_pipeline.aembed", new_callable=AsyncMock
+            ) as mock_aembed,
         ):
             mock_client = AsyncMock()
             mock_client.chat.return_value = mock_response
             mock_get_client.return_value = mock_client
             mock_aembed.return_value = [[0.2] * 10]
 
-            await _dedup_and_store(
+            await dedup_and_store(
                 facts=["Updated fact"],
                 user_id="test-user",
                 metadata={},
@@ -200,7 +204,7 @@ class TestMemoryDedup:
     @pytest.mark.asyncio
     async def test_delete_event_deletes_point(self):
         """Dedup returns DELETE -- existing point deleted."""
-        from mindojo_mcp.server import _dedup_and_store
+        from mindojo_mcp.memory_pipeline import dedup_and_store
 
         existing_id = str(uuid4())
 
@@ -215,16 +219,18 @@ class TestMemoryDedup:
         mock_qd.query_points.return_value = mock_search_result
 
         with (
-            patch("mindojo_mcp.server._get_ollama_async") as mock_get_client,
-            patch("mindojo_mcp.server.get_qdrant", return_value=mock_qd),
-            patch("mindojo_mcp.server.aembed", new_callable=AsyncMock) as mock_aembed,
+            patch("mindojo_mcp.memory_pipeline._get_ollama_async") as mock_get_client,
+            patch("mindojo_mcp.memory_pipeline.get_qdrant", return_value=mock_qd),
+            patch(
+                "mindojo_mcp.memory_pipeline.aembed", new_callable=AsyncMock
+            ) as mock_aembed,
         ):
             mock_client = AsyncMock()
             mock_client.chat.return_value = mock_response
             mock_get_client.return_value = mock_client
             mock_aembed.return_value = [[0.1] * 10]
 
-            await _dedup_and_store(
+            await dedup_and_store(
                 facts=["old fact"],
                 user_id="test-user",
                 metadata={},
@@ -235,7 +241,7 @@ class TestMemoryDedup:
     @pytest.mark.asyncio
     async def test_none_event_no_changes(self):
         """Dedup returns NONE -- no upsert or delete."""
-        from mindojo_mcp.server import _dedup_and_store
+        from mindojo_mcp.memory_pipeline import dedup_and_store
 
         mock_response = MagicMock()
         mock_response.message.content = json.dumps({"events": [{"type": "NONE"}]})
@@ -246,16 +252,18 @@ class TestMemoryDedup:
         mock_qd.query_points.return_value = mock_search_result
 
         with (
-            patch("mindojo_mcp.server._get_ollama_async") as mock_get_client,
-            patch("mindojo_mcp.server.get_qdrant", return_value=mock_qd),
-            patch("mindojo_mcp.server.aembed", new_callable=AsyncMock) as mock_aembed,
+            patch("mindojo_mcp.memory_pipeline._get_ollama_async") as mock_get_client,
+            patch("mindojo_mcp.memory_pipeline.get_qdrant", return_value=mock_qd),
+            patch(
+                "mindojo_mcp.memory_pipeline.aembed", new_callable=AsyncMock
+            ) as mock_aembed,
         ):
             mock_client = AsyncMock()
             mock_client.chat.return_value = mock_response
             mock_get_client.return_value = mock_client
             mock_aembed.return_value = [[0.1] * 10]
 
-            await _dedup_and_store(
+            await dedup_and_store(
                 facts=["existing fact"],
                 user_id="test-user",
                 metadata={},
@@ -267,18 +275,20 @@ class TestMemoryDedup:
     @pytest.mark.asyncio
     async def test_add_produces_consistent_hash(self):
         """Two ADD events with identical content produce the same payload hash."""
-        from mindojo_mcp.server import _store_raw
+        from mindojo_mcp.memory_pipeline import store_raw
 
         mock_qd = MagicMock()
 
         with (
-            patch("mindojo_mcp.server.get_qdrant", return_value=mock_qd),
-            patch("mindojo_mcp.server.aembed", new_callable=AsyncMock) as mock_aembed,
+            patch("mindojo_mcp.memory_pipeline.get_qdrant", return_value=mock_qd),
+            patch(
+                "mindojo_mcp.memory_pipeline.aembed", new_callable=AsyncMock
+            ) as mock_aembed,
         ):
             mock_aembed.return_value = [[0.1] * 10]
 
-            await _store_raw("Always use ruff for Python linting", "u1", {})
-            await _store_raw("Always use ruff for Python linting", "u1", {})
+            await store_raw("Always use ruff for Python linting", "u1", {})
+            await store_raw("Always use ruff for Python linting", "u1", {})
 
             assert mock_qd.upsert.call_count == 2
             h1 = mock_qd.upsert.call_args_list[0].kwargs["points"][0].payload["hash"]
@@ -298,21 +308,21 @@ class TestDistillationFallback:
     @pytest.mark.asyncio
     async def test_extraction_failure_stores_raw_content(self):
         """If LLM call #1 (extraction) fails, raw content is stored directly."""
-        from mindojo_mcp.server import _extract_facts
+        from mindojo_mcp.memory_pipeline import extract_facts
 
-        with patch("mindojo_mcp.server._get_ollama_async") as mock_get_client:
+        with patch("mindojo_mcp.memory_pipeline._get_ollama_async") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.chat.side_effect = Exception("LLM unavailable")
             mock_get_client.return_value = mock_client
 
-            facts = await _extract_facts("important content")
+            facts = await extract_facts("important content")
             # On exception, should return None to signal raw storage fallback
             assert facts is None
 
     @pytest.mark.asyncio
     async def test_dedup_failure_stores_facts_as_add(self):
         """If LLM call #2 (dedup) fails, each fact stored as ADD."""
-        from mindojo_mcp.server import _dedup_and_store
+        from mindojo_mcp.memory_pipeline import dedup_and_store
 
         mock_qd = MagicMock()
         mock_search_result = MagicMock()
@@ -320,16 +330,18 @@ class TestDistillationFallback:
         mock_qd.query_points.return_value = mock_search_result
 
         with (
-            patch("mindojo_mcp.server._get_ollama_async") as mock_get_client,
-            patch("mindojo_mcp.server.get_qdrant", return_value=mock_qd),
-            patch("mindojo_mcp.server.aembed", new_callable=AsyncMock) as mock_aembed,
+            patch("mindojo_mcp.memory_pipeline._get_ollama_async") as mock_get_client,
+            patch("mindojo_mcp.memory_pipeline.get_qdrant", return_value=mock_qd),
+            patch(
+                "mindojo_mcp.memory_pipeline.aembed", new_callable=AsyncMock
+            ) as mock_aembed,
         ):
             mock_client = AsyncMock()
             mock_client.chat.side_effect = Exception("LLM unavailable")
             mock_get_client.return_value = mock_client
             mock_aembed.return_value = [[0.1] * 10]
 
-            await _dedup_and_store(
+            await dedup_and_store(
                 facts=["fact one", "fact two"],
                 user_id="test-user",
                 metadata={},
@@ -341,20 +353,23 @@ class TestDistillationFallback:
     @pytest.mark.asyncio
     async def test_distill_disabled_stores_raw(self):
         """If distill_memories=False, skip LLM calls, store raw content."""
-        from mindojo_mcp.server import _do_add_memory
+        from mindojo_mcp.memory_pipeline import do_add_memory
 
         mock_qd = MagicMock()
 
         with (
-            patch("mindojo_mcp.server.get_qdrant", return_value=mock_qd),
-            patch("mindojo_mcp.server.aembed", new_callable=AsyncMock) as mock_aembed,
-            patch("mindojo_mcp.server.settings") as mock_settings,
-            patch("mindojo_mcp.server._extract_facts") as mock_extract,
+            patch("mindojo_mcp.memory_pipeline.get_qdrant", return_value=mock_qd),
+            patch(
+                "mindojo_mcp.memory_pipeline.aembed", new_callable=AsyncMock
+            ) as mock_aembed,
+            patch("mindojo_mcp.memory_pipeline.settings") as mock_settings,
+            patch("mindojo_mcp.memory_pipeline.extract_facts") as mock_extract,
+            patch("mindojo_mcp.memory_pipeline.ensure_models", new_callable=AsyncMock),
         ):
             mock_settings.distill_memories = False
             mock_aembed.return_value = [[0.1] * 10]
 
-            await _do_add_memory(
+            await do_add_memory(
                 content="raw content here",
                 user_id="test-user",
                 metadata={},
@@ -377,7 +392,7 @@ class TestPayloadSchema:
     @pytest.mark.asyncio
     async def test_add_creates_correct_payload(self):
         """ADD creates payload with data, hash, user_id, created_at, updated_at=None."""
-        from mindojo_mcp.server import _dedup_and_store
+        from mindojo_mcp.memory_pipeline import dedup_and_store
 
         mock_response = MagicMock()
         mock_response.message.content = json.dumps(
@@ -390,16 +405,18 @@ class TestPayloadSchema:
         mock_qd.query_points.return_value = mock_search_result
 
         with (
-            patch("mindojo_mcp.server._get_ollama_async") as mock_get_client,
-            patch("mindojo_mcp.server.get_qdrant", return_value=mock_qd),
-            patch("mindojo_mcp.server.aembed", new_callable=AsyncMock) as mock_aembed,
+            patch("mindojo_mcp.memory_pipeline._get_ollama_async") as mock_get_client,
+            patch("mindojo_mcp.memory_pipeline.get_qdrant", return_value=mock_qd),
+            patch(
+                "mindojo_mcp.memory_pipeline.aembed", new_callable=AsyncMock
+            ) as mock_aembed,
         ):
             mock_client = AsyncMock()
             mock_client.chat.return_value = mock_response
             mock_get_client.return_value = mock_client
             mock_aembed.return_value = [[0.1] * 10]
 
-            await _dedup_and_store(
+            await dedup_and_store(
                 facts=["Test payload schema"],
                 user_id="test-user",
                 metadata={"type": "lesson", "source": "LL-001"},
@@ -424,7 +441,7 @@ class TestPayloadSchema:
     @pytest.mark.asyncio
     async def test_update_preserves_created_at_sets_updated_at(self):
         """UPDATE preserves original created_at, sets updated_at to now."""
-        from mindojo_mcp.server import _dedup_and_store
+        from mindojo_mcp.memory_pipeline import dedup_and_store
 
         original_created = "2025-01-01T00:00:00+00:00"
         existing_id = str(uuid4())
@@ -451,9 +468,11 @@ class TestPayloadSchema:
         mock_qd.query_points.return_value = mock_search_result
 
         with (
-            patch("mindojo_mcp.server._get_ollama_async") as mock_get_client,
-            patch("mindojo_mcp.server.get_qdrant", return_value=mock_qd),
-            patch("mindojo_mcp.server.aembed", new_callable=AsyncMock) as mock_aembed,
+            patch("mindojo_mcp.memory_pipeline._get_ollama_async") as mock_get_client,
+            patch("mindojo_mcp.memory_pipeline.get_qdrant", return_value=mock_qd),
+            patch(
+                "mindojo_mcp.memory_pipeline.aembed", new_callable=AsyncMock
+            ) as mock_aembed,
         ):
             mock_client = AsyncMock()
             mock_client.chat.return_value = mock_response
@@ -461,7 +480,7 @@ class TestPayloadSchema:
             mock_aembed.return_value = [[0.2] * 10]
 
             before = datetime.now(timezone.utc)
-            await _dedup_and_store(
+            await dedup_and_store(
                 facts=["Updated data"],
                 user_id="test-user",
                 metadata={},
@@ -508,6 +527,7 @@ class TestSearchMemories:
         with (
             patch("mindojo_mcp.server.get_qdrant", return_value=mock_qd),
             patch("mindojo_mcp.server.aembed", new_callable=AsyncMock) as mock_aembed,
+            patch("mindojo_mcp.server.ensure_models_once", new_callable=AsyncMock),
         ):
             mock_aembed.return_value = [[0.1] * 10]
 
@@ -692,7 +712,7 @@ class TestDedupMemoryIdValidation:
     @pytest.mark.asyncio
     async def test_update_with_invalid_memory_id_skipped(self):
         """UPDATE event with memory_id not in search results is skipped."""
-        from mindojo_mcp.server import _dedup_and_store
+        from mindojo_mcp.memory_pipeline import dedup_and_store
 
         mock_response = MagicMock()
         mock_response.message.content = json.dumps(
@@ -713,16 +733,18 @@ class TestDedupMemoryIdValidation:
         mock_qd.query_points.return_value = mock_search_result
 
         with (
-            patch("mindojo_mcp.server._get_ollama_async") as mock_get_client,
-            patch("mindojo_mcp.server.get_qdrant", return_value=mock_qd),
-            patch("mindojo_mcp.server.aembed", new_callable=AsyncMock) as mock_aembed,
+            patch("mindojo_mcp.memory_pipeline._get_ollama_async") as mock_get_client,
+            patch("mindojo_mcp.memory_pipeline.get_qdrant", return_value=mock_qd),
+            patch(
+                "mindojo_mcp.memory_pipeline.aembed", new_callable=AsyncMock
+            ) as mock_aembed,
         ):
             mock_client = AsyncMock()
             mock_client.chat.return_value = mock_response
             mock_get_client.return_value = mock_client
             mock_aembed.return_value = [[0.1] * 10]
 
-            await _dedup_and_store(facts=["test"], user_id="test-user", metadata={})
+            await dedup_and_store(facts=["test"], user_id="test-user", metadata={})
 
             mock_qd.upsert.assert_not_called()
             mock_qd.delete.assert_not_called()
@@ -730,7 +752,7 @@ class TestDedupMemoryIdValidation:
     @pytest.mark.asyncio
     async def test_delete_with_invalid_memory_id_skipped(self):
         """DELETE event with memory_id not in search results is skipped."""
-        from mindojo_mcp.server import _dedup_and_store
+        from mindojo_mcp.memory_pipeline import dedup_and_store
 
         mock_response = MagicMock()
         mock_response.message.content = json.dumps(
@@ -743,15 +765,17 @@ class TestDedupMemoryIdValidation:
         mock_qd.query_points.return_value = mock_search_result
 
         with (
-            patch("mindojo_mcp.server._get_ollama_async") as mock_get_client,
-            patch("mindojo_mcp.server.get_qdrant", return_value=mock_qd),
-            patch("mindojo_mcp.server.aembed", new_callable=AsyncMock) as mock_aembed,
+            patch("mindojo_mcp.memory_pipeline._get_ollama_async") as mock_get_client,
+            patch("mindojo_mcp.memory_pipeline.get_qdrant", return_value=mock_qd),
+            patch(
+                "mindojo_mcp.memory_pipeline.aembed", new_callable=AsyncMock
+            ) as mock_aembed,
         ):
             mock_client = AsyncMock()
             mock_client.chat.return_value = mock_response
             mock_get_client.return_value = mock_client
             mock_aembed.return_value = [[0.1] * 10]
 
-            await _dedup_and_store(facts=["test"], user_id="test-user", metadata={})
+            await dedup_and_store(facts=["test"], user_id="test-user", metadata={})
 
             mock_qd.delete.assert_not_called()

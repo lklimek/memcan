@@ -11,9 +11,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from string import Template
 from typing import Any
-from uuid import uuid4
 
 from mcp.server.fastmcp import FastMCP
 from qdrant_client.models import (
@@ -25,14 +23,12 @@ from qdrant_client.models import (
 
 from .config import (
     CODE_COLLECTION,
-    LLM_MODEL,
     QDRANT_COLLECTION,
     STANDARDS_COLLECTION,
-    ensure_models,
     settings,
 )
-from .prompts import FACT_EXTRACTION_PROMPT, MEMORY_UPDATE_PROMPT
-from .qdrant_utils import _get_ollama_async, aembed, asearch_collection, get_qdrant
+from .memory_pipeline import do_add_memory, ensure_models_once
+from .qdrant_utils import aembed, asearch_collection, get_qdrant
 
 logger = logging.getLogger(__name__)
 
@@ -42,18 +38,7 @@ mcp = FastMCP(
 )
 
 
-_RESERVED_KEYS = frozenset({"data", "hash", "user_id", "created_at", "updated_at"})
-
 _background_tasks: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
-
-_models_checked = False
-
-
-async def _ensure_models_once() -> None:
-    global _models_checked
-    if not _models_checked:
-        await ensure_models()
-        _models_checked = True
 
 
 def _resolve_user_id(project: str | None, user_id: str | None) -> str:
@@ -66,173 +51,6 @@ def _resolve_user_id(project: str | None, user_id: str | None) -> str:
     if project:
         return f"project:{project}"
     return settings.default_user_id
-
-
-# ---------------------------------------------------------------------------
-# Internal: LLM-based fact extraction and dedup
-# ---------------------------------------------------------------------------
-
-
-async def _extract_facts(content: str) -> list[str] | None:
-    """LLM call #1: extract facts from content. Returns None on failure."""
-    try:
-        client = _get_ollama_async()
-        response = await client.chat(
-            model=LLM_MODEL,
-            messages=[
-                {"role": "system", "content": FACT_EXTRACTION_PROMPT},
-                {"role": "user", "content": content},
-            ],
-        )
-        parsed = json.loads(response.message.content)
-        return parsed.get("facts", [])
-    except Exception:
-        logger.exception("Fact extraction failed")
-        return None
-
-
-async def _dedup_and_store(facts: list[str], user_id: str, metadata: dict) -> None:
-    """LLM call #2: dedup against existing memories, then execute ADD/UPDATE/DELETE."""
-    qd = get_qdrant()
-
-    for fact in facts:
-        vectors = await aembed([fact])
-        vector = vectors[0]
-
-        qfilter = Filter(
-            must=[FieldCondition(key="user_id", match=MatchValue(value=user_id))]
-        )
-        search_results = qd.query_points(
-            collection_name=QDRANT_COLLECTION,
-            query=vector,
-            query_filter=qfilter,
-            limit=5,
-            with_payload=True,
-        )
-
-        existing_memories = [
-            {"id": str(p.id), "text": p.payload.get("data", "")}
-            for p in search_results.points
-        ]
-
-        try:
-            client = _get_ollama_async()
-            prompt = Template(MEMORY_UPDATE_PROMPT).safe_substitute(
-                existing_memories=json.dumps(existing_memories),
-                new_facts=json.dumps([fact]),
-            )
-            response = await client.chat(
-                model=LLM_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            parsed = json.loads(response.message.content)
-            events = parsed.get("events", [])
-        except Exception:
-            logger.exception("Dedup LLM failed, falling back to ADD")
-            events = [{"type": "ADD", "data": fact}]
-
-        meta = {k: v for k, v in metadata.items() if k not in _RESERVED_KEYS}
-
-        for event in events:
-            event_type = event.get("type", "NONE")
-            if event_type == "ADD":
-                point_id = str(uuid4())
-                now = datetime.now(timezone.utc).isoformat()
-                data = event.get("data", fact)
-                payload = {
-                    "data": data,
-                    "hash": hashlib.md5(data.encode()).hexdigest(),
-                    "user_id": user_id,
-                    "created_at": now,
-                    "updated_at": None,
-                    **meta,
-                }
-                qd.upsert(
-                    collection_name=QDRANT_COLLECTION,
-                    points=[PointStruct(id=point_id, vector=vector, payload=payload)],
-                )
-            elif event_type == "UPDATE":
-                memory_id = event.get("memory_id")
-                existing = next(
-                    (p for p in search_results.points if str(p.id) == memory_id),
-                    None,
-                )
-                if existing is None:
-                    logger.warning(
-                        "UPDATE memory_id %s not in search results, skipping",
-                        memory_id,
-                    )
-                    continue
-                new_data = event.get("data", fact)
-                new_vectors = await aembed([new_data])
-                payload = {
-                    "data": new_data,
-                    "hash": hashlib.md5(new_data.encode()).hexdigest(),
-                    "user_id": user_id,
-                    "created_at": existing.payload.get("created_at"),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                    **meta,
-                }
-                qd.upsert(
-                    collection_name=QDRANT_COLLECTION,
-                    points=[
-                        PointStruct(
-                            id=memory_id, vector=new_vectors[0], payload=payload
-                        )
-                    ],
-                )
-            elif event_type == "DELETE":
-                memory_id = event.get("memory_id")
-                if not any(str(p.id) == memory_id for p in search_results.points):
-                    logger.warning(
-                        "DELETE memory_id %s not in search results, skipping",
-                        memory_id,
-                    )
-                    continue
-                qd.delete(
-                    collection_name=QDRANT_COLLECTION,
-                    points_selector=[memory_id],
-                )
-            # NONE: no-op
-
-
-async def _store_raw(content: str, user_id: str, metadata: dict) -> None:
-    """Store content directly in Qdrant without LLM distillation."""
-    vectors = await aembed([content])
-    point_id = str(uuid4())
-    now = datetime.now(timezone.utc).isoformat()
-    meta = {k: v for k, v in metadata.items() if k not in _RESERVED_KEYS}
-    payload = {
-        "data": content,
-        "hash": hashlib.md5(content.encode()).hexdigest(),
-        "user_id": user_id,
-        "created_at": now,
-        "updated_at": None,
-        **meta,
-    }
-    qd = get_qdrant()
-    qd.upsert(
-        collection_name=QDRANT_COLLECTION,
-        points=[PointStruct(id=point_id, vector=vectors[0], payload=payload)],
-    )
-
-
-async def _do_add_memory(content: str, user_id: str, metadata: dict) -> None:
-    """Orchestrate memory storage: optionally distill via LLM, then store."""
-    await _ensure_models_once()
-
-    if not settings.distill_memories:
-        await _store_raw(content, user_id, metadata)
-        return
-
-    facts = await _extract_facts(content)
-    if facts is None:
-        await _store_raw(content, user_id, metadata)
-        return
-    if not facts:
-        return
-
-    await _dedup_and_store(facts, user_id, metadata)
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +82,7 @@ async def add_memory(
 
     async def _do_add() -> None:
         try:
-            await _do_add_memory(content=memory, user_id=uid, metadata=meta)
+            await do_add_memory(content=memory, user_id=uid, metadata=meta)
             logger.info("add_memory: persisted for user_id=%s", uid)
         except Exception:
             logger.exception("add_memory: failed for user_id=%s", uid)
@@ -297,7 +115,7 @@ async def search_memories(
     uid = _resolve_user_id(project, user_id)
     logger.info("search_memories: query=%r user_id=%s limit=%d", query, uid, limit)
 
-    await _ensure_models_once()
+    await ensure_models_once()
     vectors = await aembed([query])
     qfilter = Filter(must=[FieldCondition(key="user_id", match=MatchValue(value=uid))])
     qd = get_qdrant()

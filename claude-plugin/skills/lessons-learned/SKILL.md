@@ -13,6 +13,7 @@ Scan conversation history for items worth remembering:
 
 - Lessons learned — bugs, pitfalls, failed approaches, workarounds
 - Architecture decisions — choices made and their rationale
+- Direction changes — when the user corrected course, rejected an approach, or redirected priorities (record both the original direction and why it changed)
 - User preferences — coding style, tool choices, conventions
 - Patterns and anti-patterns — recurring solutions or mistakes
 - Configuration quirks — project-specific setup, environment gotchas

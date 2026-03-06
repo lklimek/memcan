@@ -19,6 +19,7 @@ indexing = [
 
 [project.scripts]
 mindojo-mcp = "mindojo_mcp.server:main"
+mindojo-extract = "mindojo_mcp.extract_learnings:main"
 
 [build-system]
 requires = ["hatchling"]

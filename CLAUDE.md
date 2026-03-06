@@ -20,7 +20,9 @@ scripts/                 # Import/migration utilities (see README.md § Scripts)
 
 ## Versioning
 
-Bump version in `claude-plugin/.claude-plugin/plugin.json` before each commit. Follow [SemVer 2](https://semver.org/).
+**Only the team coordinator (Claudius) bumps versions.** Subagents must NOT modify `plugin.json` version.
+
+Version lives in `claude-plugin/.claude-plugin/plugin.json`. Follow [SemVer 2](https://semver.org/).
 
 - **Major** (x.0.0): breaking changes to MCP tools, removed features, incompatible config changes
 - **Minor** (0.x.0): new MCP tools, new skills, significant behavior changes
