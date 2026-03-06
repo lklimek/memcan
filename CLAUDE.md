@@ -11,7 +11,7 @@ Stack: Python MCP server (FastMCP), Qdrant (vectors), Ollama (LLM + embeddings).
 ```
 claude-plugin/           # Claude Code plugin
   .claude-plugin/        # Manifest
-  hooks/                 # Event hooks (PreCompact, SessionEnd)
+  hooks/                 # Event hooks (SubagentStop)
   mcp-server/            # MCP server (Python, uv-managed)
   skills/                # Plugin skills
 docker-compose.yml       # Qdrant
