@@ -14,7 +14,7 @@ Search and retrieve memories from past sessions.
 ## Procedure
 
 1. **Determine query** -- extract the key topic, error message, or concept to search for.
-2. **Search both scopes** -- run `search_memories` twice: once with `project` set to git repo basename, once without (global). Use `limit=5` each.
+2. **Search both scopes** -- run `search_memories` twice: once with `project` set to git remote origin repo name (e.g., `mindojo` not `mindojo-2`), once without (global). Use `limit=5` each.
 3. **List all** (optional) -- if search returns few results and broader context is needed, use `get_memories(project=...)` and/or `get_memories()` for full listings.
 4. **Report** -- present relevant memories to the conversation. Include memory IDs for reference.
 

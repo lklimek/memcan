@@ -14,7 +14,7 @@ Quick-save a memory with automatic dedup and size reporting.
 
 ## Procedure
 
-1. **Decide scope** — if content is clearly project-specific, set `project` to git repo basename; otherwise omit (global).
+1. **Decide scope** — if content is clearly project-specific, set `project` to git remote origin repo name (e.g., `mindojo` not `mindojo-2`); otherwise omit (global).
 2. **Check for duplicates** — `search_memories(query=<content summary>, project=<if scoped>, limit=3)`. If a similar memory exists, use `update_memory` instead of creating a new one.
 3. **Count before** — `count_memories(project=<if scoped>)`, note the count.
 4. **Save** — `add_memory(memory=<text>, project=<if scoped>, metadata={"type": "<lesson|decision|preference>", ...})`. Or `update_memory` if updating.

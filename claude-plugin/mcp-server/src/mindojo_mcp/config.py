@@ -71,8 +71,8 @@ class Settings(BaseSettings):
     # Memory distillation (LLM fact extraction + dedup)
     distill_memories: bool = True
 
-    # Logging
-    log_file: str = ""
+    # Logging — defaults to ~/.claude/logs/mindojo-mcp.log
+    log_file: str = str(Path.home() / ".claude" / "logs" / "mindojo-mcp.log")
 
 
 settings = Settings()

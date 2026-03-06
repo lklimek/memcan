@@ -24,7 +24,7 @@ Collect as a raw numbered list. Search existing memories (`search_memories`) and
 
 For each item:
 
-1. Assign **scope**: global (useful across projects) or project-scoped (set `project` to git repo basename)
+1. Assign **scope**: global (useful across projects) or project-scoped (set `project` to git remote origin repo name (e.g., `mindojo` not `mindojo-2`))
 2. Assign **type**: `lesson`, `decision`, or `preference`
 3. Save via `add_memory` with `metadata={"type": "<type>", "source": "lessons-learned"}`
 

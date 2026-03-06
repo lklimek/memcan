@@ -69,7 +69,7 @@ async def add_memory(
 
     Args:
         memory: The memory content to store.
-        project: Git repo name for project-scoped memory. Omit for global.
+        project: Git remote origin repo name (not dir name) for project-scoped memory. Omit for global.
         user_id: Explicit user ID override.
         metadata: Optional metadata dict (e.g., {"source": "penny", "type": "lesson"}).
 
@@ -104,7 +104,7 @@ async def search_memories(
 
     Args:
         query: Natural language search query.
-        project: Git repo name to scope search. Omit for global.
+        project: Git remote origin repo name (not dir name) to scope search. Omit for global.
         user_id: Explicit user ID override.
         limit: Max results to return (default 10).
 
@@ -157,7 +157,7 @@ async def get_memories(
     """List memories for a given scope (up to limit).
 
     Args:
-        project: Git repo name for project-scoped listing. Omit for global.
+        project: Git remote origin repo name (not dir name) for project-scoped listing. Omit for global.
         user_id: Explicit user ID override.
         limit: Max memories to return (default 100).
 
@@ -204,7 +204,7 @@ async def count_memories(
     """Count total memories for a given scope.
 
     Args:
-        project: Git repo name for project-scoped count. Omit for global.
+        project: Git remote origin repo name (not dir name) for project-scoped count. Omit for global.
         user_id: Explicit user ID override.
 
     Returns:
