@@ -48,16 +48,69 @@ class TestSearchStandards:
 
         await search_standards(
             query="xss",
-            standard_type="cwe",
-            standard_id="CWE-79",
+            standard_type="security",
+            standard_id="owasp-asvs",
             tech_stack="python",
             lang="en",
         )
         filters = _mock_asearch.call_args.kwargs["filters"]
-        assert filters["standard_type"] == "cwe"
-        assert filters["standard_id"] == "CWE-79"
+        assert filters["standard_type"] == "security"
+        assert filters["standard_id"] == "owasp-asvs"
         assert filters["tech_stack"] == "python"
         assert filters["lang"] == "en"
+
+    @pytest.mark.asyncio
+    async def test_case_insensitive_filters(self, _mock_asearch):
+        """Uppercase filter values are normalized to lowercase."""
+        from mindojo_mcp.server import search_standards
+
+        await search_standards(
+            query="xss", standard_type="SECURITY", standard_id="OWASP-ASVS"
+        )
+        filters = _mock_asearch.call_args.kwargs["filters"]
+        assert filters["standard_type"] == "security"
+        assert filters["standard_id"] == "owasp-asvs"
+
+    @pytest.mark.asyncio
+    async def test_type_alias_owasp_resolves_to_security(self, _mock_asearch):
+        """standard_type='owasp' resolves to type=security."""
+        from mindojo_mcp.server import search_standards
+
+        await search_standards(query="password storage", standard_type="owasp")
+        filters = _mock_asearch.call_args.kwargs["filters"]
+        assert filters["standard_type"] == "security"
+        assert filters["standard_id"] is None  # broad OWASP search
+
+    @pytest.mark.asyncio
+    async def test_type_alias_asvs_resolves_to_security_and_id(self, _mock_asearch):
+        """standard_type='asvs' resolves to type=security + id=owasp-asvs."""
+        from mindojo_mcp.server import search_standards
+
+        await search_standards(query="session management", standard_type="ASVS")
+        filters = _mock_asearch.call_args.kwargs["filters"]
+        assert filters["standard_type"] == "security"
+        assert filters["standard_id"] == "owasp-asvs"
+
+    @pytest.mark.asyncio
+    async def test_type_alias_does_not_override_explicit_id(self, _mock_asearch):
+        """When both type alias and explicit standard_id given, explicit id wins."""
+        from mindojo_mcp.server import search_standards
+
+        await search_standards(
+            query="xss", standard_type="owasp", standard_id="owasp-cheatsheets"
+        )
+        filters = _mock_asearch.call_args.kwargs["filters"]
+        assert filters["standard_type"] == "security"
+        assert filters["standard_id"] == "owasp-cheatsheets"
+
+    @pytest.mark.asyncio
+    async def test_id_alias_resolves(self, _mock_asearch):
+        """standard_id='asvs' resolves to 'owasp-asvs'."""
+        from mindojo_mcp.server import search_standards
+
+        await search_standards(query="auth", standard_id="asvs")
+        filters = _mock_asearch.call_args.kwargs["filters"]
+        assert filters["standard_id"] == "owasp-asvs"
 
     @pytest.mark.asyncio
     async def test_ref_id_wraps_to_ref_ids_list(self, _mock_asearch):

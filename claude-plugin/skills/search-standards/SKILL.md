@@ -11,11 +11,13 @@ Query indexed coding and security standards (OWASP, CWE, style guides, etc.).
 
 ## Procedure
 
-1. **Determine standard type** -- infer from context: `security`, `style`, `architecture`, `testing`, etc.
+1. **Determine scope** -- infer from context what kind of standard the user needs.
 2. **Search** -- call `search_standards(query=<topic>)` with optional filters:
-   - `standard_type` -- e.g. "OWASP", "CWE", "PEP"
-   - `standard_id` -- specific standard identifier (e.g. "OWASP-ASVS-4.0")
-   - `ref_id` -- section/rule reference (e.g. "V5.3.4", "CWE-89")
-   - `tech_stack` -- technology filter (e.g. "python", "rust", "kubernetes")
-   - `lang` -- language filter
+   - `standard_type` -- category or well-known name (case-insensitive, aliases supported):
+     - Categories: `"security"`, `"coding"`, `"guideline"`
+     - Aliases: `"owasp"` (→ all OWASP), `"asvs"` (→ OWASP ASVS), `"cheatsheets"` (→ OWASP Cheat Sheets), `"cwe"`
+   - `standard_id` -- specific standard (e.g. `"owasp-asvs"`, `"owasp-cheatsheets"`)
+   - `ref_id` -- cross-reference ID (e.g. `"CWE-89"`, `"V5.3.4"`)
+   - `tech_stack` -- technology filter (e.g. `"python"`, `"rust"`)
+   - `lang` -- language filter (e.g. `"en"`)
 3. **Present** -- show relevant sections with their `standard_id` and `ref_id` for traceability.
