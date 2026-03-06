@@ -154,12 +154,16 @@ async def asearch_collection(
     qd_filter = Filter(must=must_conditions) if must_conditions else None
 
     qd = get_qdrant()
-    results = qd.query_points(
-        collection_name=collection,
-        query=query_vector,
-        query_filter=qd_filter,
-        limit=limit,
-        with_payload=True,
-    )
+    try:
+        results = qd.query_points(
+            collection_name=collection,
+            query=query_vector,
+            query_filter=qd_filter,
+            limit=limit,
+            with_payload=True,
+        )
+    except Exception:
+        logger.warning("asearch_collection: collection %s not found", collection)
+        return []
 
     return [{"score": point.score, **(point.payload or {})} for point in results.points]

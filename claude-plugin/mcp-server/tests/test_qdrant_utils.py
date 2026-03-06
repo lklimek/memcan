@@ -296,3 +296,19 @@ class TestAsearchCollection:
         assert isinstance(conditions_by_key["file_path"].match, MatchText)
         assert conditions_by_key["file_path"].match.text == "src/main.rs"
         assert isinstance(conditions_by_key["project"].match, MatchValue)
+
+    @pytest.mark.asyncio
+    @patch("mindojo_mcp.qdrant_utils.get_qdrant")
+    @patch("mindojo_mcp.qdrant_utils.aembed")
+    async def test_missing_collection_returns_empty(self, mock_aembed, mock_get_qd):
+        """When Qdrant collection doesn't exist, return [] instead of raising."""
+        from mindojo_mcp.qdrant_utils import asearch_collection
+
+        mock_aembed.return_value = [[0.1, 0.2]]
+        mock_qd = MagicMock()
+        mock_get_qd.return_value = mock_qd
+        mock_qd.query_points.side_effect = Exception("Collection 'x' doesn't exist!")
+
+        results = await asearch_collection("x", "query")
+
+        assert results == []
