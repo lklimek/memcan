@@ -40,7 +40,7 @@ Ask the user for their Ollama URL and update `OLLAMA_URL` in `.env`. Verify `QDR
 
 Then ask if Ollama requires Bearer token authentication (common when behind a reverse proxy like Traefik, Caddy, or nginx). If yes, ask for the `OLLAMA_API_KEY` value and uncomment/set it in `.env`. If no, leave it commented out (the default). Refer to README "Ollama Authentication" for details.
 
-Then ask if the user wants to enable MCP server logging. Suggest a default location: `~/.local/share/mindojo/mindojo-mcp.log` (user-writable, no sudo needed). If yes, set `LOG_FILE` to the chosen path. If no (or blank), leave `LOG_FILE` empty or commented out — logging will be disabled. The MCP server creates parent directories automatically.
+MCP server logging now defaults to `~/.claude/logs/mindojo-mcp.log` (no config needed). If the user wants a custom path, set `LOG_FILE` in `.env` to override.
 
 ### 3. Create User Rule
 
@@ -71,7 +71,7 @@ Use the MindOJO MCP server to store and recall knowledge across sessions.
 - When starting work on an unfamiliar area
 
 ## Scoping
-- Set `project` param to git repo basename (e.g., "penny", "claudius")
+- Set `project` param to git remote origin repo name — NOT the directory name (e.g., `dash-evo-tool` not `dash-evo-tool-2`)
 - Omit `project` for global memories (universal learnings)
 
 ## Quality Guidelines
@@ -87,7 +87,7 @@ Print a summary:
 - ✅/❌ `.env` exists at `~/.config/mindojo/.env` with `OLLAMA_URL` configured
 - ✅/❌ Qdrant is healthy
 - ✅/❌ User rule exists at `~/.claude/rules/mindojo.md`
-- ✅/❌ Logging: `LOG_FILE` is set in `.env` → show path; or disabled (empty/unset)
+- ✅/❌ Logging: defaults to `~/.claude/logs/mindojo-mcp.log`; custom path if `LOG_FILE` set in `.env`
 - ✅/❌ MCP server is connected (test: call `search_memories(query="test", limit=1)` — success = connected, failure or tool unavailable = not connected)
 
 Security warnings (show only when applicable):
