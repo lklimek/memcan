@@ -55,7 +55,7 @@ Restart Claude Code after setup to connect the MCP server.
 ## Architecture
 
 - **Qdrant** — vector similarity search (port 6333)
-- **Ollama** — LLM (`qwen3.5:9b`) + embeddings (`qwen3-embedding:8b`)
+- **Ollama** — LLM (`gemma3n:e4b`) + embeddings (`qwen3-embedding:4b`)
 - **DISTILL_MEMORIES** — when enabled (default: `true`), the LLM extracts structured facts from raw text before storing
 
 ## MCP Tools
@@ -68,6 +68,9 @@ Restart Claude Code after setup to connect the MCP server.
 | `delete_memory` | Remove a memory by ID |
 | `update_memory` | Modify existing memory content |
 | `count_memories` | Count memories for a scope (without fetching content) |
+| `list_collections` | Discover available collections, point counts, and valid filter values |
+| `search_standards` | Search indexed standards (CWE, OWASP, etc.) by semantic similarity |
+| `search_code` | Search indexed code snippets by semantic similarity |
 
 ## Memory Scoping
 
@@ -150,13 +153,12 @@ cp .env.example ~/.config/mindojo/.env
 |----------|---------|-------------|
 | `OLLAMA_URL` | — | Ollama API endpoint (e.g. `http://host:11434`) |
 | `OLLAMA_API_KEY` | — | Bearer token for Ollama auth (see [Ollama Authentication](#ollama-authentication)) |
-| `OLLAMA_LLM_MODEL` | `qwen3.5:9b` | LLM model (server auto-creates `-mindojo-nothink` variant) |
-| `OLLAMA_EMBED_MODEL` | `qwen3-embedding:8b` | Embedding model |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint |
-| `QDRANT_COLLECTION` | `mindojo` | Collection name |
-| `QDRANT_EMBED_DIMS` | `4096` | Embedding dimensions |
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction before storing |
 | `DEFAULT_USER_ID` | `global` | Default user ID for memory scoping |
+| `TECH_STACK` | — | Default tech stack filter (e.g. "rust", "python") |
+
+Models and collection names are hardcoded in `config.py`: LLM (`gemma3n:e4b`), embeddings (`qwen3-embedding:4b`), collections (`mindojo-memories`, `mindojo-standards`, `mindojo-code`).
 
 **Infrastructure (Docker / Traefik):**
 
