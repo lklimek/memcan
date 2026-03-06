@@ -1,0 +1,27 @@
+{
+  "description": "Auto-extract learnings before context is lost",
+  "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Context is about to be compacted. Before it's lost, extract any learnings worth saving from this conversation.\n\nFor each learning:\n1. Determine scope: project-scoped (specific to current repo) or global (useful across projects)\n2. Classify type: lesson (bug/pitfall/workaround), decision (architecture/design choice), or preference (coding style/convention)\n3. Save via add_memory with appropriate project param and metadata={\"type\": \"<type>\", \"source\": \"auto-compact\"}\n\nFocus on: bugs and their fixes, architecture decisions with rationale, discovered patterns, configuration quirks, failed approaches.\nSkip: mundane operations (ran tests, committed code), trivial changes, things already saved this session.\nBe specific: 'Qdrant facet API requires keyword index on field' beats 'indexing matters'."
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Session is ending. Extract any unsaved learnings from this conversation.\n\nFor each learning:\n1. Determine scope: project-scoped (specific to current repo) or global (useful across projects)\n2. Classify type: lesson (bug/pitfall/workaround), decision (architecture/design choice), or preference (coding style/convention)\n3. Save via add_memory with appropriate project param and metadata={\"type\": \"<type>\", \"source\": \"auto-session-end\"}\n\nFocus on: bugs and their fixes, architecture decisions with rationale, discovered patterns, configuration quirks, failed approaches.\nSkip: mundane operations, trivial changes, things already saved this session.\nBe specific and self-contained — the memory should make sense months later."
+          }
+        ]
+      }
+    ]
+  }
+}
