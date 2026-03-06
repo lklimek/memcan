@@ -1,7 +1,20 @@
 {
-  "description": "Auto-extract learnings when agents finish",
+  "description": "Auto-extract learnings when agents finish or context is compacted",
   "hooks": {
     "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --directory ${CLAUDE_PLUGIN_ROOT}/mcp-server mindojo-extract",
+            "async": true,
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
       {
         "matcher": "*",
         "hooks": [
