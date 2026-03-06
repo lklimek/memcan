@@ -179,6 +179,9 @@ def extract_metadata(
         messages=[{"role": "user", "content": prompt}],
         options={"num_predict": 512, "temperature": 0.0},
         format="json",
+        # Disable chain-of-thought on thinking models (e.g. Qwen 3.5) —
+        # CoT exhausts num_predict budget on <think> tokens, returning empty content.
+        think=False,
     )
     raw = resp.message.content.strip()
     meta = json.loads(raw)

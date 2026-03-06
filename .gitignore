@@ -13,6 +13,9 @@ build/
 # Tools
 .ruff_cache/
 
+# Cached downloads (OWASP repos, etc.)
+.cache/
+
 # IDE
 .idea/
 .vscode/
