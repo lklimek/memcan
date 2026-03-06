@@ -473,21 +473,54 @@ async def update_memory(memory_id: str, memory: str) -> str:
     return json.dumps({"status": "updated", "memory_id": memory_id}, default=str)
 
 
-# Alias mapping: common names → (standard_type, standard_id).
-# When a user passes a well-known name as standard_type, resolve it to the
-# actual stored values so intuitive queries like "owasp" or "asvs" just work.
-_TYPE_ALIASES: dict[str, tuple[str, str | None]] = {
-    "owasp": ("security", None),  # all OWASP standards
-    "asvs": ("security", "owasp-asvs"),
-    "cheatsheet": ("security", "owasp-cheatsheets"),
-    "cheatsheets": ("security", "owasp-cheatsheets"),
-    "cwe": ("security", None),  # future: CWE imports
+_COLLECTION_FACETS: dict[str, list[str]] = {
+    STANDARDS_COLLECTION: [
+        "standard_type",
+        "standard_id",
+        "version",
+        "tech_stack",
+        "lang",
+    ],
+    CODE_COLLECTION: ["project", "tech_stack"],
+    QDRANT_COLLECTION: ["user_id"],
 }
-_ID_ALIASES: dict[str, str] = {
-    "asvs": "owasp-asvs",
-    "asvs-5.0": "owasp-asvs",
-    "cheatsheets": "owasp-cheatsheets",
-}
+
+
+@mcp.tool()
+async def list_collections() -> str:
+    """List available data collections with point counts and filterable field values.
+
+    Call this to discover what data is indexed and what filter values are valid
+    for search_standards, search_code, and search_memories.
+
+    Returns:
+        JSON object with per-collection info: name, count, and available
+        filter values (via Qdrant facet API). Collections that don't exist
+        are omitted.
+    """
+    qd = get_qdrant()
+    collections: list[dict] = []
+
+    for name, facet_fields in _COLLECTION_FACETS.items():
+        try:
+            count = qd.count(collection_name=name, exact=True).count
+        except Exception:
+            logger.debug("list_collections: skipping %s (not found)", name)
+            continue
+
+        filters: dict[str, list[dict]] = {}
+        for field in facet_fields:
+            try:
+                facet_resp = qd.facet(collection_name=name, key=field, limit=10)
+                filters[field] = [
+                    {"value": hit.value, "count": hit.count} for hit in facet_resp.hits
+                ]
+            except Exception:
+                logger.debug("list_collections: facet %s.%s failed", name, field)
+
+        collections.append({"name": name, "count": count, "filters": filters})
+
+    return json.dumps({"collections": collections}, default=str)
 
 
 @mcp.tool()
@@ -504,9 +537,9 @@ async def search_standards(
 
     Args:
         query: Natural language search query.
-        standard_type: Filter by category ("security", "coding", "guideline")
-            or by well-known name ("owasp", "asvs", "cwe", "cheatsheets").
-        standard_id: Filter by standard ID (e.g. "owasp-asvs", "owasp-cheatsheets").
+        standard_type: Filter by category ("security", "coding", "cve", "guideline").
+        standard_id: Filter by standard ID. Use list_collections() to discover
+            available values.
         ref_id: Filter by referenced ID — matched against ref_ids list.
         tech_stack: Filter by technology stack (e.g. "python", "rust").
         lang: Filter by language code (e.g. "en").
@@ -522,15 +555,6 @@ async def search_standards(
         standard_type = standard_type.lower()
     if standard_id:
         standard_id = standard_id.lower()
-
-    # Resolve aliases: e.g. "owasp" → type=security, "asvs" → type=security+id=owasp-asvs
-    if standard_type and standard_type in _TYPE_ALIASES:
-        resolved_type, resolved_id = _TYPE_ALIASES[standard_type]
-        standard_type = resolved_type
-        if resolved_id and not standard_id:
-            standard_id = resolved_id
-    if standard_id and standard_id in _ID_ALIASES:
-        standard_id = _ID_ALIASES[standard_id]
 
     filters: dict[str, Any] = {
         "standard_type": standard_type,

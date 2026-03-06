@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from mindojo_mcp.config import CODE_COLLECTION, STANDARDS_COLLECTION
+from mindojo_mcp.config import CODE_COLLECTION, QDRANT_COLLECTION, STANDARDS_COLLECTION
 
 
 @pytest.fixture()
@@ -69,47 +69,6 @@ class TestSearchStandards:
         )
         filters = _mock_asearch.call_args.kwargs["filters"]
         assert filters["standard_type"] == "security"
-        assert filters["standard_id"] == "owasp-asvs"
-
-    @pytest.mark.asyncio
-    async def test_type_alias_owasp_resolves_to_security(self, _mock_asearch):
-        """standard_type='owasp' resolves to type=security."""
-        from mindojo_mcp.server import search_standards
-
-        await search_standards(query="password storage", standard_type="owasp")
-        filters = _mock_asearch.call_args.kwargs["filters"]
-        assert filters["standard_type"] == "security"
-        assert filters["standard_id"] is None  # broad OWASP search
-
-    @pytest.mark.asyncio
-    async def test_type_alias_asvs_resolves_to_security_and_id(self, _mock_asearch):
-        """standard_type='asvs' resolves to type=security + id=owasp-asvs."""
-        from mindojo_mcp.server import search_standards
-
-        await search_standards(query="session management", standard_type="ASVS")
-        filters = _mock_asearch.call_args.kwargs["filters"]
-        assert filters["standard_type"] == "security"
-        assert filters["standard_id"] == "owasp-asvs"
-
-    @pytest.mark.asyncio
-    async def test_type_alias_does_not_override_explicit_id(self, _mock_asearch):
-        """When both type alias and explicit standard_id given, explicit id wins."""
-        from mindojo_mcp.server import search_standards
-
-        await search_standards(
-            query="xss", standard_type="owasp", standard_id="owasp-cheatsheets"
-        )
-        filters = _mock_asearch.call_args.kwargs["filters"]
-        assert filters["standard_type"] == "security"
-        assert filters["standard_id"] == "owasp-cheatsheets"
-
-    @pytest.mark.asyncio
-    async def test_id_alias_resolves(self, _mock_asearch):
-        """standard_id='asvs' resolves to 'owasp-asvs'."""
-        from mindojo_mcp.server import search_standards
-
-        await search_standards(query="auth", standard_id="asvs")
-        filters = _mock_asearch.call_args.kwargs["filters"]
         assert filters["standard_id"] == "owasp-asvs"
 
     @pytest.mark.asyncio
@@ -190,3 +149,76 @@ class TestSearchCode:
 
         await search_code(query="test", limit=200)
         assert _mock_asearch.call_args.kwargs["limit"] == 100
+
+
+class TestListCollections:
+    """list_collections tool tests."""
+
+    @pytest.fixture()
+    def _mock_qdrant(self):
+        """Patch get_qdrant in server module to return a mock QdrantClient."""
+        mock_qd = Mock()
+
+        # Default: all collections exist with count 42
+        mock_qd.count.return_value = Mock(count=42)
+
+        # Default: facet returns one hit
+        mock_qd.facet.return_value = Mock(hits=[Mock(value="security", count=42)])
+
+        with patch("mindojo_mcp.server.get_qdrant", return_value=mock_qd):
+            yield mock_qd
+
+    @pytest.mark.asyncio
+    async def test_returns_collections_with_counts(self, _mock_qdrant):
+        from mindojo_mcp.server import list_collections
+
+        result = json.loads(await list_collections())
+        assert "collections" in result
+        names = [c["name"] for c in result["collections"]]
+        assert STANDARDS_COLLECTION in names
+        assert QDRANT_COLLECTION in names
+
+        standards = next(
+            c for c in result["collections"] if c["name"] == STANDARDS_COLLECTION
+        )
+        assert standards["count"] == 42
+        assert "standard_type" in standards["filters"]
+
+    @pytest.mark.asyncio
+    async def test_skips_nonexistent_collections(self, _mock_qdrant):
+        from mindojo_mcp.server import list_collections
+
+        def count_side_effect(collection_name, exact=True):
+            if collection_name == STANDARDS_COLLECTION:
+                raise Exception("Not found")
+            return Mock(count=42)
+
+        _mock_qdrant.count.side_effect = count_side_effect
+
+        result = json.loads(await list_collections())
+        names = [c["name"] for c in result["collections"]]
+        assert STANDARDS_COLLECTION not in names
+        assert QDRANT_COLLECTION in names
+
+    @pytest.mark.asyncio
+    async def test_handles_unindexed_facet_fields(self, _mock_qdrant):
+        from mindojo_mcp.server import list_collections
+
+        def facet_side_effect(collection_name, key, limit=10):
+            if key == "standard_type":
+                return Mock(hits=[Mock(value="security", count=42)])
+            raise Exception("Field not indexed")
+
+        _mock_qdrant.facet.side_effect = facet_side_effect
+
+        result = json.loads(await list_collections())
+        standards = next(
+            c for c in result["collections"] if c["name"] == STANDARDS_COLLECTION
+        )
+        assert "standard_type" in standards["filters"]
+        assert standards["filters"]["standard_type"] == [
+            {"value": "security", "count": 42}
+        ]
+        # Fields that failed faceting should be absent
+        for field in ["standard_id", "version", "tech_stack", "lang"]:
+            assert field not in standards["filters"]
