@@ -1,11 +1,6 @@
 {
   "brain": {
-    "command": "uv",
-    "args": [
-      "--directory",
-      "${CLAUDE_PLUGIN_ROOT}/mcp-server",
-      "run",
-      "mindojo-mcp"
-    ]
+    "command": "${CLAUDE_PLUGIN_ROOT}/bin/mindojo-mcp",
+    "args": []
   }
 }

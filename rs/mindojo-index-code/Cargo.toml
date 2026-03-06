@@ -1,0 +1,23 @@
+[package]
+name = "mindojo-index-code"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mindojo-index-code"
+path = "src/main.rs"
+
+[dependencies]
+mindojo-core = { path = "../mindojo-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+regex = "1"

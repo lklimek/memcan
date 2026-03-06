@@ -1,0 +1,22 @@
+[package]
+name = "mindojo-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mindojo-mcp"
+path = "src/main.rs"
+
+[dependencies]
+mindojo-core = { path = "../mindojo-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing-appender = { workspace = true }
+chrono = { workspace = true }
+rmcp = { workspace = true }
+schemars = { workspace = true }

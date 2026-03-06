@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --directory ${CLAUDE_PLUGIN_ROOT}/mcp-server mindojo-extract",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/mindojo-extract",
             "async": true,
             "timeout": 120
           }
@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --directory ${CLAUDE_PLUGIN_ROOT}/mcp-server mindojo-extract",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/mindojo-extract",
             "async": true,
             "timeout": 120
           }

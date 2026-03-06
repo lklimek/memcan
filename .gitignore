@@ -10,6 +10,9 @@ dist/
 build/
 .venv/
 
+# Rust
+target/
+
 # Tools
 .ruff_cache/
 
@@ -28,6 +31,9 @@ Thumbs.db
 
 # Local marketplace (not pushed — use github source in lklimek/agents)
 claude-plugin/.claude-plugin/marketplace.json
+
+# Plugin binaries (downloaded from releases)
+claude-plugin/bin/
 
 # Reports (generated)
 *.report.json

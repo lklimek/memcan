@@ -1,39 +1,31 @@
+# MindOJO — optional Docker Compose for development
+#
+# LanceDB is embedded (no server needed). This compose file is only needed
+# if you want to run Ollama in Docker.
+#
+# For most setups, install Ollama directly: https://ollama.com/download
+
 services:
-  qdrant:
-    image: qdrant/qdrant:latest
+  ollama:
+    image: ollama/ollama:latest
     restart: unless-stopped
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "11434:11434"
     volumes:
-      - qdrant-data:/qdrant/storage
+      - ollama-data:/root/.ollama
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.qdrant.rule=Host(`${QDRANT_DOMAIN}`)
-      - traefik.http.routers.qdrant.entrypoints=websecure
-      - traefik.http.routers.qdrant.tls.certresolver=letsencrypt
-      - traefik.http.routers.qdrant.middlewares=qdrant-auth
-      - traefik.http.middlewares.qdrant-auth.basicauth.users=${TRAEFIK_AUTH}
-      - traefik.http.services.qdrant.loadbalancer.server.port=6333
-    networks:
-      - traefik
-      - mindojo
+    # Uncomment for GPU support:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
 
 volumes:
-  qdrant-data:
-
-networks:
-  traefik:
-    external: true
-  mindojo:
+  ollama-data:

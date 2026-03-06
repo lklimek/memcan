@@ -1,0 +1,23 @@
+[package]
+name = "mindojo-import-triaged"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mindojo-import-triaged"
+path = "src/main.rs"
+
+[dependencies]
+mindojo-core = { path = "../mindojo-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+md-5 = { workspace = true }
+regex = "1"

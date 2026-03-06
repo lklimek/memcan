@@ -1,0 +1,56 @@
+[workspace]
+resolver = "2"
+members = [
+    "rs/mindojo-core",
+    "rs/mindojo-mcp",
+    "rs/mindojo-import-triaged",
+    "rs/mindojo-index-code",
+    "rs/mindojo-index-standards",
+    "rs/mindojo-migrate",
+    "rs/mindojo-test-classification",
+    "rs/mindojo-extract",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/lklimek/mindojo"
+
+[workspace.dependencies]
+# Core
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+clap = { version = "4", features = ["derive"] }
+uuid = { version = "1", features = ["v4", "v5"] }
+chrono = { version = "0.4", features = ["serde"] }
+md-5 = "0.10"
+sha2 = "0.10"
+dotenvy = "0.15"
+dirs = "6"
+
+# Async
+async-trait = "0.1"
+futures = "0.3"
+
+# HTTP
+reqwest = { version = "0.12", features = ["json"] }
+
+# Vector DB
+lancedb = "0.26"
+arrow-array = "57"
+arrow-schema = "57"
+
+# MCP
+rmcp = { version = "0.16", features = ["server", "transport-io"] }
+schemars = "0.8"
+
+# Testing
+mockito = "1"
+tempfile = "3"

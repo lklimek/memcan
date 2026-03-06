@@ -8,6 +8,7 @@
   },
   "repository": "https://github.com/lklimek/mindojo",
   "license": "MIT",
-  "keywords": ["memory", "qdrant", "ollama", "persistent", "mcp"],
-  "mcpServers": "./.mcp.json"
+  "keywords": ["memory", "lancedb", "ollama", "persistent", "mcp"],
+  "mcpServers": "./.mcp.json",
+  "setup": "./setup.sh"
 }
