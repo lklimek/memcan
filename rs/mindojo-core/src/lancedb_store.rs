@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context, bail};
 use arrow_array::{
     Array, ArrayRef, FixedSizeListArray, Float32Array, LargeStringArray, RecordBatch,
     RecordBatchIterator, StringArray,
@@ -15,6 +14,7 @@ use lancedb::{Connection, Table, connect};
 use tokio::sync::Mutex;
 use tracing::debug;
 
+use crate::error::{MindojoError, Result, ResultExt};
 use crate::traits::{SearchResult, VectorPoint, VectorStore};
 
 /// LanceDB-backed vector store.
@@ -36,7 +36,7 @@ impl std::fmt::Debug for LanceDbStore {
 
 impl LanceDbStore {
     /// Open (or create) a LanceDB database at the given path.
-    pub async fn open(path: &str) -> anyhow::Result<Self> {
+    pub async fn open(path: &str) -> Result<Self> {
         std::fs::create_dir_all(path)
             .with_context(|| format!("cannot create LanceDB directory: {path}"))?;
         let conn = connect(path)
@@ -81,7 +81,7 @@ impl LanceDbStore {
     }
 
     /// Convert VectorPoints into a RecordBatch for upsert.
-    fn points_to_batch(points: &[VectorPoint], dims: usize) -> anyhow::Result<RecordBatch> {
+    fn points_to_batch(points: &[VectorPoint], dims: usize) -> Result<RecordBatch> {
         let schema = Self::table_schema(dims);
         let n = points.len();
 
@@ -93,11 +93,10 @@ impl LanceDbStore {
         let mut floats: Vec<f32> = Vec::with_capacity(n * dims);
         for p in points {
             if p.vector.len() != dims {
-                bail!(
-                    "vector dimension mismatch: expected {}, got {}",
-                    dims,
-                    p.vector.len()
-                );
+                return Err(MindojoError::DimensionMismatch {
+                    expected: dims,
+                    actual: p.vector.len(),
+                });
             }
             floats.extend_from_slice(&p.vector);
         }
@@ -162,7 +161,7 @@ impl LanceDbStore {
     }
 
     /// Open an existing table by name.
-    async fn open_table(&self, name: &str) -> anyhow::Result<Table> {
+    async fn open_table(&self, name: &str) -> Result<Table> {
         self.conn
             .open_table(name)
             .execute()
@@ -171,7 +170,7 @@ impl LanceDbStore {
     }
 
     /// Infer vector dimensionality from an existing table's schema.
-    async fn infer_dims(&self, table: &Table) -> anyhow::Result<usize> {
+    async fn infer_dims(&self, table: &Table) -> Result<usize> {
         let schema = table.schema().await?;
         for field in schema.fields() {
             if field.name() == "vector"
@@ -180,7 +179,7 @@ impl LanceDbStore {
                 return Ok(*size as usize);
             }
         }
-        bail!("could not determine vector dimensions from table schema")
+        Err(MindojoError::SchemaDimensions)
     }
 
     /// Extract SearchResults from a RecordBatch with optional distance column.
@@ -216,7 +215,7 @@ impl LanceDbStore {
     }
 
     /// List all table names in the database.
-    pub async fn table_names(&self) -> anyhow::Result<Vec<String>> {
+    pub async fn table_names(&self) -> Result<Vec<String>> {
         self.conn
             .table_names()
             .execute()
@@ -227,7 +226,7 @@ impl LanceDbStore {
 
 #[async_trait]
 impl VectorStore for LanceDbStore {
-    async fn ensure_table(&self, name: &str, dims: usize) -> anyhow::Result<()> {
+    async fn ensure_table(&self, name: &str, dims: usize) -> Result<()> {
         let _guard = self.create_lock.lock().await;
         let names = self.conn.table_names().execute().await?;
         if names.contains(&name.to_string()) {
@@ -245,7 +244,7 @@ impl VectorStore for LanceDbStore {
         Ok(())
     }
 
-    async fn upsert(&self, table: &str, points: &[VectorPoint]) -> anyhow::Result<()> {
+    async fn upsert(&self, table: &str, points: &[VectorPoint]) -> Result<()> {
         if points.is_empty() {
             return Ok(());
         }
@@ -273,7 +272,7 @@ impl VectorStore for LanceDbStore {
         vector: &[f32],
         filter: Option<&str>,
         limit: usize,
-    ) -> anyhow::Result<Vec<SearchResult>> {
+    ) -> Result<Vec<SearchResult>> {
         let tbl = self.open_table(table).await?;
         let mut query = tbl
             .vector_search(vector)
@@ -301,7 +300,7 @@ impl VectorStore for LanceDbStore {
         table: &str,
         filter: Option<&str>,
         limit: usize,
-    ) -> anyhow::Result<Vec<SearchResult>> {
+    ) -> Result<Vec<SearchResult>> {
         let tbl = self.open_table(table).await?;
         let mut query = tbl.query();
         if let Some(f) = filter {
@@ -322,7 +321,7 @@ impl VectorStore for LanceDbStore {
         Ok(results)
     }
 
-    async fn count(&self, table: &str, filter: Option<&str>) -> anyhow::Result<usize> {
+    async fn count(&self, table: &str, filter: Option<&str>) -> Result<usize> {
         let tbl = self.open_table(table).await?;
         let mut query = tbl.query();
         if let Some(f) = filter {
@@ -339,7 +338,7 @@ impl VectorStore for LanceDbStore {
         Ok(total)
     }
 
-    async fn delete(&self, table: &str, ids: &[String]) -> anyhow::Result<()> {
+    async fn delete(&self, table: &str, ids: &[String]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
@@ -353,7 +352,7 @@ impl VectorStore for LanceDbStore {
         Ok(())
     }
 
-    async fn delete_by_filter(&self, table: &str, filter: &str) -> anyhow::Result<usize> {
+    async fn delete_by_filter(&self, table: &str, filter: &str) -> Result<usize> {
         let before = self.count(table, Some(filter)).await?;
         if before > 0 {
             let tbl = self.open_table(table).await?;
@@ -362,7 +361,7 @@ impl VectorStore for LanceDbStore {
         Ok(before)
     }
 
-    async fn get(&self, table: &str, ids: &[String]) -> anyhow::Result<Vec<SearchResult>> {
+    async fn get(&self, table: &str, ids: &[String]) -> Result<Vec<SearchResult>> {
         if ids.is_empty() {
             return Ok(vec![]);
         }

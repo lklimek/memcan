@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, bail};
+use mindojo_core::error::{MindojoError, Result as MindojoResult, ResultExt};
 use chrono::Utc;
 use clap::Parser;
 use regex::Regex;
@@ -199,7 +199,7 @@ async fn extract_metadata(
     chunk_text: &str,
     model: &str,
     ollama: &OllamaClient,
-) -> anyhow::Result<ChunkMetadata> {
+) -> MindojoResult<ChunkMetadata> {
     let prompt = render_prompt(METADATA_EXTRACTION_PROMPT, &[("chunk_text", chunk_text)]);
 
     let messages = vec![LlmMessage {
@@ -249,7 +249,7 @@ fn build_chunk_text(chunk: &MdChunk) -> String {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> MindojoResult<()> {
     let cli = Cli::parse();
 
     let filter = if cli.verbose { "debug" } else { "info" };
@@ -272,7 +272,7 @@ async fn main() -> anyhow::Result<()> {
         },
         &settings.embed_model,
         settings.embed_dims,
-    );
+    )?;
     let store = LanceDbStore::open(&settings.lancedb_path).await?;
 
     // Handle --drop mode
@@ -300,22 +300,27 @@ async fn main() -> anyhow::Result<()> {
     let file = cli
         .file
         .as_ref()
-        .context("file is required unless --drop is specified")?;
+        .ok_or_else(|| MindojoError::Other("file is required unless --drop is specified".into()))?;
     let standard_type = cli
         .standard_type
         .as_deref()
-        .context("--standard-type is required unless --drop is specified")?;
+        .ok_or_else(|| {
+            MindojoError::Other("--standard-type is required unless --drop is specified".into())
+        })?;
 
     if !VALID_TYPES.contains(&standard_type) {
-        bail!(
+        return Err(MindojoError::Other(format!(
             "Invalid standard type '{}'. Must be one of: {}",
             standard_type,
             VALID_TYPES.join(", ")
-        );
+        )));
     }
 
     if !file.is_file() {
-        bail!("File not found: {}", file.display());
+        return Err(MindojoError::Other(format!(
+            "File not found: {}",
+            file.display()
+        )));
     }
 
     let text = std::fs::read_to_string(file)
@@ -473,6 +478,9 @@ async fn main() -> anyhow::Result<()> {
     if errors.is_empty() {
         Ok(())
     } else {
-        bail!("{} chunks failed", errors.len())
+        return Err(MindojoError::Other(format!(
+            "{} chunks failed",
+            errors.len()
+        )))
     }
 }

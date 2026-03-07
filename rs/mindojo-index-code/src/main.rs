@@ -8,7 +8,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, bail};
 use chrono::Utc;
 use clap::Parser;
 use sha2::{Digest, Sha256};
@@ -16,6 +15,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use mindojo_core::config::Settings;
+use mindojo_core::error::{MindojoError, Result as MindojoResult, ResultExt};
 use mindojo_core::lancedb_store::LanceDbStore;
 use mindojo_core::ollama::OllamaClient;
 use mindojo_core::pipeline::CODE_TABLE;
@@ -360,7 +360,7 @@ fn collect_files(project_dir: &Path) -> Vec<PathBuf> {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> MindojoResult<()> {
     let cli = Cli::parse();
 
     let filter = if cli.verbose { "debug" } else { "info" };
@@ -381,7 +381,7 @@ async fn main() -> anyhow::Result<()> {
         },
         &settings.embed_model,
         settings.embed_dims,
-    );
+    )?;
     let store = LanceDbStore::open(&settings.lancedb_path).await?;
 
     let table = CODE_TABLE;
@@ -401,7 +401,7 @@ async fn main() -> anyhow::Result<()> {
     let tech_stack = cli
         .tech_stack
         .as_deref()
-        .context("--tech-stack is required unless --drop is specified")?;
+        .ok_or_else(|| MindojoError::Other("--tech-stack is required unless --drop is specified".into()))?;
 
     let project_dir = cli.project_dir.canonicalize().with_context(|| {
         format!(
@@ -411,7 +411,7 @@ async fn main() -> anyhow::Result<()> {
     })?;
 
     if !project_dir.is_dir() {
-        bail!("Not a directory: {}", project_dir.display());
+        return Err(MindojoError::Other(format!("Not a directory: {}", project_dir.display())));
     }
 
     store.ensure_table(table, settings.embed_dims).await?;
@@ -630,7 +630,7 @@ async fn flush_batch(
     store: &LanceDbStore,
     table: &str,
     batch: &mut Vec<(VectorPoint, String)>,
-) -> anyhow::Result<usize> {
+) -> MindojoResult<usize> {
     if batch.is_empty() {
         return Ok(0);
     }

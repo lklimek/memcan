@@ -6,7 +6,6 @@
 
 use std::collections::HashSet;
 
-use anyhow::Context;
 use chrono::Utc;
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
@@ -14,6 +13,7 @@ use serde_json::json;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::error::{Result, ResultExt};
 use crate::prompts::{FACT_EXTRACTION_PROMPT, MEMORY_UPDATE_PROMPT, render_prompt};
 use crate::traits::{
     EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, VectorPoint, VectorStore,
@@ -82,7 +82,7 @@ pub async fn extract_facts(
     llm: &dyn LlmProvider,
     llm_model: &str,
     extraction_prompt: Option<&str>,
-) -> anyhow::Result<Option<Vec<String>>> {
+) -> Result<Option<Vec<String>>> {
     let today = Utc::now().format("%Y-%m-%d").to_string();
     let prompt = extraction_prompt.unwrap_or(FACT_EXTRACTION_PROMPT);
     let rendered = render_prompt(prompt, &[("today", &today)]);
@@ -129,7 +129,7 @@ pub async fn dedup_and_store(
     embedder: &dyn EmbeddingProvider,
     llm: &dyn LlmProvider,
     llm_model: &str,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     let meta = clean_metadata(metadata);
 
     for fact in facts {
@@ -257,7 +257,7 @@ async fn run_dedup_llm(
     fact: &str,
     llm: &dyn LlmProvider,
     llm_model: &str,
-) -> anyhow::Result<Vec<MemoryEvent>> {
+) -> Result<Vec<MemoryEvent>> {
     let prompt = render_prompt(
         MEMORY_UPDATE_PROMPT,
         &[
@@ -290,7 +290,7 @@ pub async fn store_raw(
     table_name: &str,
     store: &dyn VectorStore,
     embedder: &dyn EmbeddingProvider,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     let vectors = embedder.embed(&[content.to_string()]).await?;
     let now = Utc::now().to_rfc3339();
     let meta = clean_metadata(metadata);
@@ -336,7 +336,7 @@ pub async fn do_add_memory(
     llm: &dyn LlmProvider,
     llm_model: &str,
     extraction_prompt: Option<&str>,
-) -> anyhow::Result<Option<Vec<String>>> {
+) -> Result<Option<Vec<String>>> {
     if !distill {
         store_raw(content, user_id, metadata, table_name, store, embedder).await?;
         return Ok(None);

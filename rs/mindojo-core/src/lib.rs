@@ -1,4 +1,5 @@
 pub mod config;
+pub mod error;
 pub mod lancedb_store;
 pub mod ollama;
 pub mod pipeline;

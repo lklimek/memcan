@@ -5,11 +5,11 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, bail};
 use clap::Parser;
 use serde::Deserialize;
 
 use mindojo_core::config::Settings;
+use mindojo_core::error::{MindojoError, Result as MindojoResult, ResultExt};
 use mindojo_core::lancedb_store::LanceDbStore;
 use mindojo_core::ollama::OllamaClient;
 use mindojo_core::pipeline::MEMORIES_TABLE;
@@ -44,7 +44,7 @@ struct ExportRecord {
 const BATCH_SIZE: usize = 50;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> MindojoResult<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -55,14 +55,17 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     if !cli.export_file.exists() {
-        bail!("Export file not found: {}", cli.export_file.display());
+        return Err(MindojoError::Other(format!(
+            "Export file not found: {}",
+            cli.export_file.display()
+        )));
     }
 
     let raw = std::fs::read_to_string(&cli.export_file)
         .with_context(|| format!("failed to read {}", cli.export_file.display()))?;
 
-    let records: Vec<ExportRecord> =
-        serde_json::from_str(&raw).context("failed to parse export JSON (expected array)")?;
+    let records: Vec<ExportRecord> = serde_json::from_str(&raw)
+        .context("failed to parse export JSON (expected array)")?;
 
     println!("Found {} records in export.", records.len());
 
@@ -102,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
         },
         &settings.embed_model,
         settings.embed_dims,
-    );
+    )?;
     let store = LanceDbStore::open(&settings.lancedb_path).await?;
 
     store
@@ -125,27 +128,27 @@ async fn main() -> anyhow::Result<()> {
         let batch_end = (batch_start + BATCH_SIZE).min(texts.len());
         let batch_texts = &texts[batch_start..batch_end];
 
-        let batch_embeddings = ollama
-            .embed(batch_texts)
-            .await
-            .with_context(|| format!("embedding batch starting at {}", batch_start))?;
+        let batch_embeddings = ollama.embed(batch_texts).await.map_err(|e| {
+            MindojoError::Other(format!("embedding batch starting at {batch_start}: {e}"))
+        })?;
 
         all_embeddings.extend(batch_embeddings);
         println!("  Embedded {}/{}", all_embeddings.len(), texts.len());
     }
 
-    assert_eq!(
-        all_embeddings.len(),
-        records.len(),
-        "Embedding count mismatch"
-    );
-    assert_eq!(
-        all_embeddings[0].len(),
-        settings.embed_dims,
-        "Expected {}d embeddings, got {}d",
-        settings.embed_dims,
-        all_embeddings[0].len()
-    );
+    if all_embeddings.len() != records.len() {
+        return Err(MindojoError::Other(format!(
+            "Embedding count mismatch: got {} embeddings for {} records",
+            all_embeddings.len(),
+            records.len()
+        )));
+    }
+    if all_embeddings[0].len() != settings.embed_dims {
+        return Err(MindojoError::DimensionMismatch {
+            expected: settings.embed_dims,
+            actual: all_embeddings[0].len(),
+        });
+    }
 
     // Upsert in batches
     let mut total_upserted = 0usize;

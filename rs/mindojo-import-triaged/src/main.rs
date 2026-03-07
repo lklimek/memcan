@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, bail};
+use mindojo_core::error::{MindojoError, Result as MindojoResult, ResultExt};
 use chrono::Utc;
 use clap::Parser;
 use md5::{Digest, Md5};
@@ -90,7 +90,7 @@ fn md5_hex(s: &str) -> String {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> MindojoResult<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -101,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     if !cli.report.exists() {
-        bail!("Report file not found: {}", cli.report.display());
+        return Err(MindojoError::Other(format!("Report file not found: {}", cli.report.display())));
     }
 
     let raw = std::fs::read_to_string(&cli.report)
@@ -111,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
     let triage = report
         .triage
         .as_ref()
-        .context("Report has no triage decisions. Run triage-findings first.")?;
+        .ok_or_else(|| MindojoError::Other("Report has no triage decisions. Run triage-findings first.".into()))?;
 
     println!("Processing triaged report: {}", cli.report.display());
     println!(
@@ -148,7 +148,7 @@ async fn main() -> anyhow::Result<()> {
         },
         &settings.embed_model,
         settings.embed_dims,
-    );
+    )?;
 
     let store = if !cli.dry_run {
         let s = LanceDbStore::open(&settings.lancedb_path).await?;
@@ -194,8 +194,7 @@ async fn main() -> anyhow::Result<()> {
             let store = store.as_ref().unwrap();
             let vectors = ollama
                 .embed(std::slice::from_ref(&content))
-                .await
-                .with_context(|| format!("embedding failed for {}", finding.id))?;
+                .await?;
 
             let point_id = Uuid::new_v4().to_string();
             let now = Utc::now().to_rfc3339();

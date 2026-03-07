@@ -7,7 +7,7 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::Context;
+use mindojo_core::error::{Result as MindojoResult, ResultExt};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -220,7 +220,7 @@ async fn handle_subagent_stop(
     ollama: &OllamaClient,
     store: &LanceDbStore,
     hook_data_log: &Path,
-) -> anyhow::Result<()> {
+) -> MindojoResult<()> {
     let message = payload.last_assistant_message.as_deref().unwrap_or("");
     let cwd = payload.cwd.as_deref().unwrap_or("");
     let project = if cwd.is_empty() {
@@ -305,7 +305,7 @@ async fn handle_precompact(
     ollama: &OllamaClient,
     store: &LanceDbStore,
     hook_data_log: &Path,
-) -> anyhow::Result<()> {
+) -> MindojoResult<()> {
     let transcript_path = match &payload.transcript_path {
         Some(p) if !p.is_empty() => p.clone(),
         _ => {
@@ -444,7 +444,7 @@ async fn main() {
     }
 }
 
-async fn run(hook_data_log: &Path) -> anyhow::Result<()> {
+async fn run(hook_data_log: &Path) -> MindojoResult<()> {
     // Read JSON from stdin
     let mut raw = String::new();
     std::io::stdin()
@@ -476,7 +476,7 @@ async fn run(hook_data_log: &Path) -> anyhow::Result<()> {
         },
         &settings.embed_model,
         settings.embed_dims,
-    );
+    )?;
     let store = LanceDbStore::open(&settings.lancedb_path).await?;
 
     match payload.hook_event_name.as_str() {

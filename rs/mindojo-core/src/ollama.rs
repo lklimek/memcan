@@ -1,13 +1,13 @@
 //! Ollama client -- implements [`EmbeddingProvider`] and [`LlmProvider`] via the
 //! Ollama REST API using raw `reqwest` calls for full swappability.
 
-use anyhow::{Context, bail};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::config::Settings;
+use crate::error::{MindojoError, Result, ResultExt};
 use crate::traits::{EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider};
 
 /// Ollama HTTP client that implements both embedding and LLM traits.
@@ -28,9 +28,41 @@ impl OllamaClient {
         api_key: Option<String>,
         embed_model: &str,
         embed_dims: usize,
-    ) -> Self {
+    ) -> Result<Self> {
+        let http = Self::build_http_client(&api_key)?;
+        Ok(Self {
+            http,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            api_key,
+            embed_model: embed_model.to_string(),
+            llm_model: String::new(),
+            embed_dims,
+        })
+    }
+
+    /// Create a new Ollama client from application settings.
+    pub fn from_settings(settings: &Settings) -> Result<Self> {
+        let api_key = if settings.ollama_api_key.is_empty() {
+            None
+        } else {
+            Some(settings.ollama_api_key.clone())
+        };
+
+        let http = Self::build_http_client(&api_key)?;
+        Ok(Self {
+            http,
+            base_url: settings.ollama_url.trim_end_matches('/').to_string(),
+            api_key,
+            embed_model: settings.embed_model.clone(),
+            llm_model: settings.llm_model.clone(),
+            embed_dims: settings.embed_dims,
+        })
+    }
+
+    /// Build the reqwest HTTP client with optional auth headers.
+    fn build_http_client(api_key: &Option<String>) -> Result<Client> {
         let mut builder = Client::builder();
-        if let Some(ref key) = api_key
+        if let Some(key) = api_key
             && !key.is_empty()
         {
             let mut headers = reqwest::header::HeaderMap::new();
@@ -39,42 +71,12 @@ impl OllamaClient {
             }
             builder = builder.default_headers(headers);
         }
-
-        Self {
-            http: builder.build().expect("failed to build HTTP client"),
-            base_url: base_url.trim_end_matches('/').to_string(),
-            api_key,
-            embed_model: embed_model.to_string(),
-            llm_model: String::new(),
-            embed_dims,
-        }
-    }
-
-    /// Create a new Ollama client from application settings.
-    pub fn from_settings(settings: &Settings) -> Self {
-        let api_key = if settings.ollama_api_key.is_empty() {
-            None
-        } else {
-            Some(settings.ollama_api_key.clone())
-        };
-
-        let mut builder = Client::builder();
-        if let Some(ref key) = api_key {
-            let mut headers = reqwest::header::HeaderMap::new();
-            if let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", key)) {
-                headers.insert("Authorization", val);
-            }
-            builder = builder.default_headers(headers);
-        }
-
-        Self {
-            http: builder.build().expect("failed to build HTTP client"),
-            base_url: settings.ollama_url.trim_end_matches('/').to_string(),
-            api_key,
-            embed_model: settings.embed_model.clone(),
-            llm_model: settings.llm_model.clone(),
-            embed_dims: settings.embed_dims,
-        }
+        builder
+            .build()
+            .map_err(|e| MindojoError::Http {
+                context: "failed to build HTTP client".into(),
+                source: e,
+            })
     }
 
     /// Return the configured LLM model name.
@@ -88,7 +90,7 @@ impl OllamaClient {
     }
 
     /// Check whether a model is available locally on the Ollama server.
-    pub async fn model_available(&self, model: &str) -> anyhow::Result<bool> {
+    pub async fn model_available(&self, model: &str) -> Result<bool> {
         let url = format!("{}/api/show", self.base_url);
         let resp = self
             .http
@@ -100,7 +102,7 @@ impl OllamaClient {
     }
 
     /// Pull a model from the Ollama registry. Blocks until the pull completes.
-    pub async fn pull_model(&self, model: &str) -> anyhow::Result<()> {
+    pub async fn pull_model(&self, model: &str) -> Result<()> {
         info!(model, "Pulling Ollama model");
         let url = format!("{}/api/pull", self.base_url);
         let resp = self
@@ -112,16 +114,20 @@ impl OllamaClient {
             .context("pull request failed")?;
 
         if !resp.status().is_success() {
-            let status = resp.status();
+            let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            bail!("failed to pull model {model}: {status} {body}");
+            return Err(MindojoError::ModelPull {
+                model: model.to_string(),
+                status,
+                body,
+            });
         }
         info!(model, "Model pull complete");
         Ok(())
     }
 
     /// Ensure a model is available, pulling it if necessary.
-    pub async fn ensure_model(&self, model: &str) -> anyhow::Result<()> {
+    pub async fn ensure_model(&self, model: &str) -> Result<()> {
         match self.model_available(model).await {
             Ok(true) => {
                 debug!(model, "Model already available");
@@ -139,7 +145,7 @@ impl OllamaClient {
     }
 
     /// Ensure both LLM and embedding models are available.
-    pub async fn ensure_models(&self) -> anyhow::Result<()> {
+    pub async fn ensure_models(&self) -> Result<()> {
         self.ensure_model(&self.llm_model).await?;
         self.ensure_model(&self.embed_model).await?;
         Ok(())
@@ -161,7 +167,7 @@ struct EmbedResponse {
 
 #[async_trait]
 impl EmbeddingProvider for OllamaClient {
-    async fn embed(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let url = format!("{}/api/embed", self.base_url);
         let body = EmbedRequest {
             model: self.embed_model.clone(),
@@ -177,9 +183,9 @@ impl EmbeddingProvider for OllamaClient {
             .context("embed request failed")?;
 
         if !resp.status().is_success() {
-            let status = resp.status();
+            let status = resp.status().as_u16();
             let text = resp.text().await.unwrap_or_default();
-            bail!("Embed failed ({}): {}", status, text);
+            return Err(MindojoError::OllamaApi { status, body: text });
         }
 
         let parsed: EmbedResponse = resp.json().await.context("embed response parse failed")?;
@@ -237,7 +243,7 @@ impl LlmProvider for OllamaClient {
         model: &str,
         messages: &[LlmMessage],
         options: Option<LlmOptions>,
-    ) -> anyhow::Result<String> {
+    ) -> Result<String> {
         let url = format!("{}/api/chat", self.base_url);
         let opts = options.unwrap_or_default();
 
@@ -278,9 +284,9 @@ impl LlmProvider for OllamaClient {
             .context("chat request failed")?;
 
         if !resp.status().is_success() {
-            let status = resp.status();
+            let status = resp.status().as_u16();
             let text = resp.text().await.unwrap_or_default();
-            bail!("Chat failed ({}): {}", status, text);
+            return Err(MindojoError::OllamaApi { status, body: text });
         }
 
         let parsed: ChatResponse = resp.json().await.context("chat response parse failed")?;
@@ -294,7 +300,8 @@ mod tests {
 
     #[test]
     fn test_client_creation() {
-        let client = OllamaClient::new("http://localhost:11434", None, "test-model", 768);
+        let client =
+            OllamaClient::new("http://localhost:11434", None, "test-model", 768).unwrap();
         assert_eq!(client.base_url, "http://localhost:11434");
         assert_eq!(client.embed_model, "test-model");
         assert_eq!(client.embed_dims, 768);
@@ -303,7 +310,7 @@ mod tests {
 
     #[test]
     fn test_client_trailing_slash() {
-        let client = OllamaClient::new("http://localhost:11434/", None, "m", 512);
+        let client = OllamaClient::new("http://localhost:11434/", None, "m", 512).unwrap();
         assert_eq!(client.base_url, "http://localhost:11434");
     }
 
@@ -314,13 +321,14 @@ mod tests {
             Some("secret-key".into()),
             "m",
             512,
-        );
+        )
+        .unwrap();
         assert_eq!(client.api_key.as_deref(), Some("secret-key"));
     }
 
     #[test]
     fn test_dimensions() {
-        let client = OllamaClient::new("http://localhost:11434", None, "m", 2560);
+        let client = OllamaClient::new("http://localhost:11434", None, "m", 2560).unwrap();
         assert_eq!(client.dimensions(), 2560);
     }
 
@@ -334,7 +342,7 @@ mod tests {
             embed_dims: 1024,
             ..Settings::default()
         };
-        let client = OllamaClient::from_settings(&settings);
+        let client = OllamaClient::from_settings(&settings).unwrap();
         assert_eq!(client.base_url, "http://example.com:11434");
         assert_eq!(client.embed_model, "embed-v1");
         assert_eq!(client.llm_model, "llm-v1");

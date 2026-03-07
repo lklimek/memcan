@@ -14,6 +14,7 @@ use tracing::info;
 
 use mindojo_core::{
     config::Settings,
+    error::MindojoError,
     lancedb_store::LanceDbStore,
     ollama::OllamaClient,
     pipeline,
@@ -744,14 +745,14 @@ fn setup_logging(log_file: &str) {
 // ---------------------------------------------------------------------------
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<(), MindojoError> {
     let config = Settings::load();
     setup_logging(&config.log_file);
 
     info!("Loading config: lancedb_path={}", config.lancedb_path);
 
     // Create Ollama client (implements both EmbeddingProvider and LlmProvider)
-    let ollama = OllamaClient::from_settings(&config);
+    let ollama = OllamaClient::from_settings(&config)?;
     let llm_model = ollama.llm_model().to_string();
 
     // Open LanceDB store
@@ -778,10 +779,14 @@ async fn main() -> anyhow::Result<()> {
     let server = service
         .serve(transport)
         .await
-        .inspect_err(|e| tracing::error!("serving error: {:?}", e))?;
+        .inspect_err(|e| tracing::error!("serving error: {:?}", e))
+        .map_err(|e| MindojoError::Other(format!("MCP serve failed: {e}")))?;
 
     info!("MindOJO MCP server running on stdio");
-    server.waiting().await?;
+    server
+        .waiting()
+        .await
+        .map_err(|e| MindojoError::Other(format!("MCP server error: {e}")))?;
 
     Ok(())
 }

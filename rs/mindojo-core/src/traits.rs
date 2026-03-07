@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::error::Result;
+
 /// A single result returned from a vector store search or retrieval.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
@@ -21,10 +23,10 @@ pub struct VectorPoint {
 #[async_trait]
 pub trait VectorStore: Send + Sync {
     /// Ensure a table (collection) exists with the given dimensionality.
-    async fn ensure_table(&self, name: &str, dims: usize) -> anyhow::Result<()>;
+    async fn ensure_table(&self, name: &str, dims: usize) -> Result<()>;
 
     /// Insert or update points. Existing IDs are overwritten.
-    async fn upsert(&self, table: &str, points: &[VectorPoint]) -> anyhow::Result<()>;
+    async fn upsert(&self, table: &str, points: &[VectorPoint]) -> Result<()>;
 
     /// Nearest-neighbor search with optional SQL WHERE filter.
     async fn search(
@@ -33,7 +35,7 @@ pub trait VectorStore: Send + Sync {
         vector: &[f32],
         filter: Option<&str>,
         limit: usize,
-    ) -> anyhow::Result<Vec<SearchResult>>;
+    ) -> Result<Vec<SearchResult>>;
 
     /// List records with optional filter (no vector search).
     async fn scroll(
@@ -41,26 +43,26 @@ pub trait VectorStore: Send + Sync {
         table: &str,
         filter: Option<&str>,
         limit: usize,
-    ) -> anyhow::Result<Vec<SearchResult>>;
+    ) -> Result<Vec<SearchResult>>;
 
     /// Count records with optional filter.
-    async fn count(&self, table: &str, filter: Option<&str>) -> anyhow::Result<usize>;
+    async fn count(&self, table: &str, filter: Option<&str>) -> Result<usize>;
 
     /// Delete records by ID.
-    async fn delete(&self, table: &str, ids: &[String]) -> anyhow::Result<()>;
+    async fn delete(&self, table: &str, ids: &[String]) -> Result<()>;
 
     /// Delete records matching a SQL filter. Returns number deleted.
-    async fn delete_by_filter(&self, table: &str, filter: &str) -> anyhow::Result<usize>;
+    async fn delete_by_filter(&self, table: &str, filter: &str) -> Result<usize>;
 
     /// Retrieve specific records by their IDs.
-    async fn get(&self, table: &str, ids: &[String]) -> anyhow::Result<Vec<SearchResult>>;
+    async fn get(&self, table: &str, ids: &[String]) -> Result<Vec<SearchResult>>;
 }
 
 /// Abstraction over an embedding model provider.
 #[async_trait]
 pub trait EmbeddingProvider: Send + Sync {
     /// Embed one or more texts into vectors.
-    async fn embed(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>>;
+    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
 
     /// Return the dimensionality of the embeddings.
     fn dimensions(&self) -> usize;
@@ -75,7 +77,7 @@ pub trait LlmProvider: Send + Sync {
         model: &str,
         messages: &[LlmMessage],
         options: Option<LlmOptions>,
-    ) -> anyhow::Result<String>;
+    ) -> Result<String>;
 }
 
 /// A single message in an LLM conversation.

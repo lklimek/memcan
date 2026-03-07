@@ -3590,7 +3590,6 @@ dependencies = [
 name = "mindojo-core"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "arrow-array",
  "arrow-schema",
  "async-trait",
@@ -3619,7 +3618,6 @@ dependencies = [
 name = "mindojo-extract"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "chrono",
  "dirs",
  "mindojo-core",
@@ -3635,7 +3633,6 @@ dependencies = [
 name = "mindojo-import-triaged"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "chrono",
  "clap",
  "md-5",
@@ -3653,7 +3650,6 @@ dependencies = [
 name = "mindojo-index-code"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "chrono",
  "clap",
  "mindojo-core",
@@ -3671,7 +3667,6 @@ dependencies = [
 name = "mindojo-index-standards"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "chrono",
  "clap",
  "mindojo-core",
@@ -3688,7 +3683,6 @@ dependencies = [
 name = "mindojo-mcp"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "chrono",
  "mindojo-core",
  "rmcp",
@@ -3705,7 +3699,6 @@ dependencies = [
 name = "mindojo-migrate"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "clap",
  "mindojo-core",
  "serde",
@@ -3719,7 +3712,6 @@ dependencies = [
 name = "mindojo-test-classification"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "chrono",
  "clap",
  "dirs",
