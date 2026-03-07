@@ -56,6 +56,9 @@ arrow-schema = "57"
 rmcp = { version = "0.16", features = ["server", "transport-io"] }
 schemars = "0.8"
 
+# Regex
+regex = "1"
+
 # Testing
 mockito = "1"
 tempfile = "3"

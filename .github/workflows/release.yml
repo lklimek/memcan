@@ -5,9 +5,6 @@ on:
     tags:
       - 'v*'
 
-permissions:
-  contents: write
-
 env:
   CARGO_TERM_COLOR: always
 
@@ -35,7 +32,9 @@ jobs:
             suffix: ""
 
     steps:
+      # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
       - uses: actions/checkout@v4
+      # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -56,6 +55,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y musl-tools
 
+      # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
@@ -68,7 +68,7 @@ jobs:
       - name: Package binaries
         run: |
           mkdir -p dist
-          for bin in mindojo-mcp mindojo-extract mindojo-import-triaged mindojo-index-code mindojo-index-standards mindojo-migrate mindojo-test-classification; do
+          for bin in mindojo-mcp mindojo-extract mindojo-import-triaged mindojo-index-code mindojo-index-standards mindojo-migrate; do
             if [ -f "target/${{ matrix.target }}/release/${bin}${{ matrix.suffix }}" ]; then
               cp "target/${{ matrix.target }}/release/${bin}${{ matrix.suffix }}" "dist/"
             fi
@@ -76,26 +76,43 @@ jobs:
           cd dist
           tar czf ../mindojo-${{ matrix.target }}.tar.gz *
 
+      - name: Generate checksums
+        run: sha256sum mindojo-${{ matrix.target }}.tar.gz > mindojo-${{ matrix.target }}.tar.gz.sha256
+
+      # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: mindojo-${{ matrix.target }}
-          path: mindojo-${{ matrix.target }}.tar.gz
+          path: |
+            mindojo-${{ matrix.target }}.tar.gz
+            mindojo-${{ matrix.target }}.tar.gz.sha256
 
   release:
     name: Create Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
+      # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
       - uses: actions/checkout@v4
 
+      # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
+      - name: Collect checksums
+        run: |
+          cat artifacts/**/*.sha256 > artifacts/SHA256SUMS
+
+      # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*.tar.gz
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/SHA256SUMS
           generate_release_notes: true

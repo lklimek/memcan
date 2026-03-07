@@ -13,6 +13,7 @@ services:
       - "11434:11434"
     volumes:
       - ollama-data:/root/.ollama
+    user: "1000:1000"
     logging:
       driver: json-file
       options:
