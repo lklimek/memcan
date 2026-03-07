@@ -13,8 +13,9 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use mindojo_core::config::Settings;
+use mindojo_core::embed::FastEmbedProvider;
 use mindojo_core::lancedb_store::LanceDbStore;
-use mindojo_core::ollama::OllamaClient;
+use mindojo_core::llm::GenaiLlmProvider;
 use mindojo_core::pipeline::{MEMORIES_TABLE, do_add_memory};
 use mindojo_core::prompts::FACT_EXTRACTION_HOOK_PROMPT;
 use mindojo_core::traits::{EmbeddingProvider, VectorStore};
@@ -217,7 +218,8 @@ fn log_hook_data(
 async fn handle_subagent_stop(
     payload: &HookPayload,
     settings: &Settings,
-    ollama: &OllamaClient,
+    embedder: &FastEmbedProvider,
+    llm: &GenaiLlmProvider,
     store: &LanceDbStore,
     hook_data_log: &Path,
 ) -> MindojoResult<()> {
@@ -261,7 +263,7 @@ async fn handle_subagent_stop(
     });
 
     store
-        .ensure_table(MEMORIES_TABLE, ollama.dimensions())
+        .ensure_table(MEMORIES_TABLE, embedder.dimensions())
         .await?;
 
     let facts = do_add_memory(
@@ -271,8 +273,8 @@ async fn handle_subagent_stop(
         settings.distill_memories,
         MEMORIES_TABLE,
         store,
-        ollama,
-        ollama,
+        embedder,
+        llm,
         &settings.llm_model,
         Some(FACT_EXTRACTION_HOOK_PROMPT),
     )
@@ -302,7 +304,8 @@ async fn handle_subagent_stop(
 async fn handle_precompact(
     payload: &HookPayload,
     settings: &Settings,
-    ollama: &OllamaClient,
+    embedder: &FastEmbedProvider,
+    llm: &GenaiLlmProvider,
     store: &LanceDbStore,
     hook_data_log: &Path,
 ) -> MindojoResult<()> {
@@ -381,7 +384,7 @@ async fn handle_precompact(
     });
 
     store
-        .ensure_table(MEMORIES_TABLE, ollama.dimensions())
+        .ensure_table(MEMORIES_TABLE, embedder.dimensions())
         .await?;
 
     let facts = do_add_memory(
@@ -391,8 +394,8 @@ async fn handle_precompact(
         settings.distill_memories,
         MEMORIES_TABLE,
         store,
-        ollama,
-        ollama,
+        embedder,
+        llm,
         &settings.llm_model,
         Some(FACT_EXTRACTION_HOOK_PROMPT),
     )
@@ -467,15 +470,17 @@ async fn run(hook_data_log: &Path) -> MindojoResult<()> {
     );
 
     let settings = Settings::load();
-    let ollama = OllamaClient::from_settings(&settings)?;
+    let embedder = FastEmbedProvider::from_settings(&settings)?;
+    let llm = GenaiLlmProvider::from_settings(&settings);
     let store = LanceDbStore::open(&settings.lancedb_path).await?;
 
     match payload.hook_event_name.as_str() {
         "SubagentStop" => {
-            handle_subagent_stop(&payload, &settings, &ollama, &store, hook_data_log).await
+            handle_subagent_stop(&payload, &settings, &embedder, &llm, &store, hook_data_log)
+                .await
         }
         "PreCompact" => {
-            handle_precompact(&payload, &settings, &ollama, &store, hook_data_log).await
+            handle_precompact(&payload, &settings, &embedder, &llm, &store, hook_data_log).await
         }
         other => {
             info!(event = other, "Hook: unhandled event, skipping");

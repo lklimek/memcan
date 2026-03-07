@@ -15,13 +15,6 @@ pub enum MindojoError {
         source: std::io::Error,
     },
 
-    // -- HTTP / reqwest ------------------------------------------------------
-    #[error("{context}: {source}")]
-    Http {
-        context: String,
-        source: reqwest::Error,
-    },
-
     // -- JSON ----------------------------------------------------------------
     #[error("{context}: {source}")]
     Json {
@@ -40,16 +33,13 @@ pub enum MindojoError {
     #[error("Arrow error: {0}")]
     Arrow(#[from] arrow_schema::ArrowError),
 
-    // -- Ollama API ----------------------------------------------------------
-    #[error("Ollama API error ({status}): {body}")]
-    OllamaApi { status: u16, body: String },
+    // -- Embedding -----------------------------------------------------------
+    #[error("Embedding error ({context}): {detail}")]
+    Embedding { context: String, detail: String },
 
-    #[error("model pull failed for {model}: ({status}) {body}")]
-    ModelPull {
-        model: String,
-        status: u16,
-        body: String,
-    },
+    // -- LLM Chat ------------------------------------------------------------
+    #[error("LLM chat error ({context}): {detail}")]
+    LlmChat { context: String, detail: String },
 
     // -- Validation ----------------------------------------------------------
     #[error("vector dimension mismatch: expected {expected}, got {actual}")]
@@ -69,15 +59,6 @@ impl From<std::io::Error> for MindojoError {
     fn from(e: std::io::Error) -> Self {
         Self::Io {
             context: "I/O error".into(),
-            source: e,
-        }
-    }
-}
-
-impl From<reqwest::Error> for MindojoError {
-    fn from(e: reqwest::Error) -> Self {
-        Self::Http {
-            context: "HTTP error".into(),
             source: e,
         }
     }
@@ -119,21 +100,6 @@ impl<T> ResultExt<T> for std::result::Result<T, std::io::Error> {
     }
     fn with_context<F: FnOnce() -> String>(self, f: F) -> Result<T> {
         self.map_err(|e| MindojoError::Io {
-            context: f(),
-            source: e,
-        })
-    }
-}
-
-impl<T> ResultExt<T> for std::result::Result<T, reqwest::Error> {
-    fn context(self, ctx: &str) -> Result<T> {
-        self.map_err(|e| MindojoError::Http {
-            context: ctx.to_string(),
-            source: e,
-        })
-    }
-    fn with_context<F: FnOnce() -> String>(self, f: F) -> Result<T> {
-        self.map_err(|e| MindojoError::Http {
             context: f(),
             source: e,
         })

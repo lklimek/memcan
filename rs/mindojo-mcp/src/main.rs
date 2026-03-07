@@ -1,5 +1,6 @@
-//! MindOJO MCP Server — persistent memory for Claude Code via LanceDB + Ollama.
+//! MindOJO MCP Server — persistent memory for Claude Code via LanceDB.
 //!
+//! Embeddings: fastembed (in-process ONNX). LLM: genai (multi-provider).
 //! Transport: stdio (launched by Claude Code).
 
 use std::sync::Arc;
@@ -14,9 +15,10 @@ use tracing::info;
 
 use mindojo_core::{
     config::Settings,
+    embed::FastEmbedProvider,
     error::MindojoError,
     lancedb_store::LanceDbStore,
-    ollama::OllamaClient,
+    llm::GenaiLlmProvider,
     pipeline,
     traits::{EmbeddingProvider, LlmProvider, VectorStore},
 };
@@ -769,9 +771,12 @@ async fn main() -> Result<(), MindojoError> {
 
     info!("Loading config: lancedb_path={}", config.lancedb_path);
 
-    // Create Ollama client (implements both EmbeddingProvider and LlmProvider)
-    let ollama = OllamaClient::from_settings(&config)?;
-    let llm_model = ollama.llm_model().to_string();
+    // Create embedding provider (in-process fastembed ONNX)
+    let embedder = FastEmbedProvider::from_settings(&config)?;
+
+    // Create LLM provider (genai — multi-provider: Ollama, OpenAI, Anthropic, etc.)
+    let llm = GenaiLlmProvider::from_settings(&config);
+    let llm_model = llm.default_model().to_string();
 
     // Open LanceDB store
     let store = LanceDbStore::open(&config.lancedb_path).await?;
@@ -786,8 +791,8 @@ async fn main() -> Result<(), MindojoError> {
 
     let shared = Arc::new(SharedState {
         store: Box::new(store),
-        embedder: Box::new(ollama.clone()),
-        llm: Box::new(ollama),
+        embedder: Box::new(embedder),
+        llm: Box::new(llm),
         config,
         llm_model,
     });

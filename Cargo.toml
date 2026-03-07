@@ -38,7 +38,13 @@ dirs = "6"
 async-trait = "0.1"
 futures = "0.3"
 
-# HTTP
+# Embeddings (in-process ONNX)
+fastembed = "5"
+
+# Multi-provider LLM
+genai = "0.3"
+
+# HTTP (used by mindojo-test-classification)
 reqwest = { version = "0.12", features = ["json"] }
 
 # Vector DB

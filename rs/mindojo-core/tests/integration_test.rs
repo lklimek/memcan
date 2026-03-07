@@ -1,10 +1,15 @@
-//! Integration tests using a mock Ollama server and temp LanceDB directory.
+//! Integration tests using mock providers and temp LanceDB directory.
+//!
+//! These tests use simple in-memory trait implementations instead of
+//! HTTP mocking, since we no longer have an HTTP-based Ollama client.
 
+use std::sync::Mutex;
+
+use async_trait::async_trait;
+use mindojo_core::error::Result;
 use mindojo_core::lancedb_store::LanceDbStore;
-use mindojo_core::ollama::OllamaClient;
 use mindojo_core::pipeline::{MEMORIES_TABLE, do_add_memory};
-use mindojo_core::traits::{EmbeddingProvider, LlmMessage, LlmProvider, VectorPoint, VectorStore};
-use mockito::{Matcher, Server};
+use mindojo_core::traits::{EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, VectorPoint, VectorStore};
 use tempfile::tempdir;
 
 /// Embedding dimension used throughout tests.
@@ -20,6 +25,62 @@ fn test_vector_2() -> Vec<f32> {
     vec![0.11, 0.21, 0.31, 0.41]
 }
 
+/// Mock embedding provider that returns a fixed vector.
+struct MockEmbedder {
+    dims: usize,
+    vector: Vec<f32>,
+}
+
+impl MockEmbedder {
+    fn new() -> Self {
+        Self {
+            dims: TEST_DIMS,
+            vector: test_vector(),
+        }
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for MockEmbedder {
+    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        Ok(texts.iter().map(|_| self.vector.clone()).collect())
+    }
+
+    fn dimensions(&self) -> usize {
+        self.dims
+    }
+}
+
+/// Mock LLM provider with configurable responses.
+struct MockLlm {
+    responses: Mutex<Vec<String>>,
+}
+
+impl MockLlm {
+    fn new(responses: Vec<String>) -> Self {
+        Self {
+            responses: Mutex::new(responses),
+        }
+    }
+}
+
+#[async_trait]
+impl LlmProvider for MockLlm {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: &[LlmMessage],
+        _options: Option<LlmOptions>,
+    ) -> Result<String> {
+        let mut responses = self.responses.lock().unwrap();
+        if responses.is_empty() {
+            Ok(r#"{"facts": [], "events": [{"type": "NONE"}]}"#.to_string())
+        } else {
+            Ok(responses.remove(0))
+        }
+    }
+}
+
 /// Helper: open a LanceDbStore in a tempdir, returning both so the tempdir lives long enough.
 async fn temp_store() -> (tempfile::TempDir, LanceDbStore) {
     let tmp = tempdir().expect("failed to create tempdir");
@@ -28,34 +89,12 @@ async fn temp_store() -> (tempfile::TempDir, LanceDbStore) {
     (tmp, store)
 }
 
-// -- Test 1: embed mock ------------------------------------------------------
+// -- Test 1: mock embed -------------------------------------------------------
 
 #[tokio::test]
 async fn test_embed_mock() {
-    let mut server = Server::new_async().await;
-
-    let mock = server
-        .mock("POST", "/api/embed")
-        .match_body(Matcher::PartialJsonString(
-            r#"{"model":"test-embed"}"#.into(),
-        ))
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body(
-            serde_json::json!({
-                "model": "test-embed",
-                "embeddings": [[0.1, 0.2, 0.3, 0.4]],
-                "total_duration": 1000000
-            })
-            .to_string(),
-        )
-        .create_async()
-        .await;
-
-    let client = OllamaClient::new(server.url().as_str(), None, "test-embed", TEST_DIMS)
-        .expect("create ollama client");
-
-    let result = client
+    let embedder = MockEmbedder::new();
+    let result = embedder
         .embed(&["Hello world".to_string()])
         .await
         .expect("embed should succeed");
@@ -63,123 +102,45 @@ async fn test_embed_mock() {
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].len(), TEST_DIMS);
     assert!((result[0][0] - 0.1).abs() < f32::EPSILON);
-    assert_eq!(client.dimensions(), TEST_DIMS);
-
-    mock.assert_async().await;
+    assert_eq!(embedder.dimensions(), TEST_DIMS);
 }
 
-// -- Test 2: chat mock -------------------------------------------------------
+// -- Test 2: mock chat --------------------------------------------------------
 
 #[tokio::test]
 async fn test_chat_mock() {
-    let mut server = Server::new_async().await;
-
-    let mock = server
-        .mock("POST", "/api/chat")
-        .match_body(Matcher::PartialJsonString(r#"{"model":"test-llm"}"#.into()))
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body(
-            serde_json::json!({
-                "model": "test-llm",
-                "message": {"role": "assistant", "content": "Hello from mock!"},
-                "done": true
-            })
-            .to_string(),
-        )
-        .create_async()
-        .await;
-
-    let client = OllamaClient::new(server.url().as_str(), None, "test-embed", TEST_DIMS)
-        .expect("create ollama client");
-
+    let llm = MockLlm::new(vec!["Hello from mock!".to_string()]);
     let messages = vec![LlmMessage {
         role: "user".into(),
         content: "Say hello".into(),
     }];
 
-    let result = client
+    let result = llm
         .chat("test-llm", &messages, None)
         .await
         .expect("chat should succeed");
 
     assert_eq!(result, "Hello from mock!");
-
-    mock.assert_async().await;
 }
 
 // -- Test 3: full memory pipeline mock ----------------------------------------
 
 #[tokio::test]
 async fn test_memory_pipeline_mock() {
-    let mut server = Server::new_async().await;
-
-    // Mock /api/embed -- will be called multiple times.
-    let embed_mock = server
-        .mock("POST", "/api/embed")
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body(
-            serde_json::json!({
-                "model": "test-embed",
-                "embeddings": [[0.1, 0.2, 0.3, 0.4]],
-                "total_duration": 1000000
-            })
+    let embedder = MockEmbedder::new();
+    let llm = MockLlm::new(vec![
+        // Fact extraction response
+        r#"{"facts": ["Rust is great for systems programming"]}"#.to_string(),
+        // Dedup response
+        r#"{"events": [{"type": "ADD", "data": "Rust is great for systems programming"}]}"#
             .to_string(),
-        )
-        .expect_at_least(1)
-        .create_async()
-        .await;
+    ]);
 
-    // Mock /api/chat -- mockito matches mocks in creation order.
-    // Create fact extraction first (matches first call), then dedup (matches second).
-    let fact_mock = server
-        .mock("POST", "/api/chat")
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body(
-            serde_json::json!({
-                "model": "test-llm",
-                "message": {
-                    "role": "assistant",
-                    "content": r#"{"facts": ["Rust is great for systems programming"]}"#
-                },
-                "done": true
-            })
-            .to_string(),
-        )
-        .expect(1)
-        .create_async()
-        .await;
-
-    let dedup_mock = server
-        .mock("POST", "/api/chat")
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body(
-            serde_json::json!({
-                "model": "test-llm",
-                "message": {
-                    "role": "assistant",
-                    "content": r#"{"events": [{"type": "ADD", "data": "Rust is great for systems programming"}]}"#
-                },
-                "done": true
-            })
-            .to_string(),
-        )
-        .expect_at_least(1)
-        .create_async()
-        .await;
-
-    // Set up LanceDB in a temp directory.
     let (_tmp, store) = temp_store().await;
     store
         .ensure_table(MEMORIES_TABLE, TEST_DIMS)
         .await
         .expect("create table");
-
-    let client = OllamaClient::new(server.url().as_str(), None, "test-embed", TEST_DIMS)
-        .expect("create ollama client");
 
     let metadata = serde_json::json!({});
     let result = do_add_memory(
@@ -189,8 +150,8 @@ async fn test_memory_pipeline_mock() {
         true, // distill
         MEMORIES_TABLE,
         &store,
-        &client,
-        &client,
+        &embedder,
+        &llm,
         "test-llm",
         None,
     )
@@ -208,10 +169,6 @@ async fn test_memory_pipeline_mock() {
         .await
         .expect("count should work");
     assert!(count >= 1, "Expected at least 1 stored memory, got {count}");
-
-    fact_mock.assert_async().await;
-    dedup_mock.assert_async().await;
-    embed_mock.assert_async().await;
 }
 
 // -- Test 4: store and search ------------------------------------------------
@@ -263,49 +220,16 @@ async fn test_store_and_search() {
 
 #[tokio::test]
 async fn test_dedup() {
-    let mut server = Server::new_async().await;
-
-    // Mock embed to return consistent vectors.
-    server
-        .mock("POST", "/api/embed")
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body(
-            serde_json::json!({
-                "model": "test-embed",
-                "embeddings": [[0.1, 0.2, 0.3, 0.4]],
-                "total_duration": 1000000
-            })
+    let embedder = MockEmbedder::new();
+    let llm = MockLlm::new(vec![
+        // First memory: extraction + dedup
+        r#"{"facts": ["Test fact"], "events": [{"type": "ADD", "data": "Test fact"}]}"#.to_string(),
+        r#"{"events": [{"type": "ADD", "data": "Test fact"}]}"#.to_string(),
+        // Second memory: extraction + dedup
+        r#"{"facts": ["Test fact 2"], "events": [{"type": "ADD", "data": "Test fact 2"}]}"#
             .to_string(),
-        )
-        .expect_at_least(1)
-        .create_async()
-        .await;
-
-    // Both fact extraction and dedup calls return consistent responses.
-    // Mock responds to all /api/chat with a JSON containing both facts and events.
-    // The pipeline parses what it expects from each call.
-    // Since mockito matches in creation order: fact extraction first, then dedup.
-    // But here both calls share the same mock, so we use a single response that
-    // parses as both FactsResponse and UpdateResponse.
-    server
-        .mock("POST", "/api/chat")
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body(
-            serde_json::json!({
-                "model": "test-llm",
-                "message": {
-                    "role": "assistant",
-                    "content": r#"{"facts": ["Test fact"], "events": [{"type": "ADD", "data": "Test fact"}]}"#
-                },
-                "done": true
-            })
-            .to_string(),
-        )
-        .expect_at_least(1)
-        .create_async()
-        .await;
+        r#"{"events": [{"type": "ADD", "data": "Test fact 2"}]}"#.to_string(),
+    ]);
 
     let (_tmp, store) = temp_store().await;
     store
@@ -313,8 +237,6 @@ async fn test_dedup() {
         .await
         .expect("create table");
 
-    let client = OllamaClient::new(server.url().as_str(), None, "test-embed", TEST_DIMS)
-        .expect("create ollama client");
     let metadata = serde_json::json!({});
 
     // First memory.
@@ -325,8 +247,8 @@ async fn test_dedup() {
         true,
         MEMORIES_TABLE,
         &store,
-        &client,
-        &client,
+        &embedder,
+        &llm,
         "test-llm",
         None,
     )
@@ -341,8 +263,8 @@ async fn test_dedup() {
         true,
         MEMORIES_TABLE,
         &store,
-        &client,
-        &client,
+        &embedder,
+        &llm,
         "test-llm",
         None,
     )
@@ -363,17 +285,15 @@ async fn test_dedup() {
 fn test_config_load() {
     // Verify settings can be loaded and have sane defaults.
     let settings = mindojo_core::config::Settings::default();
-    assert_eq!(settings.ollama_url, "http://localhost:11434");
     assert_eq!(settings.default_user_id, "global");
     assert!(settings.distill_memories);
-    assert_eq!(settings.embed_dims, 2560);
-    assert_eq!(settings.llm_model, "qwen3.5:4b");
-    assert_eq!(settings.embed_model, "qwen3-embedding:4b");
+    assert_eq!(settings.embed_dims, 384);
+    assert_eq!(settings.llm_model, "ollama::qwen3.5:4b");
+    assert_eq!(settings.embed_model, "AllMiniLML6V2");
 
     // Test that Settings::load() doesn't panic.
     let loaded = mindojo_core::config::Settings::load();
-    // ollama_url should be either the default or overridden by env.
-    assert!(!loaded.ollama_url.is_empty());
+    assert!(!loaded.llm_model.is_empty());
 }
 
 // -- Test 7: LanceDB CRUD ---------------------------------------------------

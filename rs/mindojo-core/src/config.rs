@@ -19,23 +19,23 @@ fn expand_tilde(path: &str) -> String {
 /// Application settings loaded from .env files and environment variables.
 #[derive(Clone)]
 pub struct Settings {
-    pub ollama_url: String,
-    pub ollama_api_key: String,
     pub lancedb_path: String,
     pub default_user_id: String,
     pub tech_stack: String,
     pub distill_memories: bool,
     pub log_file: String,
+    /// LLM model name for the genai crate. Prefix with provider, e.g.
+    /// `"ollama::qwen3.5:4b"`, `"gpt-4o"`, `"claude-sonnet-4-20250514"`.
     pub llm_model: String,
+    /// Fastembed model name, e.g. `"AllMiniLML6V2"`, `"BGESmallENV15"`.
     pub embed_model: String,
+    /// Embedding vector dimensions (must match the chosen embed_model).
     pub embed_dims: usize,
 }
 
 impl std::fmt::Debug for Settings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Settings")
-            .field("ollama_url", &self.ollama_url)
-            .field("ollama_api_key", &"[REDACTED]")
             .field("lancedb_path", &self.lancedb_path)
             .field("default_user_id", &self.default_user_id)
             .field("tech_stack", &self.tech_stack)
@@ -51,16 +51,14 @@ impl std::fmt::Debug for Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            ollama_url: "http://localhost:11434".into(),
-            ollama_api_key: String::new(),
             lancedb_path: "~/.local/share/mindojo/lancedb".into(),
             default_user_id: "global".into(),
             tech_stack: String::new(),
             distill_memories: true,
             log_file: "~/.claude/logs/mindojo-mcp.log".into(),
-            llm_model: "qwen3.5:4b".into(),
-            embed_model: "qwen3-embedding:4b".into(),
-            embed_dims: 2560,
+            llm_model: "ollama::qwen3.5:4b".into(),
+            embed_model: "AllMiniLML6V2".into(),
+            embed_dims: 384,
         }
     }
 }
@@ -100,8 +98,6 @@ impl Settings {
 
         let defaults = Settings::default();
 
-        let ollama_url = env_or("OLLAMA_URL", &defaults.ollama_url);
-        let ollama_api_key = env_or("OLLAMA_API_KEY", &defaults.ollama_api_key);
         let lancedb_path_raw = env_or("LANCEDB_PATH", &defaults.lancedb_path);
         let lancedb_path = expand_tilde(&lancedb_path_raw);
         let default_user_id = env_or("DEFAULT_USER_ID", &defaults.default_user_id);
@@ -118,8 +114,6 @@ impl Settings {
             .unwrap_or(defaults.embed_dims);
 
         Settings {
-            ollama_url,
-            ollama_api_key,
             lancedb_path,
             default_user_id,
             tech_stack,
@@ -156,8 +150,9 @@ mod tests {
     #[test]
     fn test_defaults() {
         let d = Settings::default();
-        assert_eq!(d.ollama_url, "http://localhost:11434");
-        assert_eq!(d.embed_dims, 2560);
+        assert_eq!(d.llm_model, "ollama::qwen3.5:4b");
+        assert_eq!(d.embed_model, "AllMiniLML6V2");
+        assert_eq!(d.embed_dims, 384);
         assert!(d.distill_memories);
     }
 }

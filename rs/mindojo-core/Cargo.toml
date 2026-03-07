@@ -20,13 +20,13 @@ dotenvy = { workspace = true }
 dirs = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
-reqwest = { workspace = true }
+fastembed = { workspace = true }
+genai = { workspace = true }
 lancedb = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 regex = "1"
 
 [dev-dependencies]
-mockito = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

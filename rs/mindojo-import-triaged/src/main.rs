@@ -15,8 +15,8 @@ use tracing::warn;
 use uuid::Uuid;
 
 use mindojo_core::config::Settings;
+use mindojo_core::embed::FastEmbedProvider;
 use mindojo_core::lancedb_store::LanceDbStore;
-use mindojo_core::ollama::OllamaClient;
 use mindojo_core::pipeline::MEMORIES_TABLE;
 use mindojo_core::traits::{EmbeddingProvider, VectorPoint, VectorStore};
 
@@ -141,7 +141,7 @@ async fn main() -> MindojoResult<()> {
     }
 
     let settings = Settings::load();
-    let ollama = OllamaClient::from_settings(&settings)?;
+    let embedder = FastEmbedProvider::from_settings(&settings)?;
 
     let store = if !cli.dry_run {
         let s = LanceDbStore::open(&settings.lancedb_path).await?;
@@ -185,7 +185,7 @@ async fn main() -> MindojoResult<()> {
             println!("    Content length: {} chars", content.len());
         } else {
             let store = store.as_ref().unwrap();
-            let vectors = ollama.embed(std::slice::from_ref(&content)).await?;
+            let vectors = embedder.embed(std::slice::from_ref(&content)).await?;
 
             let point_id = Uuid::new_v4().to_string();
             let now = Utc::now().to_rfc3339();

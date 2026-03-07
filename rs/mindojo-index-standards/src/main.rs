@@ -15,8 +15,9 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use mindojo_core::config::Settings;
+use mindojo_core::embed::FastEmbedProvider;
 use mindojo_core::lancedb_store::LanceDbStore;
-use mindojo_core::ollama::OllamaClient;
+use mindojo_core::llm::GenaiLlmProvider;
 use mindojo_core::pipeline::STANDARDS_TABLE;
 use mindojo_core::prompts::{METADATA_EXTRACTION_PROMPT, render_prompt};
 use mindojo_core::traits::{
@@ -198,7 +199,7 @@ fn validate_metadata(mut meta: ChunkMetadata) -> ChunkMetadata {
 async fn extract_metadata(
     chunk_text: &str,
     model: &str,
-    ollama: &OllamaClient,
+    llm: &dyn LlmProvider,
 ) -> MindojoResult<ChunkMetadata> {
     let prompt = render_prompt(METADATA_EXTRACTION_PROMPT, &[("chunk_text", chunk_text)]);
 
@@ -214,7 +215,7 @@ async fn extract_metadata(
         think: Some(false),
     });
 
-    let response = ollama.chat(model, &messages, options).await?;
+    let response = llm.chat(model, &messages, options).await?;
     let meta: ChunkMetadata = serde_json::from_str(&response).with_context(|| {
         format!(
             "Failed to parse metadata: {}",
@@ -263,7 +264,8 @@ async fn main() -> MindojoResult<()> {
     let settings = Settings::load();
     let model = cli.model.as_deref().unwrap_or(&settings.llm_model);
 
-    let ollama = OllamaClient::from_settings(&settings)?;
+    let embedder = FastEmbedProvider::from_settings(&settings)?;
+    let llm = GenaiLlmProvider::from_settings(&settings);
     let store = LanceDbStore::open(&settings.lancedb_path).await?;
 
     // Handle --drop mode
@@ -339,7 +341,7 @@ async fn main() -> MindojoResult<()> {
         let meta = {
             let mut result = None;
             for attempt in 0..2 {
-                match extract_metadata(&chunk_text, model, &ollama).await {
+                match extract_metadata(&chunk_text, model, &llm).await {
                     Ok(m) => {
                         result = Some(m);
                         break;
@@ -357,7 +359,7 @@ async fn main() -> MindojoResult<()> {
         };
 
         // Embed the chunk
-        let vectors = match ollama.embed(std::slice::from_ref(&chunk_text)).await {
+        let vectors = match embedder.embed(std::slice::from_ref(&chunk_text)).await {
             Ok(v) => v,
             Err(e) => {
                 tracing::error!(chunk_index, error = %e, "Embedding failed");

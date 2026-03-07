@@ -9,9 +9,9 @@ use clap::Parser;
 use serde::Deserialize;
 
 use mindojo_core::config::Settings;
+use mindojo_core::embed::FastEmbedProvider;
 use mindojo_core::error::{MindojoError, Result as MindojoResult, ResultExt};
 use mindojo_core::lancedb_store::LanceDbStore;
-use mindojo_core::ollama::OllamaClient;
 use mindojo_core::pipeline::MEMORIES_TABLE;
 use mindojo_core::traits::{EmbeddingProvider, VectorPoint, VectorStore};
 
@@ -96,7 +96,7 @@ async fn main() -> MindojoResult<()> {
     }
 
     let settings = Settings::load();
-    let ollama = OllamaClient::from_settings(&settings)?;
+    let embedder =FastEmbedProvider::from_settings(&settings)?;
     let store = LanceDbStore::open(&settings.lancedb_path).await?;
 
     store
@@ -119,7 +119,7 @@ async fn main() -> MindojoResult<()> {
         let batch_end = (batch_start + BATCH_SIZE).min(texts.len());
         let batch_texts = &texts[batch_start..batch_end];
 
-        let batch_embeddings = ollama.embed(batch_texts).await.map_err(|e| {
+        let batch_embeddings = embedder.embed(batch_texts).await.map_err(|e| {
             MindojoError::Other(format!("embedding batch starting at {batch_start}: {e}"))
         })?;
 

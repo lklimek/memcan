@@ -15,9 +15,9 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use mindojo_core::config::Settings;
+use mindojo_core::embed::FastEmbedProvider;
 use mindojo_core::error::{MindojoError, Result as MindojoResult, ResultExt};
 use mindojo_core::lancedb_store::LanceDbStore;
-use mindojo_core::ollama::OllamaClient;
 use mindojo_core::pipeline::CODE_TABLE;
 use mindojo_core::traits::{EmbeddingProvider, VectorPoint, VectorStore};
 
@@ -372,7 +372,7 @@ async fn main() -> MindojoResult<()> {
         .init();
 
     let settings = Settings::load();
-    let ollama = OllamaClient::from_settings(&settings)?;
+    let embedder = FastEmbedProvider::from_settings(&settings)?;
     let store = LanceDbStore::open(&settings.lancedb_path).await?;
 
     let table = CODE_TABLE;
@@ -563,7 +563,7 @@ async fn main() -> MindojoResult<()> {
             batch.push((point, data));
 
             if batch.len() >= BATCH_SIZE {
-                match flush_batch(&ollama, &store, table, &mut batch).await {
+                match flush_batch(&embedder, &store, table, &mut batch).await {
                     Ok(n) => {
                         total_upserted += n;
                         info!(upserted = total_upserted, "Progress");
@@ -579,7 +579,7 @@ async fn main() -> MindojoResult<()> {
     }
 
     // Flush remaining batch
-    match flush_batch(&ollama, &store, table, &mut batch).await {
+    match flush_batch(&embedder, &store, table, &mut batch).await {
         Ok(n) => total_upserted += n,
         Err(e) => {
             warn!(error = %e, "Final batch embedding failed");
@@ -619,7 +619,7 @@ async fn main() -> MindojoResult<()> {
 
 /// Embed and upsert a batch of points.
 async fn flush_batch(
-    ollama: &OllamaClient,
+    embedder: &FastEmbedProvider,
     store: &LanceDbStore,
     table: &str,
     batch: &mut Vec<(VectorPoint, String)>,
@@ -629,7 +629,7 @@ async fn flush_batch(
     }
 
     let texts: Vec<String> = batch.iter().map(|(_, text)| text.clone()).collect();
-    let vectors = ollama.embed(&texts).await?;
+    let vectors = embedder.embed(&texts).await?;
 
     let points: Vec<VectorPoint> = batch
         .drain(..)
