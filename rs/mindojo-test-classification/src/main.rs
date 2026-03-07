@@ -6,9 +6,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{Context, bail};
 use chrono::Utc;
 use clap::Parser;
+use mindojo_core::error::{MindojoError, Result as MindojoResult, ResultExt};
 use serde::Deserialize;
 
 #[derive(Parser)]
@@ -176,7 +176,7 @@ async fn call_ollama(
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> MindojoResult<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -204,13 +204,19 @@ async fn main() -> anyhow::Result<()> {
         .to_string();
 
     if !cli.prompt.is_file() {
-        bail!("Prompt file not found: {}", cli.prompt.display());
+        return Err(MindojoError::Other(format!(
+            "Prompt file not found: {}",
+            cli.prompt.display()
+        )));
     }
 
     let data_path = cli.data.unwrap_or_else(default_data_path);
 
     if !data_path.is_file() {
-        bail!("Data file not found: {}", data_path.display());
+        return Err(MindojoError::Other(format!(
+            "Data file not found: {}",
+            data_path.display()
+        )));
     }
 
     let prompt_template = std::fs::read_to_string(&cli.prompt)
