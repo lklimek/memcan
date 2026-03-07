@@ -4,11 +4,12 @@
 //! embeds and upserts them into the memories table.
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use chrono::Utc;
 use clap::Parser;
-use md5::{Digest, Md5};
 use mindojo_core::error::{MindojoError, Result as MindojoResult, ResultExt};
+use mindojo_core::pipeline::md5_hex;
 use regex::Regex;
 use serde::Deserialize;
 use tracing::warn;
@@ -74,19 +75,13 @@ struct TriageDecision {
     action: String,
 }
 
-/// Parse `project:<name>` from recommendation text.
+/// Parse `project:<name>` from recommendation text (compiled once).
 fn extract_project_from_recommendation(recommendation: &str) -> Option<String> {
-    let re = Regex::new(r"project:(\S+)").ok()?;
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"project:(\S+)").unwrap());
     re.captures(recommendation)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string())
-}
-
-/// Compute MD5 hex digest.
-fn md5_hex(s: &str) -> String {
-    let mut hasher = Md5::new();
-    hasher.update(s.as_bytes());
-    format!("{:x}", hasher.finalize())
 }
 
 #[tokio::main]

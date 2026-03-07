@@ -5,6 +5,7 @@
 //! the standards table.
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use chrono::Utc;
 use clap::Parser;
@@ -27,9 +28,10 @@ use mindojo_core::traits::{
 /// Valid standard types.
 const VALID_TYPES: &[&str] = &["security", "coding", "cve", "guideline"];
 
-/// Regex for safe section/ref IDs.
-fn safe_id_re() -> Regex {
-    Regex::new(r"^[A-Za-z0-9\-.:_/]+$").unwrap()
+/// Regex for safe section/ref IDs (compiled once).
+fn safe_id_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^[A-Za-z0-9\-.:_/]+$").unwrap())
 }
 
 #[derive(Parser)]
@@ -173,15 +175,12 @@ fn chunk_markdown(text: &str) -> Vec<MdChunk> {
 fn validate_metadata(mut meta: ChunkMetadata) -> ChunkMetadata {
     let safe_re = safe_id_re();
 
-    // Clean ref_ids
     meta.ref_ids.retain(|id| safe_re.is_match(id));
 
-    // Clean section_id
     if !meta.section_id.is_empty() && !safe_re.is_match(&meta.section_id) {
         meta.section_id = String::new();
     }
 
-    // Truncate long strings
     if meta.section_title.len() > 200 {
         meta.section_title.truncate(200);
     }
@@ -460,7 +459,7 @@ async fn main() -> MindojoResult<()> {
 
     if !errors.is_empty() {
         let error_json = serde_json::to_string_pretty(&errors)?;
-        let error_path = PathBuf::from("index-standards-errors.json");
+        let error_path = std::env::temp_dir().join("index-standards-errors.json");
         std::fs::write(&error_path, error_json)?;
         warn!(path = %error_path.display(), "Errors written");
     }
@@ -468,9 +467,9 @@ async fn main() -> MindojoResult<()> {
     if errors.is_empty() {
         Ok(())
     } else {
-        return Err(MindojoError::Other(format!(
+        Err(MindojoError::Other(format!(
             "{} chunks failed",
             errors.len()
-        )));
+        )))
     }
 }

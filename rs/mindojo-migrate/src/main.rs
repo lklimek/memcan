@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use serde::Deserialize;
+use tracing::info;
 
 use mindojo_core::config::Settings;
 use mindojo_core::embed::FastEmbedProvider;
@@ -67,10 +68,10 @@ async fn main() -> MindojoResult<()> {
     let records: Vec<ExportRecord> =
         serde_json::from_str(&raw).context("failed to parse export JSON (expected array)")?;
 
-    println!("Found {} records in export.", records.len());
+    info!(count = records.len(), "Found records in export");
 
     if records.is_empty() {
-        println!("Nothing to migrate.");
+        info!("Nothing to migrate");
         return Ok(());
     }
 
@@ -86,17 +87,17 @@ async fn main() -> MindojoResult<()> {
             } else {
                 &record.user_id
             };
-            println!("  [{}] {}", uid, data_preview);
+            info!(user_id = uid, data = data_preview, "Would migrate record");
         }
-        println!(
-            "\nDry run: would migrate {} records. Re-run without --dry-run.",
-            records.len()
+        info!(
+            count = records.len(),
+            "Dry run complete. Re-run without --dry-run to migrate."
         );
         return Ok(());
     }
 
     let settings = Settings::load();
-    let embedder =FastEmbedProvider::from_settings(&settings)?;
+    let embedder = FastEmbedProvider::from_settings(&settings)?;
     let store = LanceDbStore::open(&settings.lancedb_path).await?;
 
     store
@@ -106,10 +107,10 @@ async fn main() -> MindojoResult<()> {
     // Embed all texts
     let texts: Vec<String> = records.iter().map(|r| r.data.clone()).collect();
 
-    println!(
-        "Embedding {} texts with {}...",
-        texts.len(),
-        settings.embed_model
+    info!(
+        count = texts.len(),
+        model = %settings.embed_model,
+        "Embedding texts"
     );
 
     // Process in batches to avoid memory issues
@@ -124,7 +125,11 @@ async fn main() -> MindojoResult<()> {
         })?;
 
         all_embeddings.extend(batch_embeddings);
-        println!("  Embedded {}/{}", all_embeddings.len(), texts.len());
+        info!(
+            progress = all_embeddings.len(),
+            total = texts.len(),
+            "Embedded batch"
+        );
     }
 
     if all_embeddings.len() != records.len() {
@@ -150,7 +155,6 @@ async fn main() -> MindojoResult<()> {
             .iter()
             .zip(&all_embeddings[batch_start..batch_end])
             .map(|(record, embedding)| {
-                // Build payload from all record fields
                 let mut payload = record.extra.clone();
                 payload.insert(
                     "data".into(),
@@ -171,14 +175,19 @@ async fn main() -> MindojoResult<()> {
 
         store.upsert(MEMORIES_TABLE, &points).await?;
         total_upserted += points.len();
-        println!("  Upserted {}/{}", total_upserted, records.len());
+        info!(
+            progress = total_upserted,
+            total = records.len(),
+            "Upserted batch"
+        );
     }
 
     // Verify
     let final_count = store.count(MEMORIES_TABLE, None).await?;
-    println!(
-        "\nMigration complete: {} records in '{}'.",
-        final_count, MEMORIES_TABLE
+    info!(
+        records = final_count,
+        table = MEMORIES_TABLE,
+        "Migration complete"
     );
 
     Ok(())

@@ -7,9 +7,11 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use chrono::Utc;
 use clap::Parser;
+use regex::Regex;
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -60,6 +62,9 @@ const CHUNK_LINES: usize = 100;
 /// Batch size for embedding requests.
 const BATCH_SIZE: usize = 20;
 
+/// Maximum recursion depth for directory walking.
+const MAX_WALK_DEPTH: usize = 50;
+
 /// Directories to skip during file collection.
 const SKIP_DIRS: &[&str] = &[
     ".git",
@@ -74,14 +79,17 @@ const SKIP_DIRS: &[&str] = &[
     ".tox",
 ];
 
-/// Language extension mappings.
-fn lang_extensions() -> HashMap<&'static str, &'static [&'static str]> {
-    let mut m = HashMap::new();
-    m.insert("rust", &[".rs"][..]);
-    m.insert("python", &[".py"][..]);
-    m.insert("go", &[".go"][..]);
-    m.insert("typescript", &[".ts", ".tsx"][..]);
-    m
+/// Language extension mappings (compiled once).
+fn lang_extensions() -> &'static HashMap<&'static str, &'static [&'static str]> {
+    static INSTANCE: OnceLock<HashMap<&str, &[&str]>> = OnceLock::new();
+    INSTANCE.get_or_init(|| {
+        let mut m = HashMap::new();
+        m.insert("rust", &[".rs"][..]);
+        m.insert("python", &[".py"][..]);
+        m.insert("go", &[".go"][..]);
+        m.insert("typescript", &[".ts", ".tsx"][..]);
+        m
+    })
 }
 
 /// Map file extension to language name.
@@ -94,12 +102,15 @@ fn ext_to_lang(ext: &str) -> Option<&'static str> {
     None
 }
 
-/// All supported file extensions.
-fn all_extensions() -> HashSet<&'static str> {
-    lang_extensions()
-        .values()
-        .flat_map(|exts| exts.iter().copied())
-        .collect()
+/// All supported file extensions (compiled once).
+fn all_extensions() -> &'static HashSet<&'static str> {
+    static INSTANCE: OnceLock<HashSet<&str>> = OnceLock::new();
+    INSTANCE.get_or_init(|| {
+        lang_extensions()
+            .values()
+            .flat_map(|exts| exts.iter().copied())
+            .collect()
+    })
 }
 
 /// Check if a path component is in the skip list.
@@ -118,6 +129,93 @@ struct Symbol {
     chunk_type: String,
 }
 
+/// Pre-compiled regex patterns for a language.
+struct LangPatterns {
+    patterns: Vec<(&'static str, Regex)>,
+}
+
+/// Get pre-compiled regex patterns for symbol extraction (compiled once per language).
+fn get_lang_patterns(lang: &str) -> Option<&'static LangPatterns> {
+    static RUST: OnceLock<LangPatterns> = OnceLock::new();
+    static PYTHON: OnceLock<LangPatterns> = OnceLock::new();
+    static GO: OnceLock<LangPatterns> = OnceLock::new();
+    static TYPESCRIPT: OnceLock<LangPatterns> = OnceLock::new();
+
+    match lang {
+        "rust" => Some(RUST.get_or_init(|| LangPatterns {
+            patterns: vec![
+                (
+                    "function_item",
+                    Regex::new(r"^(?:pub(?:\(crate\))?\s+)?(?:async\s+)?fn\s+(\w+)").unwrap(),
+                ),
+                (
+                    "struct_item",
+                    Regex::new(r"^(?:pub(?:\(crate\))?\s+)?struct\s+(\w+)").unwrap(),
+                ),
+                (
+                    "enum_item",
+                    Regex::new(r"^(?:pub(?:\(crate\))?\s+)?enum\s+(\w+)").unwrap(),
+                ),
+                (
+                    "trait_item",
+                    Regex::new(r"^(?:pub(?:\(crate\))?\s+)?trait\s+(\w+)").unwrap(),
+                ),
+                (
+                    "impl_item",
+                    Regex::new(r"^impl(?:<[^>]*>)?\s+(\w+)").unwrap(),
+                ),
+                (
+                    "mod_item",
+                    Regex::new(r"^(?:pub(?:\(crate\))?\s+)?mod\s+(\w+)").unwrap(),
+                ),
+            ],
+        })),
+        "python" => Some(PYTHON.get_or_init(|| LangPatterns {
+            patterns: vec![
+                (
+                    "function_definition",
+                    Regex::new(r"^(?:async\s+)?def\s+(\w+)").unwrap(),
+                ),
+                ("class_definition", Regex::new(r"^class\s+(\w+)").unwrap()),
+            ],
+        })),
+        "go" => Some(GO.get_or_init(|| LangPatterns {
+            patterns: vec![
+                (
+                    "function_declaration",
+                    Regex::new(r"^func\s+(\w+)").unwrap(),
+                ),
+                (
+                    "method_declaration",
+                    Regex::new(r"^func\s+\([^)]+\)\s+(\w+)").unwrap(),
+                ),
+                ("type_declaration", Regex::new(r"^type\s+(\w+)").unwrap()),
+            ],
+        })),
+        "typescript" => Some(TYPESCRIPT.get_or_init(|| LangPatterns {
+            patterns: vec![
+                (
+                    "function_declaration",
+                    Regex::new(r"^(?:export\s+)?(?:async\s+)?function\s+(\w+)").unwrap(),
+                ),
+                (
+                    "class_declaration",
+                    Regex::new(r"^(?:export\s+)?(?:abstract\s+)?class\s+(\w+)").unwrap(),
+                ),
+                (
+                    "interface_declaration",
+                    Regex::new(r"^(?:export\s+)?interface\s+(\w+)").unwrap(),
+                ),
+                (
+                    "type_alias_declaration",
+                    Regex::new(r"^(?:export\s+)?type\s+(\w+)").unwrap(),
+                ),
+            ],
+        })),
+        _ => None,
+    }
+}
+
 /// Regex patterns for detecting top-level items by language.
 fn extract_symbols_regex(source: &str, lang: &str, _file_path: &str) -> Vec<Symbol> {
     let lines: Vec<&str> = source.lines().collect();
@@ -125,90 +223,17 @@ fn extract_symbols_regex(source: &str, lang: &str, _file_path: &str) -> Vec<Symb
         return Vec::new();
     }
 
-    // Patterns that match the START of a top-level item
-    let patterns: Vec<(&str, regex::Regex)> = match lang {
-        "rust" => vec![
-            (
-                "function_item",
-                regex::Regex::new(r"^(?:pub(?:\(crate\))?\s+)?(?:async\s+)?fn\s+(\w+)").unwrap(),
-            ),
-            (
-                "struct_item",
-                regex::Regex::new(r"^(?:pub(?:\(crate\))?\s+)?struct\s+(\w+)").unwrap(),
-            ),
-            (
-                "enum_item",
-                regex::Regex::new(r"^(?:pub(?:\(crate\))?\s+)?enum\s+(\w+)").unwrap(),
-            ),
-            (
-                "trait_item",
-                regex::Regex::new(r"^(?:pub(?:\(crate\))?\s+)?trait\s+(\w+)").unwrap(),
-            ),
-            (
-                "impl_item",
-                regex::Regex::new(r"^impl(?:<[^>]*>)?\s+(\w+)").unwrap(),
-            ),
-            (
-                "mod_item",
-                regex::Regex::new(r"^(?:pub(?:\(crate\))?\s+)?mod\s+(\w+)").unwrap(),
-            ),
-        ],
-        "python" => vec![
-            (
-                "function_definition",
-                regex::Regex::new(r"^(?:async\s+)?def\s+(\w+)").unwrap(),
-            ),
-            (
-                "class_definition",
-                regex::Regex::new(r"^class\s+(\w+)").unwrap(),
-            ),
-        ],
-        "go" => vec![
-            (
-                "function_declaration",
-                regex::Regex::new(r"^func\s+(\w+)").unwrap(),
-            ),
-            (
-                "method_declaration",
-                regex::Regex::new(r"^func\s+\([^)]+\)\s+(\w+)").unwrap(),
-            ),
-            (
-                "type_declaration",
-                regex::Regex::new(r"^type\s+(\w+)").unwrap(),
-            ),
-        ],
-        "typescript" => vec![
-            (
-                "function_declaration",
-                regex::Regex::new(r"^(?:export\s+)?(?:async\s+)?function\s+(\w+)").unwrap(),
-            ),
-            (
-                "class_declaration",
-                regex::Regex::new(r"^(?:export\s+)?(?:abstract\s+)?class\s+(\w+)").unwrap(),
-            ),
-            (
-                "interface_declaration",
-                regex::Regex::new(r"^(?:export\s+)?interface\s+(\w+)").unwrap(),
-            ),
-            (
-                "type_alias_declaration",
-                regex::Regex::new(r"^(?:export\s+)?type\s+(\w+)").unwrap(),
-            ),
-        ],
-        _ => return Vec::new(),
+    let Some(lang_patterns) = get_lang_patterns(lang) else {
+        return Vec::new();
     };
 
-    // Find all top-level item start lines
-    let mut item_starts: Vec<(usize, String, String)> = Vec::new(); // (line_idx, name, type)
+    let mut item_starts: Vec<(usize, String, String)> = Vec::new();
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim_start();
-        // Only consider lines at column 0 (no indentation) for top-level items
-        // For Python, check indentation level 0
         let is_top_level = if lang == "python" {
             !line.starts_with(' ') && !line.starts_with('\t')
         } else {
-            // For Rust/Go/TS, we look at lines not deeply indented
             let indent = line.len() - trimmed.len();
             indent == 0
         };
@@ -217,7 +242,7 @@ fn extract_symbols_regex(source: &str, lang: &str, _file_path: &str) -> Vec<Symb
             continue;
         }
 
-        for (item_type, re) in &patterns {
+        for (item_type, re) in &lang_patterns.patterns {
             if let Some(caps) = re.captures(trimmed) {
                 let name = caps
                     .get(1)
@@ -233,17 +258,14 @@ fn extract_symbols_regex(source: &str, lang: &str, _file_path: &str) -> Vec<Symb
         return Vec::new();
     }
 
-    // Build symbols by spanning from one item start to the next
     let mut symbols = Vec::new();
     for (idx, (start_line, name, chunk_type)) in item_starts.iter().enumerate() {
         let end_line = if idx + 1 < item_starts.len() {
-            // End just before the next item starts
             item_starts[idx + 1].0.saturating_sub(1)
         } else {
             lines.len() - 1
         };
 
-        // Trim trailing blank lines
         let mut actual_end = end_line;
         while actual_end > *start_line && lines[actual_end].trim().is_empty() {
             actual_end -= 1;
@@ -254,7 +276,7 @@ fn extract_symbols_regex(source: &str, lang: &str, _file_path: &str) -> Vec<Symb
             symbols.push(Symbol {
                 text,
                 symbol_name: name.clone(),
-                start_line: start_line + 1, // 1-indexed
+                start_line: start_line + 1,
                 end_line: actual_end + 1,
                 chunk_type: chunk_type.clone(),
             });
@@ -320,12 +342,28 @@ fn context_line(file_path: &str, lang: &str, tech_stack: &str) -> String {
     )
 }
 
-/// Collect all source files in the project directory.
+/// Collect all source files in the project directory (depth-limited).
+// TODO: Replace with `walkdir` crate for robustness and configurability.
 fn collect_files(project_dir: &Path) -> Vec<PathBuf> {
     let valid_exts = all_extensions();
     let mut files = Vec::new();
 
-    fn walk(dir: &Path, project_dir: &Path, valid_exts: &HashSet<&str>, files: &mut Vec<PathBuf>) {
+    fn walk(
+        dir: &Path,
+        project_dir: &Path,
+        valid_exts: &HashSet<&str>,
+        files: &mut Vec<PathBuf>,
+        depth: usize,
+    ) {
+        if depth > MAX_WALK_DEPTH {
+            warn!(
+                dir = %dir.display(),
+                max_depth = MAX_WALK_DEPTH,
+                "Skipping directory: maximum recursion depth exceeded"
+            );
+            return;
+        }
+
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(_) => return,
@@ -343,7 +381,7 @@ fn collect_files(project_dir: &Path) -> Vec<PathBuf> {
             }
 
             if path.is_dir() {
-                walk(&path, project_dir, valid_exts, files);
+                walk(&path, project_dir, valid_exts, files, depth + 1);
             } else if path.is_file()
                 && let Some(ext) = path.extension()
             {
@@ -355,7 +393,7 @@ fn collect_files(project_dir: &Path) -> Vec<PathBuf> {
         }
     }
 
-    walk(project_dir, project_dir, &valid_exts, &mut files);
+    walk(project_dir, project_dir, valid_exts, &mut files, 0);
     files
 }
 
@@ -412,13 +450,15 @@ async fn main() -> MindojoResult<()> {
     let git_hash = git_short_hash(&project_dir);
     let now = Utc::now().to_rfc3339();
 
-    // Get existing indexed data for incremental re-indexing
+    // Get existing indexed data for incremental re-indexing.
+    // TODO: Optimize to query only content_hash + file_path columns instead of
+    // loading full records, once LanceDB supports column projection in scroll().
     let project_filter = format!(
         "JSON_EXTRACT(payload, '$.project') = '{}'",
         cli.project.replace('\'', "''")
     );
     let existing_records = store.scroll(table, Some(&project_filter), 100_000).await?;
-    let mut existing_hashes: HashMap<String, (String, String)> = HashMap::new(); // id -> (content_hash, file_path)
+    let mut existing_hashes: HashMap<String, (String, String)> = HashMap::new();
     for record in &existing_records {
         let ch = record
             .payload
@@ -444,7 +484,7 @@ async fn main() -> MindojoResult<()> {
     let mut total_upserted = 0usize;
     let mut total_skipped = 0usize;
     let mut total_errors = 0usize;
-    let mut batch: Vec<(VectorPoint, String)> = Vec::new(); // (point, embed_text)
+    let mut batch: Vec<(VectorPoint, String)> = Vec::new();
 
     for file_path in &files {
         let rel_path = file_path
@@ -553,7 +593,6 @@ async fn main() -> MindojoResult<()> {
             );
             payload.insert("indexed_at".into(), serde_json::Value::String(now.clone()));
 
-            // Placeholder vector — will be replaced after batch embedding
             let point = VectorPoint {
                 id: pid,
                 vector: vec![0.0; settings.embed_dims],

@@ -4,11 +4,13 @@
 //! prompt/model, and calculates TP/FP/TN/FN/accuracy/precision/recall.
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use chrono::Utc;
 use clap::Parser;
+use mindojo_core::config::Settings;
 use mindojo_core::error::{MindojoError, Result as MindojoResult, ResultExt};
+use mindojo_core::llm::GenaiLlmProvider;
+use mindojo_core::traits::{LlmMessage, LlmOptions, LlmProvider};
 use serde::Deserialize;
 
 #[derive(Parser)]
@@ -19,17 +21,13 @@ struct Cli {
     #[arg(long)]
     prompt: PathBuf,
 
-    /// Ollama model name (e.g. qwen3.5:4b)
+    /// LLM model name (genai format, e.g. ollama::qwen3.5:4b)
     #[arg(long)]
     model: String,
 
     /// Path to JSONL data file (default: ~/.claude/logs/mindojo-hook-data.jsonl)
     #[arg(long)]
     data: Option<PathBuf>,
-
-    /// Ollama API URL
-    #[arg(long)]
-    ollama_url: Option<String>,
 }
 
 fn default_data_path() -> PathBuf {
@@ -56,110 +54,47 @@ struct FactsResponse {
     facts: Vec<String>,
 }
 
-/// Load .env from a path, parsing key=value pairs.
-fn load_env_file(path: &std::path::Path) -> std::collections::HashMap<String, String> {
-    let mut result = std::collections::HashMap::new();
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return result,
-    };
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let key = key.trim();
-        let value = value.trim().trim_matches('"').trim_matches('\'');
-        if !key.is_empty() {
-            result.insert(key.to_string(), value.to_string());
-        }
-    }
-
-    result
-}
-
-/// Send content to Ollama and parse facts. Returns None on failure.
-#[allow(clippy::too_many_arguments)]
-async fn call_ollama(
-    http: &reqwest::Client,
-    url: &str,
+/// Send content to the LLM and parse facts. Returns None on failure.
+async fn call_llm(
+    llm: &dyn LlmProvider,
     model: &str,
     system_prompt: &str,
     content: &str,
-    api_key: &str,
     max_attempts: u32,
-    timeout: Duration,
 ) -> Option<Vec<String>> {
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        reqwest::header::CONTENT_TYPE,
-        reqwest::header::HeaderValue::from_static("application/json"),
-    );
-    if !api_key.is_empty()
-        && let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", api_key))
-    {
-        headers.insert(reqwest::header::AUTHORIZATION, val);
-    }
+    let messages = vec![
+        LlmMessage {
+            role: "system".to_string(),
+            content: system_prompt.to_string(),
+        },
+        LlmMessage {
+            role: "user".to_string(),
+            content: content.to_string(),
+        },
+    ];
 
-    let payload = serde_json::json!({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": content},
-        ],
-        "stream": false,
-        "format": "json",
-        "options": {"num_predict": 1024},
-        "think": false,
+    let options = Some(LlmOptions {
+        format_json: true,
+        max_tokens: Some(1024),
+        ..Default::default()
     });
 
     for attempt in 1..=max_attempts {
-        let result = http
-            .post(format!("{}/api/chat", url))
-            .headers(headers.clone())
-            .timeout(timeout)
-            .json(&payload)
-            .send()
-            .await;
-
-        match result {
-            Ok(resp) => {
-                if !resp.status().is_success() {
-                    println!("  HTTP error: {}", resp.status());
+        match llm.chat(model, &messages, options.clone()).await {
+            Ok(text) => match serde_json::from_str::<FactsResponse>(&text) {
+                Ok(parsed) => return Some(parsed.facts),
+                Err(e) => {
+                    println!("  Parse error: {}", e);
                     return None;
                 }
-                match resp.json::<serde_json::Value>().await {
-                    Ok(data) => {
-                        let text = data
-                            .get("message")
-                            .and_then(|m| m.get("content"))
-                            .and_then(|c| c.as_str())
-                            .unwrap_or("");
-                        match serde_json::from_str::<FactsResponse>(text) {
-                            Ok(parsed) => return Some(parsed.facts),
-                            Err(e) => {
-                                println!("  Parse error: {}", e);
-                                return None;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        println!("  Response parse error: {}", e);
-                        return None;
-                    }
-                }
-            }
+            },
             Err(e) => {
                 if attempt < max_attempts {
                     println!(
                         "  Attempt {}/{} failed ({}), retrying in 5s...",
                         attempt, max_attempts, e
                     );
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 } else {
                     println!("  All {} attempts failed: {}", max_attempts, e);
                     return None;
@@ -182,20 +117,9 @@ async fn main() -> MindojoResult<()> {
 
     let cli = Cli::parse();
 
-    // Resolve .env
-    let env_vars = load_env_file(&PathBuf::from(".env"));
-
-    let ollama_url = cli
-        .ollama_url
-        .as_deref()
-        .or(env_vars.get("OLLAMA_URL").map(|s| s.as_str()))
-        .unwrap_or("http://localhost:11434")
-        .to_string();
-
-    let api_key = std::env::var("OLLAMA_API_KEY")
-        .ok()
-        .or_else(|| env_vars.get("OLLAMA_API_KEY").cloned())
-        .unwrap_or_default();
+    // Load settings via Settings::load() (handles .env files via dotenvy)
+    let settings = Settings::load();
+    let llm = GenaiLlmProvider::from_settings(&settings);
 
     if !cli.prompt.is_file() {
         return Err(MindojoError::Other(format!(
@@ -251,11 +175,7 @@ async fn main() -> MindojoResult<()> {
     );
     println!("Model: {}", cli.model);
     println!("Prompt: {}", cli.prompt.display());
-    println!("Ollama: {}", ollama_url);
     println!();
-
-    let http = reqwest::Client::new();
-    let timeout = Duration::from_secs(120);
 
     let mut tp: u32 = 0;
     let mut fp: u32 = 0;
@@ -265,17 +185,7 @@ async fn main() -> MindojoResult<()> {
     for (i, entry) in entries.iter().enumerate() {
         let expect_facts = entry.decision == "kept";
 
-        let new_facts = call_ollama(
-            &http,
-            &ollama_url,
-            &cli.model,
-            &system_prompt,
-            &entry.content,
-            &api_key,
-            3,
-            timeout,
-        )
-        .await;
+        let new_facts = call_llm(&llm, &cli.model, &system_prompt, &entry.content, 3).await;
 
         let (status, label) = match &new_facts {
             None => ("ERROR", "---"),
