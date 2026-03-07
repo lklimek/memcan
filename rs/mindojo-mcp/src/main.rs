@@ -325,7 +325,15 @@ impl MindojoService {
             .await;
             match result {
                 Ok(_) => info!(user_id = %uid_clone, "add_memory: persisted"),
-                Err(e) => tracing::error!(user_id = %uid_clone, error = %e, "add_memory: failed"),
+                Err(e) => {
+                    let preview: String = memory.chars().take(120).collect();
+                    tracing::error!(
+                        user_id = %uid_clone,
+                        error = %e,
+                        memory_preview = %preview,
+                        "add_memory: pipeline failed to store memory"
+                    );
+                }
             }
         });
 
