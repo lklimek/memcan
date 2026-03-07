@@ -3,13 +3,13 @@
 //! Reads JSON from stdin, dispatches by `hook_event_name`, runs the memory
 //! pipeline (extract -> dedup -> store), and logs results.
 
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use chrono::Utc;
 use mindojo_core::error::{Result as MindojoResult, ResultExt};
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncReadExt;
 use tracing::info;
 
 use mindojo_core::config::Settings;
@@ -22,6 +22,9 @@ use mindojo_core::traits::{EmbeddingProvider, VectorStore};
 
 /// Minimum message length to consider for extraction.
 const MIN_MESSAGE_LENGTH: usize = 70;
+
+/// Maximum stdin payload size (32 MB).
+const MAX_STDIN_BYTES: u64 = 32 * 1024 * 1024;
 
 /// JSONL log entry for hook data.
 #[derive(Serialize)]
@@ -181,7 +184,8 @@ fn extract_text_from_transcript_line(line_obj: &TranscriptLine) -> Option<String
     }
 }
 
-/// Append one JSONL entry to the hook data log. Never panics.
+/// Append one JSONL entry to the hook data log.
+/// Enabled by setting `MINDOJO_DEBUG_HOOKS=true` in environment.
 fn log_hook_data(
     log_path: &Path,
     hook: &str,
@@ -191,6 +195,10 @@ fn log_hook_data(
     facts: Option<&[String]>,
     decision: &str,
 ) {
+    if std::env::var("MINDOJO_DEBUG_HOOKS").as_deref() != Ok("true") {
+        return;
+    }
+
     let entry = HookDataEntry {
         ts: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         hook: hook.to_string(),
@@ -203,28 +211,71 @@ fn log_hook_data(
         prompt_file: "fact-extraction-hook.md".to_string(),
     };
 
-    if let Ok(json) = serde_json::to_string(&entry)
-        && let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)
-    {
-        use std::io::Write;
-        let _ = writeln!(file, "{}", json);
+    match serde_json::to_string(&entry) {
+        Ok(json) => {
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)
+            {
+                Ok(mut file) => {
+                    use std::io::Write;
+                    if let Err(e) = writeln!(file, "{}", json) {
+                        tracing::warn!(error = %e, "failed to write hook data log entry");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, path = %log_path.display(), "failed to open hook data log");
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to serialize hook data entry");
+        }
     }
 }
 
-/// Handle SubagentStop event.
-async fn handle_subagent_stop(
-    payload: &HookPayload,
+/// Validate that a path is within the user's home directory.
+/// Rejects paths to sensitive system locations.
+fn validate_path(path: &Path) -> MindojoResult<PathBuf> {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home"));
+
+    // Resolve symlinks and relative components where possible
+    let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
+    let sensitive = ["/etc", "/proc", "/sys", "/dev", "/boot", "/root"];
+    for prefix in &sensitive {
+        if resolved.starts_with(prefix) {
+            return Err(mindojo_core::error::MindojoError::Other(format!(
+                "path in sensitive location: {}",
+                resolved.display()
+            )));
+        }
+    }
+
+    if !resolved.starts_with(&home) && !resolved.starts_with("/tmp") {
+        return Err(mindojo_core::error::MindojoError::Other(format!(
+            "path outside home directory: {}",
+            resolved.display()
+        )));
+    }
+
+    Ok(resolved)
+}
+
+/// Shared memory pipeline: resolve project, check length, extract facts, log.
+#[allow(clippy::too_many_arguments)]
+async fn process_conversation(
+    message: &str,
+    cwd: &str,
+    event_name: &str,
+    source_tag: &str,
     settings: &Settings,
     embedder: &FastEmbedProvider,
     llm: &GenaiLlmProvider,
     store: &LanceDbStore,
     hook_data_log: &Path,
 ) -> MindojoResult<()> {
-    let message = payload.last_assistant_message.as_deref().unwrap_or("");
-    let cwd = payload.cwd.as_deref().unwrap_or("");
     let project = if cwd.is_empty() {
         None
     } else {
@@ -238,11 +289,12 @@ async fn handle_subagent_stop(
     if message.len() < MIN_MESSAGE_LENGTH {
         info!(
             len = message.len(),
-            "SubagentStop: message too short, skipping"
+            event = event_name,
+            "message too short, skipping"
         );
         log_hook_data(
             hook_data_log,
-            "SubagentStop",
+            event_name,
             project.as_deref(),
             &user_id,
             message,
@@ -254,12 +306,14 @@ async fn handle_subagent_stop(
 
     info!(
         project = project.as_deref().unwrap_or("none"),
-        user_id, "SubagentStop: running memory pipeline"
+        user_id,
+        event = event_name,
+        "running memory pipeline"
     );
 
     let metadata = serde_json::json!({
         "type": "lesson",
-        "source": "auto-agent-stop",
+        "source": source_tag,
     });
 
     store
@@ -288,7 +342,7 @@ async fn handle_subagent_stop(
 
     log_hook_data(
         hook_data_log,
-        "SubagentStop",
+        event_name,
         project.as_deref(),
         &user_id,
         message,
@@ -296,8 +350,38 @@ async fn handle_subagent_stop(
         decision,
     );
 
-    info!(decision, "SubagentStop: pipeline complete");
+    info!(decision, event = event_name, "pipeline complete");
     Ok(())
+}
+
+/// Handle SubagentStop event.
+async fn handle_subagent_stop(
+    payload: &HookPayload,
+    settings: &Settings,
+    embedder: &FastEmbedProvider,
+    llm: &GenaiLlmProvider,
+    store: &LanceDbStore,
+    hook_data_log: &Path,
+) -> MindojoResult<()> {
+    let message = payload.last_assistant_message.as_deref().unwrap_or("");
+    let cwd = payload.cwd.as_deref().unwrap_or("");
+
+    if !cwd.is_empty() {
+        validate_path(Path::new(cwd))?;
+    }
+
+    process_conversation(
+        message,
+        cwd,
+        "SubagentStop",
+        "auto-agent-stop",
+        settings,
+        embedder,
+        llm,
+        store,
+        hook_data_log,
+    )
+    .await
 }
 
 /// Handle PreCompact event.
@@ -317,7 +401,8 @@ async fn handle_precompact(
         }
     };
 
-    let path = PathBuf::from(&transcript_path);
+    let path = validate_path(Path::new(&transcript_path))?;
+
     if !path.is_file() {
         info!(path = %transcript_path, "PreCompact: transcript not found");
         return Ok(());
@@ -346,79 +431,25 @@ async fn handle_precompact(
         }
     }
 
-    let cwd = payload.cwd.as_deref().unwrap_or("");
-    let project = if cwd.is_empty() {
-        None
-    } else {
-        resolve_project(cwd)
-    };
-    let user_id = project
-        .as_ref()
-        .map(|p| format!("project:{}", p))
-        .unwrap_or_else(|| settings.default_user_id.clone());
-
     let message = last_text.as_deref().unwrap_or("");
+    let cwd = payload.cwd.as_deref().unwrap_or("");
 
-    if message.len() < MIN_MESSAGE_LENGTH {
-        info!(
-            len = message.len(),
-            "PreCompact: last assistant message too short, skipping"
-        );
-        log_hook_data(
-            hook_data_log,
-            "PreCompact",
-            project.as_deref(),
-            &user_id,
-            message,
-            None,
-            "skipped_short",
-        );
-        return Ok(());
+    if !cwd.is_empty() {
+        validate_path(Path::new(cwd))?;
     }
 
-    info!(len = message.len(), "PreCompact: extracted message");
-
-    let metadata = serde_json::json!({
-        "type": "lesson",
-        "source": "auto-pre-compact",
-    });
-
-    store
-        .ensure_table(MEMORIES_TABLE, embedder.dimensions())
-        .await?;
-
-    let facts = do_add_memory(
+    process_conversation(
         message,
-        &user_id,
-        &metadata,
-        settings.distill_memories,
-        MEMORIES_TABLE,
-        store,
+        cwd,
+        "PreCompact",
+        "auto-pre-compact",
+        settings,
         embedder,
         llm,
-        &settings.llm_model,
-        Some(FACT_EXTRACTION_HOOK_PROMPT),
-    )
-    .await?;
-
-    let decision = match &facts {
-        None => "error",
-        Some(f) if f.is_empty() => "rejected",
-        Some(_) => "kept",
-    };
-
-    log_hook_data(
+        store,
         hook_data_log,
-        "PreCompact",
-        project.as_deref(),
-        &user_id,
-        message,
-        facts.as_deref(),
-        decision,
-    );
-
-    info!(decision, "PreCompact: pipeline complete");
-    Ok(())
+    )
+    .await
 }
 
 #[tokio::main]
@@ -441,18 +472,24 @@ async fn main() {
 
     let hook_data_log = log_dir.join("mindojo-hook-data.jsonl");
 
-    // The outer try-catch ensures the hook never crashes
     if let Err(e) = run(&hook_data_log).await {
         tracing::error!(error = %e, "extract_learnings hook failed");
     }
 }
 
 async fn run(hook_data_log: &Path) -> MindojoResult<()> {
-    // Read JSON from stdin
+    // Read JSON from stdin asynchronously with a 32 MB limit
     let mut raw = String::new();
-    std::io::stdin()
-        .read_to_string(&mut raw)
-        .context("failed to read stdin")?;
+    let mut stdin = tokio::io::stdin().take(MAX_STDIN_BYTES);
+    let bytes_read = stdin.read_to_string(&mut raw).await.map_err(|e| {
+        mindojo_core::error::MindojoError::Other(format!("failed to read stdin: {e}"))
+    })?;
+
+    if bytes_read as u64 >= MAX_STDIN_BYTES && !raw.ends_with('}') {
+        return Err(mindojo_core::error::MindojoError::Other(format!(
+            "stdin payload exceeds {MAX_STDIN_BYTES} byte limit"
+        )));
+    }
 
     info!(bytes = raw.len(), "Hook invoked");
 
@@ -476,8 +513,7 @@ async fn run(hook_data_log: &Path) -> MindojoResult<()> {
 
     match payload.hook_event_name.as_str() {
         "SubagentStop" => {
-            handle_subagent_stop(&payload, &settings, &embedder, &llm, &store, hook_data_log)
-                .await
+            handle_subagent_stop(&payload, &settings, &embedder, &llm, &store, hook_data_log).await
         }
         "PreCompact" => {
             handle_precompact(&payload, &settings, &embedder, &llm, &store, hook_data_log).await
