@@ -71,12 +71,10 @@ impl OllamaClient {
             }
             builder = builder.default_headers(headers);
         }
-        builder
-            .build()
-            .map_err(|e| MindojoError::Http {
-                context: "failed to build HTTP client".into(),
-                source: e,
-            })
+        builder.build().map_err(|e| MindojoError::Http {
+            context: "failed to build HTTP client".into(),
+            source: e,
+        })
     }
 
     /// Return the configured LLM model name.
@@ -300,8 +298,7 @@ mod tests {
 
     #[test]
     fn test_client_creation() {
-        let client =
-            OllamaClient::new("http://localhost:11434", None, "test-model", 768).unwrap();
+        let client = OllamaClient::new("http://localhost:11434", None, "test-model", 768).unwrap();
         assert_eq!(client.base_url, "http://localhost:11434");
         assert_eq!(client.embed_model, "test-model");
         assert_eq!(client.embed_dims, 768);

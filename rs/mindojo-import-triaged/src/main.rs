@@ -5,10 +5,10 @@
 
 use std::path::PathBuf;
 
-use mindojo_core::error::{MindojoError, Result as MindojoResult, ResultExt};
 use chrono::Utc;
 use clap::Parser;
 use md5::{Digest, Md5};
+use mindojo_core::error::{MindojoError, Result as MindojoResult, ResultExt};
 use regex::Regex;
 use serde::Deserialize;
 use tracing::warn;
@@ -101,17 +101,19 @@ async fn main() -> MindojoResult<()> {
     let cli = Cli::parse();
 
     if !cli.report.exists() {
-        return Err(MindojoError::Other(format!("Report file not found: {}", cli.report.display())));
+        return Err(MindojoError::Other(format!(
+            "Report file not found: {}",
+            cli.report.display()
+        )));
     }
 
     let raw = std::fs::read_to_string(&cli.report)
         .with_context(|| format!("failed to read {}", cli.report.display()))?;
     let report: TriageReport = serde_json::from_str(&raw).context("failed to parse report JSON")?;
 
-    let triage = report
-        .triage
-        .as_ref()
-        .ok_or_else(|| MindojoError::Other("Report has no triage decisions. Run triage-findings first.".into()))?;
+    let triage = report.triage.as_ref().ok_or_else(|| {
+        MindojoError::Other("Report has no triage decisions. Run triage-findings first.".into())
+    })?;
 
     println!("Processing triaged report: {}", cli.report.display());
     println!(
@@ -183,9 +185,7 @@ async fn main() -> MindojoResult<()> {
             println!("    Content length: {} chars", content.len());
         } else {
             let store = store.as_ref().unwrap();
-            let vectors = ollama
-                .embed(std::slice::from_ref(&content))
-                .await?;
+            let vectors = ollama.embed(std::slice::from_ref(&content)).await?;
 
             let point_id = Uuid::new_v4().to_string();
             let now = Utc::now().to_rfc3339();

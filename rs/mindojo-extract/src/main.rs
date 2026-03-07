@@ -7,8 +7,8 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use mindojo_core::error::{Result as MindojoResult, ResultExt};
 use chrono::Utc;
+use mindojo_core::error::{Result as MindojoResult, ResultExt};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 

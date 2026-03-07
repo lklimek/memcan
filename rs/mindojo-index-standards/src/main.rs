@@ -6,9 +6,9 @@
 
 use std::path::PathBuf;
 
-use mindojo_core::error::{MindojoError, Result as MindojoResult, ResultExt};
 use chrono::Utc;
 use clap::Parser;
+use mindojo_core::error::{MindojoError, Result as MindojoResult, ResultExt};
 use regex::Regex;
 use serde::Deserialize;
 use tracing::{debug, info, warn};
@@ -292,12 +292,9 @@ async fn main() -> MindojoResult<()> {
         .file
         .as_ref()
         .ok_or_else(|| MindojoError::Other("file is required unless --drop is specified".into()))?;
-    let standard_type = cli
-        .standard_type
-        .as_deref()
-        .ok_or_else(|| {
-            MindojoError::Other("--standard-type is required unless --drop is specified".into())
-        })?;
+    let standard_type = cli.standard_type.as_deref().ok_or_else(|| {
+        MindojoError::Other("--standard-type is required unless --drop is specified".into())
+    })?;
 
     if !VALID_TYPES.contains(&standard_type) {
         return Err(MindojoError::Other(format!(
@@ -472,6 +469,6 @@ async fn main() -> MindojoResult<()> {
         return Err(MindojoError::Other(format!(
             "{} chunks failed",
             errors.len()
-        )))
+        )));
     }
 }
