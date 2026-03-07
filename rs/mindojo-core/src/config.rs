@@ -17,7 +17,7 @@ fn expand_tilde(path: &str) -> String {
 }
 
 /// Application settings loaded from .env files and environment variables.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Settings {
     pub ollama_url: String,
     pub ollama_api_key: String,
@@ -29,6 +29,23 @@ pub struct Settings {
     pub llm_model: String,
     pub embed_model: String,
     pub embed_dims: usize,
+}
+
+impl std::fmt::Debug for Settings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Settings")
+            .field("ollama_url", &self.ollama_url)
+            .field("ollama_api_key", &"[REDACTED]")
+            .field("lancedb_path", &self.lancedb_path)
+            .field("default_user_id", &self.default_user_id)
+            .field("tech_stack", &self.tech_stack)
+            .field("distill_memories", &self.distill_memories)
+            .field("log_file", &self.log_file)
+            .field("llm_model", &self.llm_model)
+            .field("embed_model", &self.embed_model)
+            .field("embed_dims", &self.embed_dims)
+            .finish()
+    }
 }
 
 impl Default for Settings {

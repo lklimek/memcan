@@ -149,10 +149,19 @@ fn resolve_user_id(project: &Option<String>, user_id: &Option<String>, default: 
     default.to_string()
 }
 
+/// Escape a value for safe use in LanceDB SQL filters.
+/// Escapes single quotes (SQL injection) and LIKE wildcards.
+fn sanitize_sql_value(s: &str) -> String {
+    s.replace('\'', "''")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 /// Build a LanceDB SQL filter for user_id scoping.
 /// Searches within the JSON payload column using LIKE.
 fn user_filter(user_id: &str) -> String {
-    format!(r#"payload LIKE '%"user_id":"{user_id}"%'"#,)
+    let safe = sanitize_sql_value(user_id);
+    format!(r#"payload LIKE '%"user_id":"{safe}"%'"#,)
 }
 
 /// Format memory search results into a JSON array matching the Python output.
@@ -571,12 +580,18 @@ impl MindojoService {
         // Build filter using LIKE on the JSON payload column
         let mut filter_parts: Vec<String> = filter_conditions
             .iter()
-            .filter_map(|(key, val)| val.map(|v| format!(r#"payload LIKE '%"{key}":"{v}"%'"#)))
+            .filter_map(|(key, val)| {
+                val.map(|v| {
+                    let safe = sanitize_sql_value(v);
+                    format!(r#"payload LIKE '%"{key}":"{safe}"%'"#)
+                })
+            })
             .collect();
 
         // Handle ref_id filter (search in payload JSON for ref_ids array)
         if let Some(ref rid) = ref_id {
-            filter_parts.push(format!(r#"payload LIKE '%"{rid}"%'"#,));
+            let safe = sanitize_sql_value(rid);
+            filter_parts.push(format!(r#"payload LIKE '%"{safe}"%'"#,));
         }
 
         let filter = if filter_parts.is_empty() {
@@ -633,13 +648,16 @@ impl MindojoService {
         // Build filter using LIKE on the JSON payload column
         let mut filter_parts: Vec<String> = Vec::new();
         if let Some(ref p) = project {
-            filter_parts.push(format!(r#"payload LIKE '%"project":"{p}"%'"#));
+            let safe = sanitize_sql_value(p);
+            filter_parts.push(format!(r#"payload LIKE '%"project":"{safe}"%'"#));
         }
         if let Some(ref ts) = tech_stack {
-            filter_parts.push(format!(r#"payload LIKE '%"tech_stack":"{ts}"%'"#));
+            let safe = sanitize_sql_value(ts);
+            filter_parts.push(format!(r#"payload LIKE '%"tech_stack":"{safe}"%'"#));
         }
         if let Some(ref fp) = file_path {
-            filter_parts.push(format!(r#"payload LIKE '%"file_path":"%{fp}%"%'"#));
+            let safe = sanitize_sql_value(fp);
+            filter_parts.push(format!(r#"payload LIKE '%"file_path":"%{safe}%"%'"#));
         }
 
         let filter = if filter_parts.is_empty() {

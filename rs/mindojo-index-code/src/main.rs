@@ -372,16 +372,7 @@ async fn main() -> MindojoResult<()> {
         .init();
 
     let settings = Settings::load();
-    let ollama = OllamaClient::new(
-        &settings.ollama_url,
-        if settings.ollama_api_key.is_empty() {
-            None
-        } else {
-            Some(settings.ollama_api_key.clone())
-        },
-        &settings.embed_model,
-        settings.embed_dims,
-    )?;
+    let ollama = OllamaClient::from_settings(&settings)?;
     let store = LanceDbStore::open(&settings.lancedb_path).await?;
 
     let table = CODE_TABLE;
