@@ -30,10 +30,6 @@ struct Cli {
     /// Ollama API URL
     #[arg(long)]
     ollama_url: Option<String>,
-
-    /// Ollama API key
-    #[arg(long)]
-    ollama_api_key: Option<String>,
 }
 
 fn default_data_path() -> PathBuf {
@@ -196,12 +192,10 @@ async fn main() -> MindojoResult<()> {
         .unwrap_or("http://localhost:11434")
         .to_string();
 
-    let api_key = cli
-        .ollama_api_key
-        .as_deref()
-        .or(env_vars.get("OLLAMA_API_KEY").map(|s| s.as_str()))
-        .unwrap_or("")
-        .to_string();
+    let api_key = std::env::var("OLLAMA_API_KEY")
+        .ok()
+        .or_else(|| env_vars.get("OLLAMA_API_KEY").cloned())
+        .unwrap_or_default();
 
     if !cli.prompt.is_file() {
         return Err(MindojoError::Other(format!(
