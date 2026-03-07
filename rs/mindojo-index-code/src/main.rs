@@ -389,10 +389,9 @@ async fn main() -> MindojoResult<()> {
         return Ok(());
     }
 
-    let tech_stack = cli
-        .tech_stack
-        .as_deref()
-        .ok_or_else(|| MindojoError::Other("--tech-stack is required unless --drop is specified".into()))?;
+    let tech_stack = cli.tech_stack.as_deref().ok_or_else(|| {
+        MindojoError::Other("--tech-stack is required unless --drop is specified".into())
+    })?;
 
     let project_dir = cli.project_dir.canonicalize().with_context(|| {
         format!(
@@ -402,7 +401,10 @@ async fn main() -> MindojoResult<()> {
     })?;
 
     if !project_dir.is_dir() {
-        return Err(MindojoError::Other(format!("Not a directory: {}", project_dir.display())));
+        return Err(MindojoError::Other(format!(
+            "Not a directory: {}",
+            project_dir.display()
+        )));
     }
 
     store.ensure_table(table, settings.embed_dims).await?;

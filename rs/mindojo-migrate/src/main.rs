@@ -64,8 +64,8 @@ async fn main() -> MindojoResult<()> {
     let raw = std::fs::read_to_string(&cli.export_file)
         .with_context(|| format!("failed to read {}", cli.export_file.display()))?;
 
-    let records: Vec<ExportRecord> = serde_json::from_str(&raw)
-        .context("failed to parse export JSON (expected array)")?;
+    let records: Vec<ExportRecord> =
+        serde_json::from_str(&raw).context("failed to parse export JSON (expected array)")?;
 
     println!("Found {} records in export.", records.len());
 

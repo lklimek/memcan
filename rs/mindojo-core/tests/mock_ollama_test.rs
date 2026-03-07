@@ -52,7 +52,8 @@ async fn test_embed_mock() {
         .create_async()
         .await;
 
-    let client = OllamaClient::new(server.url().as_str(), None, "test-embed", TEST_DIMS);
+    let client = OllamaClient::new(server.url().as_str(), None, "test-embed", TEST_DIMS)
+        .expect("create ollama client");
 
     let result = client
         .embed(&["Hello world".to_string()])
@@ -89,7 +90,8 @@ async fn test_chat_mock() {
         .create_async()
         .await;
 
-    let client = OllamaClient::new(server.url().as_str(), None, "test-embed", TEST_DIMS);
+    let client = OllamaClient::new(server.url().as_str(), None, "test-embed", TEST_DIMS)
+        .expect("create ollama client");
 
     let messages = vec![LlmMessage {
         role: "user".into(),
@@ -176,7 +178,8 @@ async fn test_memory_pipeline_mock() {
         .await
         .expect("create table");
 
-    let client = OllamaClient::new(server.url().as_str(), None, "test-embed", TEST_DIMS);
+    let client = OllamaClient::new(server.url().as_str(), None, "test-embed", TEST_DIMS)
+        .expect("create ollama client");
 
     let metadata = serde_json::json!({});
     let result = do_add_memory(
@@ -310,7 +313,8 @@ async fn test_dedup() {
         .await
         .expect("create table");
 
-    let client = OllamaClient::new(server.url().as_str(), None, "test-embed", TEST_DIMS);
+    let client = OllamaClient::new(server.url().as_str(), None, "test-embed", TEST_DIMS)
+        .expect("create ollama client");
     let metadata = serde_json::json!({});
 
     // First memory.
