@@ -19,17 +19,9 @@ use mindojo_core::{
     error::MindojoError,
     lancedb_store::LanceDbStore,
     llm::GenaiLlmProvider,
-    pipeline,
+    pipeline::{self, CODE_TABLE, MEMORIES_TABLE, STANDARDS_TABLE},
     traits::{EmbeddingProvider, LlmProvider, VectorStore},
 };
-
-// ---------------------------------------------------------------------------
-// Table name constants (underscores for LanceDB compatibility)
-// ---------------------------------------------------------------------------
-
-const MEMORIES_TABLE: &str = "mindojo_memories";
-const STANDARDS_TABLE: &str = "mindojo_standards";
-const CODE_TABLE: &str = "mindojo_code";
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -159,11 +151,10 @@ fn sanitize_sql_value(s: &str) -> String {
         .replace('_', "\\_")
 }
 
-/// Build a LanceDB SQL filter for user_id scoping.
-/// Searches within the JSON payload column using LIKE.
+/// Build a LanceDB SQL filter for user_id scoping using the dedicated column.
 fn user_filter(user_id: &str) -> String {
     let safe = sanitize_sql_value(user_id);
-    format!(r#"payload LIKE '%"user_id":"{safe}"%'"#,)
+    format!("user_id = '{safe}'")
 }
 
 /// Format memory search results into a JSON array matching the Python output.
@@ -431,6 +422,7 @@ impl MindojoService {
         )]))
     }
 
+    // INTENTIONAL(SEC-006): No ownership verification — single-user deployment, no multi-user scenarios
     #[tool(description = "Delete a specific memory by ID.")]
     async fn delete_memory(
         &self,
@@ -450,6 +442,7 @@ impl MindojoService {
         )]))
     }
 
+    // INTENTIONAL(SEC-006): No ownership verification — single-user deployment, no multi-user scenarios
     #[tool(description = "Update an existing memory's content.")]
     async fn update_memory(
         &self,
@@ -580,28 +573,29 @@ impl MindojoService {
             .await
             .map_err(|e| ErrorData::internal_error(format!("embedding failed: {e}"), None))?;
 
-        let filter_conditions: Vec<(&str, Option<&str>)> = vec![
-            ("standard_type", standard_type.as_deref()),
-            ("standard_id", standard_id.as_deref()),
-            ("tech_stack", tech_stack.as_deref()),
-            ("lang", lang.as_deref()),
-        ];
-
-        // Build filter using LIKE on the JSON payload column
-        let mut filter_parts: Vec<String> = filter_conditions
-            .iter()
-            .filter_map(|(key, val)| {
-                val.map(|v| {
-                    let safe = sanitize_sql_value(v);
-                    format!(r#"payload LIKE '%"{key}":"{safe}"%'"#)
-                })
-            })
-            .collect();
-
-        // Handle ref_id filter (search in payload JSON for ref_ids array)
+        // Build filter using dedicated columns
+        let mut filter_parts: Vec<String> = Vec::new();
+        if let Some(ref v) = standard_type {
+            let safe = sanitize_sql_value(v);
+            filter_parts.push(format!("standard_type = '{safe}'"));
+        }
+        if let Some(ref v) = standard_id {
+            let safe = sanitize_sql_value(v);
+            filter_parts.push(format!("standard_id = '{safe}'"));
+        }
+        if let Some(ref v) = tech_stack {
+            let safe = sanitize_sql_value(v);
+            filter_parts.push(format!("tech_stack = '{safe}'"));
+        }
+        // lang has no dedicated column; filter via LIKE on payload
+        if let Some(ref v) = lang {
+            let safe = sanitize_sql_value(v);
+            filter_parts.push(format!(r#"payload LIKE '%"lang":"{safe}"%'"#));
+        }
+        // ref_id has no dedicated column; filter via LIKE on payload
         if let Some(ref rid) = ref_id {
             let safe = sanitize_sql_value(rid);
-            filter_parts.push(format!(r#"payload LIKE '%"{safe}"%'"#,));
+            filter_parts.push(format!(r#"payload LIKE '%"{safe}"%'"#));
         }
 
         let filter = if filter_parts.is_empty() {
@@ -655,19 +649,19 @@ impl MindojoService {
             .await
             .map_err(|e| ErrorData::internal_error(format!("embedding failed: {e}"), None))?;
 
-        // Build filter using LIKE on the JSON payload column
+        // Build filter using dedicated columns
         let mut filter_parts: Vec<String> = Vec::new();
         if let Some(ref p) = project {
             let safe = sanitize_sql_value(p);
-            filter_parts.push(format!(r#"payload LIKE '%"project":"{safe}"%'"#));
+            filter_parts.push(format!("project = '{safe}'"));
         }
         if let Some(ref ts) = tech_stack {
             let safe = sanitize_sql_value(ts);
-            filter_parts.push(format!(r#"payload LIKE '%"tech_stack":"{safe}"%'"#));
+            filter_parts.push(format!("tech_stack = '{safe}'"));
         }
         if let Some(ref fp) = file_path {
             let safe = sanitize_sql_value(fp);
-            filter_parts.push(format!(r#"payload LIKE '%"file_path":"%{safe}%"%'"#));
+            filter_parts.push(format!("file_path LIKE '%{safe}%'"));
         }
 
         let filter = if filter_parts.is_empty() {
