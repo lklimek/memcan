@@ -2,7 +2,7 @@
 //!
 //! Replaces the old Ollama-based embeddings with a zero-dependency local model.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
@@ -17,7 +17,7 @@ use crate::traits::EmbeddingProvider;
 /// `TextEmbedding` is `!Send` (ONNX session), so we hold it behind a `Mutex`
 /// and run inference on a blocking thread via `tokio::task::spawn_blocking`.
 pub struct FastEmbedProvider {
-    model: Mutex<TextEmbedding>,
+    model: Arc<Mutex<TextEmbedding>>,
     dims: usize,
 }
 
@@ -39,7 +39,7 @@ impl FastEmbedProvider {
         })?;
         info!(dims, "FastEmbed model loaded");
         Ok(Self {
-            model: Mutex::new(model),
+            model: Arc::new(Mutex::new(model)),
             dims,
         })
     }
@@ -57,22 +57,24 @@ impl FastEmbedProvider {
 impl EmbeddingProvider for FastEmbedProvider {
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let docs: Vec<String> = texts.to_vec();
-        // fastembed's ONNX session is synchronous — run on a blocking thread.
-        let mut model_guard = self.model.lock().map_err(|e| MindojoError::Embedding {
-            context: "model lock poisoned".into(),
-            detail: e.to_string(),
-        })?;
-        // We need to move the model into spawn_blocking, but we can't move the MutexGuard.
-        // Instead, extract a reference — but spawn_blocking needs 'static.
-        // Solution: use a std::sync::Arc<Mutex<>> pattern and clone the Arc.
-        // For now, just do the work synchronously (fastembed is fast).
-        let embeddings = model_guard
-            .embed(docs, None)
-            .map_err(|e| MindojoError::Embedding {
-                context: "fastembed embed failed".into(),
+        let model = Arc::clone(&self.model);
+        tokio::task::spawn_blocking(move || {
+            let mut guard = model.lock().map_err(|e| MindojoError::Embedding {
+                context: "model lock poisoned".into(),
                 detail: e.to_string(),
             })?;
-        Ok(embeddings)
+            guard
+                .embed(docs, None)
+                .map_err(|e| MindojoError::Embedding {
+                    context: "fastembed embed failed".into(),
+                    detail: e.to_string(),
+                })
+        })
+        .await
+        .map_err(|e| MindojoError::Embedding {
+            context: "spawn_blocking panicked".into(),
+            detail: e.to_string(),
+        })?
     }
 
     fn dimensions(&self) -> usize {
