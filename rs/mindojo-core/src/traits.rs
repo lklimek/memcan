@@ -39,6 +39,7 @@ pub trait VectorStore: Send + Sync {
         vector: &[f32],
         filter: Option<&str>,
         limit: usize,
+        offset: usize,
     ) -> Result<Vec<SearchResult>>;
 
     /// List records with optional SQL filter (no vector search).
@@ -47,6 +48,7 @@ pub trait VectorStore: Send + Sync {
         table: &str,
         filter: Option<&str>,
         limit: usize,
+        offset: usize,
     ) -> Result<Vec<SearchResult>>;
 
     /// Count records matching an optional SQL filter.

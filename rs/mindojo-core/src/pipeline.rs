@@ -187,7 +187,9 @@ pub async fn dedup_and_store(
         let vector = &vectors[0];
 
         let filter = format!("user_id = '{}'", user_id.replace('\'', "''"));
-        let existing = store.search(table_name, vector, Some(&filter), 5).await?;
+        let existing = store
+            .search(table_name, vector, Some(&filter), 5, 0)
+            .await?;
 
         let existing_memories: Vec<serde_json::Value> = existing
             .iter()
@@ -215,6 +217,15 @@ pub async fn dedup_and_store(
             match event.event_type {
                 EventType::Add => {
                     let data = event.data.as_deref().unwrap_or(fact);
+                    let add_vector = if data != fact {
+                        let new_vecs = embedder.embed(&[data.to_string()]).await?;
+                        new_vecs
+                            .into_iter()
+                            .next()
+                            .unwrap_or_else(|| vector.clone())
+                    } else {
+                        vector.clone()
+                    };
                     let now = Utc::now().to_rfc3339();
                     let hash = md5_hex(data);
                     let mut payload = json!({
@@ -233,7 +244,7 @@ pub async fn dedup_and_store(
                     }
                     let point = VectorPoint {
                         id: Uuid::new_v4().to_string(),
-                        vector: vector.clone(),
+                        vector: add_vector,
                         payload,
                     };
                     store.upsert(table_name, &[point]).await?;

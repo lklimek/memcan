@@ -303,12 +303,16 @@ impl VectorStore for LanceDbStore {
         vector: &[f32],
         filter: Option<&str>,
         limit: usize,
+        offset: usize,
     ) -> Result<Vec<SearchResult>> {
         let tbl = self.open_table(table).await?;
         let mut query = tbl
             .vector_search(vector)
             .context("vector search init failed")?;
         query = query.limit(limit);
+        if offset > 0 {
+            query = query.offset(offset);
+        }
         if let Some(f) = filter {
             query = query.only_if(f);
         }
@@ -331,6 +335,7 @@ impl VectorStore for LanceDbStore {
         table: &str,
         filter: Option<&str>,
         limit: usize,
+        offset: usize,
     ) -> Result<Vec<SearchResult>> {
         let tbl = self.open_table(table).await?;
         let mut query = tbl.query();
@@ -338,6 +343,9 @@ impl VectorStore for LanceDbStore {
             query = query.only_if(f);
         }
         query = query.limit(limit);
+        if offset > 0 {
+            query = query.offset(offset);
+        }
         let batches = query
             .select(Select::columns(&["id", "payload"]))
             .execute()
@@ -401,7 +409,7 @@ impl VectorStore for LanceDbStore {
             .map(|id| format!("'{}'", id.replace('\'', "''")))
             .collect();
         let filter = format!("id IN ({})", id_list.join(", "));
-        self.scroll(table, Some(&filter), ids.len()).await
+        self.scroll(table, Some(&filter), ids.len(), 0).await
     }
 }
 

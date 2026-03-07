@@ -358,7 +358,7 @@ impl MindojoService {
         let results = self
             .state
             .store
-            .search(MEMORIES_TABLE, &vectors[0], Some(&filter), limit)
+            .search(MEMORIES_TABLE, &vectors[0], Some(&filter), limit, 0)
             .await
             .map_err(|e| ErrorData::internal_error(format!("search failed: {e}"), None))?;
 
@@ -385,7 +385,7 @@ impl MindojoService {
         let results = self
             .state
             .store
-            .scroll(MEMORIES_TABLE, Some(&filter), limit)
+            .scroll(MEMORIES_TABLE, Some(&filter), limit, 0)
             .await
             .map_err(|e| ErrorData::internal_error(format!("scroll failed: {e}"), None))?;
 
@@ -607,7 +607,7 @@ impl MindojoService {
         let results = self
             .state
             .store
-            .search(STANDARDS_TABLE, &vectors[0], filter.as_deref(), limit)
+            .search(STANDARDS_TABLE, &vectors[0], filter.as_deref(), limit, 0)
             .await
             .map_err(|e| ErrorData::internal_error(format!("search failed: {e}"), None))?;
 
@@ -673,7 +673,7 @@ impl MindojoService {
         let results = self
             .state
             .store
-            .search(CODE_TABLE, &vectors[0], filter.as_deref(), limit)
+            .search(CODE_TABLE, &vectors[0], filter.as_deref(), limit, 0)
             .await
             .map_err(|e| ErrorData::internal_error(format!("search failed: {e}"), None))?;
 

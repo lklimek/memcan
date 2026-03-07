@@ -238,7 +238,7 @@ async fn test_store_and_search() {
 
     // Search with the same vector should find the memory.
     let results = store
-        .search(MEMORIES_TABLE, &test_vector(), None, 10)
+        .search(MEMORIES_TABLE, &test_vector(), None, 10, 0)
         .await
         .expect("search");
 
@@ -376,7 +376,7 @@ async fn test_lancedb_crud() {
 
     // Search should return results.
     let results = store
-        .search(table_name, &test_vector(), None, 10)
+        .search(table_name, &test_vector(), None, 10, 0)
         .await
         .expect("search");
     assert!(!results.is_empty(), "Search should return results");
@@ -433,7 +433,10 @@ async fn test_lancedb_crud() {
     assert!(got.is_empty(), "Deleted record should not be found");
 
     // Scroll (list all).
-    let all = store.scroll(table_name, None, 100).await.expect("scroll");
+    let all = store
+        .scroll(table_name, None, 100, 0)
+        .await
+        .expect("scroll");
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].id, "id-2");
 }

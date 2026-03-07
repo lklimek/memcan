@@ -445,7 +445,7 @@ async fn main() -> MindojoResult<()> {
         indexed += 1;
         info!(
             chunk_index,
-            total = chunks.len() - 1,
+            total = chunks.len(),
             title = if meta.section_title.is_empty() {
                 "(untitled)"
             } else {

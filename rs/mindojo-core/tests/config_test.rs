@@ -4,6 +4,7 @@ use std::env;
 use std::io::Write;
 
 use mindojo_core::config::Settings;
+use serial_test::serial;
 
 // -- Test 1: default config --------------------------------------------------
 
@@ -24,6 +25,7 @@ fn test_default_config() {
 // -- Test 2: env var overrides -----------------------------------------------
 
 #[test]
+#[serial]
 fn test_env_override() {
     // Save originals so we can restore after the test.
     let original_user = env::var("DEFAULT_USER_ID").ok();
@@ -74,6 +76,7 @@ fn test_env_override() {
 // -- Test 3: .env file loading -----------------------------------------------
 
 #[test]
+#[serial]
 fn test_env_file() {
     // Create a temporary .env file and verify dotenvy can parse it.
     // We test the file format rather than Settings::load() directly,

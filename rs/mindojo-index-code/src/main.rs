@@ -457,7 +457,9 @@ async fn main() -> MindojoResult<()> {
         "JSON_EXTRACT(payload, '$.project') = '{}'",
         cli.project.replace('\'', "''")
     );
-    let existing_records = store.scroll(table, Some(&project_filter), 100_000).await?;
+    let existing_records = store
+        .scroll(table, Some(&project_filter), 100_000, 0)
+        .await?;
     let mut existing_hashes: HashMap<String, (String, String)> = HashMap::new();
     for record in &existing_records {
         let ch = record

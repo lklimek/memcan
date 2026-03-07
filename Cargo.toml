@@ -62,3 +62,4 @@ regex = "1"
 # Testing
 mockito = "1"
 tempfile = "3"
+serial_test = "3"
