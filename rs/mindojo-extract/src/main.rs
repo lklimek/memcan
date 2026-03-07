@@ -506,7 +506,7 @@ async fn run(hook_data_log: &Path) -> MindojoResult<()> {
         "Hook: dispatching event"
     );
 
-    let settings = Settings::load();
+    let settings = Settings::load()?;
     let embedder = FastEmbedProvider::from_settings(&settings)?;
     let llm = GenaiLlmProvider::from_settings(&settings);
     let store = LanceDbStore::open(&settings.lancedb_path).await?;

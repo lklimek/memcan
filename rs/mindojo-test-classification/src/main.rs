@@ -10,7 +10,7 @@ use clap::Parser;
 use mindojo_core::config::Settings;
 use mindojo_core::error::{MindojoError, Result as MindojoResult, ResultExt};
 use mindojo_core::llm::GenaiLlmProvider;
-use mindojo_core::traits::{LlmMessage, LlmOptions, LlmProvider};
+use mindojo_core::traits::{LlmMessage, LlmOptions, LlmProvider, Role};
 use serde::Deserialize;
 
 #[derive(Parser)]
@@ -64,11 +64,11 @@ async fn call_llm(
 ) -> Option<Vec<String>> {
     let messages = vec![
         LlmMessage {
-            role: "system".to_string(),
+            role: Role::System,
             content: system_prompt.to_string(),
         },
         LlmMessage {
-            role: "user".to_string(),
+            role: Role::User,
             content: content.to_string(),
         },
     ];
@@ -118,7 +118,7 @@ async fn main() -> MindojoResult<()> {
     let cli = Cli::parse();
 
     // Load settings via Settings::load() (handles .env files via dotenvy)
-    let settings = Settings::load();
+    let settings = Settings::load()?;
     let llm = GenaiLlmProvider::from_settings(&settings);
 
     if !cli.prompt.is_file() {

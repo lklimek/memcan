@@ -768,7 +768,7 @@ fn setup_logging(log_file: &str) {
 
 #[tokio::main]
 async fn main() -> Result<(), MindojoError> {
-    let config = Settings::load();
+    let config = Settings::load()?;
     setup_logging(&config.log_file);
 
     info!("Loading config: lancedb_path={}", config.lancedb_path);

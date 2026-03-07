@@ -22,7 +22,7 @@ use mindojo_core::llm::GenaiLlmProvider;
 use mindojo_core::pipeline::STANDARDS_TABLE;
 use mindojo_core::prompts::{METADATA_EXTRACTION_PROMPT, render_prompt};
 use mindojo_core::traits::{
-    EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, VectorPoint, VectorStore,
+    EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, VectorPoint, VectorStore,
 };
 
 /// Valid standard types.
@@ -203,7 +203,7 @@ async fn extract_metadata(
     let prompt = render_prompt(METADATA_EXTRACTION_PROMPT, &[("chunk_text", chunk_text)]);
 
     let messages = vec![LlmMessage {
-        role: "user".to_string(),
+        role: Role::User,
         content: prompt,
     }];
 
@@ -260,7 +260,7 @@ async fn main() -> MindojoResult<()> {
         )
         .init();
 
-    let settings = Settings::load();
+    let settings = Settings::load()?;
     let model = cli.model.as_deref().unwrap_or(&settings.llm_model);
 
     let embedder = FastEmbedProvider::from_settings(&settings)?;
