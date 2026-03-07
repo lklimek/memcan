@@ -1,6 +1,9 @@
 # Environment
 .env
 
+# Claude Code
+.claude/worktrees/
+
 # Python
 __pycache__/
 *.py[cod]
