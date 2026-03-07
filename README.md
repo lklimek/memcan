@@ -1,12 +1,12 @@
 # MindOJO — Persistent Memory for Claude Code
 
-Rust MCP server providing persistent memory via embedded LanceDB + Ollama. Store and recall learnings, decisions, and preferences across Claude Code sessions.
+Rust MCP server providing persistent memory via embedded LanceDB + fastembed + genai. Store and recall learnings, decisions, and preferences across Claude Code sessions.
 
 ## Quick Start
 
 ```bash
-# 1. Install Ollama (https://ollama.com/download)
-ollama pull qwen3-embedding:4b && ollama pull qwen3.5:4b
+# 1. Install Ollama (https://ollama.com/download) — needed for LLM only
+ollama pull qwen3.5:4b
 
 # 2. Install plugin in Claude Code
 #    Settings → Plugins → enable mindojo@lklimek
@@ -23,7 +23,7 @@ No external database required — LanceDB runs embedded, storing data at `~/.loc
 
 ### Prerequisites
 
-- [Ollama](https://ollama.com/) — LLM + embeddings
+- [Ollama](https://ollama.com/) — LLM inference (embeddings are handled in-process by fastembed)
 
 ### Plugin Install
 
@@ -52,7 +52,7 @@ Binaries are placed in `target/release/`: `mindojo-mcp`, `mindojo-extract`, `min
 After enabling the plugin, run `/setup-mindojo` in a Claude Code session. It will:
 
 1. **Check prerequisites** — MindOJO binary, Ollama reachability
-2. **Configure `.env`** — copy `.env.example`, set your `OLLAMA_URL`
+2. **Configure `.env`** — copy `.env.example`, set `OLLAMA_HOST` if Ollama is remote
 3. **Create user rule** — writes `~/.claude/rules/mindojo.md` so agents know to use memory
 
 Restart Claude Code after setup to connect the MCP server.
@@ -60,7 +60,8 @@ Restart Claude Code after setup to connect the MCP server.
 ## Architecture
 
 - **LanceDB** — embedded vector database (no server needed, data stored locally)
-- **Ollama** — LLM (`qwen3.5:4b`) + embeddings (`qwen3-embedding:4b`)
+- **fastembed** — in-process ONNX embeddings (`AllMiniLML6V2`, 384 dimensions)
+- **genai + Ollama** — LLM inference (`ollama::qwen3.5:4b`); genai uses `OLLAMA_HOST` env var for endpoint configuration
 - **DISTILL_MEMORIES** — when enabled (default: `true`), the LLM extracts structured facts from raw text before storing
 
 ## MCP Tools
@@ -144,85 +145,28 @@ cp .env.example ~/.config/mindojo/.env
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
-| `OLLAMA_API_KEY` | — | Bearer token for Ollama auth (see [Ollama Authentication](#ollama-authentication)) |
 | `LANCEDB_PATH` | `~/.local/share/mindojo/lancedb` | LanceDB storage directory |
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction before storing |
 | `DEFAULT_USER_ID` | `global` | Default user ID for memory scoping |
 | `TECH_STACK` | — | Default tech stack filter (e.g. "rust", "python") |
-| `LLM_MODEL` | `qwen3.5:4b` | Ollama chat model |
-| `EMBED_MODEL` | `qwen3-embedding:4b` | Ollama embedding model |
-| `EMBED_DIMS` | `2560` | Embedding vector dimensions |
+| `LLM_MODEL` | `ollama::qwen3.5:4b` | LLM model (genai format with provider prefix) |
+| `EMBED_MODEL` | `AllMiniLML6V2` | Fastembed model for in-process embeddings |
+| `EMBED_DIMS` | `384` | Embedding vector dimensions (must match embed model) |
 | `LOG_FILE` | `~/.claude/logs/mindojo-mcp.log` | Log file path |
 
-## Ollama Authentication
+> **Ollama endpoint:** The genai crate reads the standard `OLLAMA_HOST` environment variable (default: `http://localhost:11434`). Set it in your `.env` or system environment if Ollama runs on a remote host.
 
-When Ollama runs on a remote host, protect it with a reverse proxy (e.g. Traefik, Caddy, nginx) that requires Bearer token authentication.
+## Remote Ollama
 
-### How it works
+When Ollama runs on a remote host, set `OLLAMA_HOST` to point to it:
 
-The MCP server reads the `OLLAMA_API_KEY` environment variable and sends it as:
-
-```
-Authorization: Bearer <OLLAMA_API_KEY>
+```bash
+OLLAMA_HOST=https://ollama.example.com
 ```
 
-This is a static shared secret — no signing, expiry, or cryptographic exchange. Security depends entirely on the transport layer:
+Authentication and API keys are managed by the genai crate and Ollama's own environment variables. Refer to the [genai documentation](https://crates.io/crates/genai) and [Ollama environment variables](https://github.com/ollama/ollama/blob/main/docs/faq.md#how-do-i-configure-ollama-server) for details.
 
-| Transport | Security | Recommendation |
-|-----------|----------|----------------|
-| `https://` (TLS) | Token encrypted in transit | Use for remote/cross-network |
-| `http://` (plain) | Token visible on the wire | Only on trusted private networks |
-
-### Setup
-
-1. **Generate a token:**
-
-   ```bash
-   openssl rand -base64 32
-   ```
-
-2. **Configure your reverse proxy** to accept `Authorization: Bearer <token>`. Example Traefik middleware (file provider):
-
-   ```yaml
-   # traefik/dynamic/ollama.yml
-   http:
-     middlewares:
-       ollama-bearer:
-         plugin:
-           apikey:
-             # Or use forwardAuth / custom middleware for Bearer validation
-             headers:
-               - "Authorization: Bearer <your-token>"
-     routers:
-       ollama:
-         rule: "Host(`ollama.example.com`)"
-         entrypoints: websecure
-         tls:
-           certResolver: letsencrypt
-         middlewares:
-           - ollama-bearer
-         service: ollama
-     services:
-       ollama:
-         loadBalancer:
-           servers:
-             - url: "http://localhost:11434"
-   ```
-
-   > **Note:** Traefik doesn't have built-in Bearer auth middleware. Options:
-   > - [traefik-api-key-auth](https://plugins.traefik.io/plugins/669e514b2e1faa5bb4ec1128/api-key-auth) plugin — validates Bearer tokens against a list
-   > - `forwardAuth` middleware pointing to a small auth service
-   > - Caddy or nginx with simple `if ($http_authorization)` matching
-
-3. **Set in MindOJO `.env`:**
-
-   ```bash
-   OLLAMA_URL=https://ollama.example.com
-   OLLAMA_API_KEY=<your-token>
-   ```
-
-> **Do not embed credentials in `OLLAMA_URL`** (e.g. `http://user:pass@host`). Use `OLLAMA_API_KEY` instead.
+For production deployments, protect the Ollama endpoint with a reverse proxy (e.g. Traefik, Caddy, nginx) providing TLS and access control.
 
 ## Docker Services
 

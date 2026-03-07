@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-**MindOJO** — Claude Code plugin for persistent memory via LanceDB + Ollama. Stores and recalls learnings, decisions, preferences across sessions. MIT license.
+**MindOJO** — Claude Code plugin for persistent memory via LanceDB + fastembed + genai. Stores and recalls learnings, decisions, preferences across sessions. MIT license.
 
-Stack: Rust MCP server (rmcp), LanceDB (embedded vectors), Ollama (LLM + embeddings).
+Stack: Rust MCP server (rmcp), LanceDB (embedded vectors), genai+Ollama (LLM), fastembed (embeddings).
 
 ## Structure
 
@@ -68,13 +68,13 @@ Environment variables (loaded from `~/.config/mindojo/.env` or `.env`):
 
 | Variable | Default | Description |
 |---|---|---|
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
-| `OLLAMA_API_KEY` | *(none)* | Bearer token for authenticated Ollama |
 | `LANCEDB_PATH` | `~/.local/share/mindojo/lancedb` | LanceDB storage directory |
 | `DEFAULT_USER_ID` | `global` | Default memory scope |
 | `TECH_STACK` | *(none)* | Default tech stack filter |
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction |
-| `LLM_MODEL` | `qwen3.5:4b` | Ollama chat model |
-| `EMBED_MODEL` | `qwen3-embedding:4b` | Ollama embedding model |
-| `EMBED_DIMS` | `2560` | Embedding vector dimensions |
+| `LLM_MODEL` | `ollama::qwen3.5:4b` | LLM model (genai format with provider prefix) |
+| `EMBED_MODEL` | `AllMiniLML6V2` | Fastembed model for in-process embeddings |
+| `EMBED_DIMS` | `384` | Embedding vector dimensions (must match embed model) |
 | `LOG_FILE` | `~/.claude/logs/mindojo-mcp.log` | Log file path |
+
+> **Note:** genai reads `OLLAMA_HOST` (default `http://localhost:11434`) for the Ollama endpoint. `OLLAMA_URL` and `OLLAMA_API_KEY` are no longer used.
