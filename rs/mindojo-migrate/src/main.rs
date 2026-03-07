@@ -120,9 +120,7 @@ async fn main() -> MindojoResult<()> {
         let batch_end = (batch_start + BATCH_SIZE).min(texts.len());
         let batch_texts = &texts[batch_start..batch_end];
 
-        let batch_embeddings = embedder.embed(batch_texts).await.map_err(|e| {
-            MindojoError::Other(format!("embedding batch starting at {batch_start}: {e}"))
-        })?;
+        let batch_embeddings = embedder.embed(batch_texts).await?;
 
         all_embeddings.extend(batch_embeddings);
         info!(

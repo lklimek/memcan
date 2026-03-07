@@ -587,15 +587,15 @@ impl MindojoService {
             let safe = sanitize_sql_value(v);
             filter_parts.push(format!("tech_stack = '{safe}'"));
         }
-        // lang has no dedicated column; filter via LIKE on payload
+        // lang has no dedicated column; filter via JSON key match on payload
         if let Some(ref v) = lang {
             let safe = sanitize_sql_value(v);
             filter_parts.push(format!(r#"payload LIKE '%"lang":"{safe}"%'"#));
         }
-        // ref_id has no dedicated column; filter via LIKE on payload
+        // ref_id has no dedicated column; filter via JSON key match on payload
         if let Some(ref rid) = ref_id {
             let safe = sanitize_sql_value(rid);
-            filter_parts.push(format!(r#"payload LIKE '%"{safe}"%'"#));
+            filter_parts.push(format!(r#"payload LIKE '%"ref_id":"{safe}"%'"#));
         }
 
         let filter = if filter_parts.is_empty() {

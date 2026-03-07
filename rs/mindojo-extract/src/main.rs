@@ -240,8 +240,13 @@ fn log_hook_data(
 fn validate_path(path: &Path) -> MindojoResult<PathBuf> {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home"));
 
-    // Resolve symlinks and relative components where possible
-    let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    // Resolve symlinks and relative components — reject if path doesn't exist
+    let resolved = path.canonicalize().map_err(|e| {
+        mindojo_core::error::MindojoError::Other(format!(
+            "path does not exist or is not accessible: {}: {e}",
+            path.display()
+        ))
+    })?;
 
     let sensitive = ["/etc", "/proc", "/sys", "/dev", "/boot", "/root"];
     for prefix in &sensitive {
@@ -485,7 +490,7 @@ async fn run(hook_data_log: &Path) -> MindojoResult<()> {
         mindojo_core::error::MindojoError::Other(format!("failed to read stdin: {e}"))
     })?;
 
-    if bytes_read as u64 >= MAX_STDIN_BYTES && !raw.ends_with('}') {
+    if bytes_read as u64 >= MAX_STDIN_BYTES {
         return Err(mindojo_core::error::MindojoError::Other(format!(
             "stdin payload exceeds {MAX_STDIN_BYTES} byte limit"
         )));

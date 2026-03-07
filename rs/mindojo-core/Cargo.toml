@@ -23,7 +23,7 @@ lancedb = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 handlebars = "6"
-regex = "1"
+regex = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -117,9 +117,8 @@ pub fn resolve_model(name: &str) -> Result<EmbeddingModel> {
         "snowflakearcticembedm" => EmbeddingModel::SnowflakeArcticEmbedM,
         "snowflakearcticembedmq" => EmbeddingModel::SnowflakeArcticEmbedMQ,
         "snowflakearcticembedmlong" => EmbeddingModel::SnowflakeArcticEmbedMLong,
-        "snowflakearcticembedslong" | "snowflakearcticembedmlongq" => {
-            EmbeddingModel::SnowflakeArcticEmbedMLongQ
-        }
+        // Note: fastembed has no SnowflakeArcticEmbedSLong variant
+        "snowflakearcticembedmlongq" => EmbeddingModel::SnowflakeArcticEmbedMLongQ,
         "snowflakearcticembeds" => EmbeddingModel::SnowflakeArcticEmbedS,
         "snowflakearcticembedsq" => EmbeddingModel::SnowflakeArcticEmbedSQ,
         "snowflakearcticembedxs" => EmbeddingModel::SnowflakeArcticEmbedXS,

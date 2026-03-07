@@ -43,7 +43,20 @@ if command -v gh &>/dev/null; then
     if [ -n "$TAG" ]; then
         echo "Latest release: $TAG"
         echo "Downloading $ASSET..."
-        gh release download "$TAG" --repo "$REPO" --pattern "$ASSET" --dir /tmp --clobber
+        gh release download "$TAG" --repo "$REPO" --pattern "$ASSET" --pattern "SHA256SUMS" --dir /tmp --clobber
+        # Verify checksum if SHA256SUMS was downloaded
+        if [ -f /tmp/SHA256SUMS ]; then
+            echo "Verifying checksum..."
+            (cd /tmp && grep "$ASSET" SHA256SUMS | sha256sum -c --status) || {
+                echo "ERROR: Checksum verification failed for $ASSET"
+                rm -f "/tmp/$ASSET" "/tmp/SHA256SUMS"
+                exit 1
+            }
+            echo "Checksum OK"
+            rm -f /tmp/SHA256SUMS
+        else
+            echo "Warning: SHA256SUMS not found, skipping integrity check"
+        fi
         tar xzf "/tmp/$ASSET" -C "$BIN_DIR"
         rm -f "/tmp/$ASSET"
         chmod +x "$BIN_DIR"/mindojo-*
@@ -68,6 +81,20 @@ echo "Latest release: $TAG"
 echo "Downloading $DOWNLOAD_URL..."
 
 curl -fSL "$DOWNLOAD_URL" -o "/tmp/$ASSET"
+# Verify checksum if available
+SUMS_URL="https://github.com/$REPO/releases/download/$TAG/SHA256SUMS"
+if curl -fsSL "$SUMS_URL" -o /tmp/SHA256SUMS 2>/dev/null; then
+    echo "Verifying checksum..."
+    (cd /tmp && grep "$ASSET" SHA256SUMS | sha256sum -c --status) || {
+        echo "ERROR: Checksum verification failed for $ASSET"
+        rm -f "/tmp/$ASSET" "/tmp/SHA256SUMS"
+        exit 1
+    }
+    echo "Checksum OK"
+    rm -f /tmp/SHA256SUMS
+else
+    echo "Warning: SHA256SUMS not found, skipping integrity check"
+fi
 tar xzf "/tmp/$ASSET" -C "$BIN_DIR"
 rm -f "/tmp/$ASSET"
 chmod +x "$BIN_DIR"/mindojo-*

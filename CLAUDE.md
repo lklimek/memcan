@@ -10,7 +10,7 @@ Stack: Rust MCP server (rmcp), LanceDB (embedded vectors), genai+Ollama (LLM), f
 
 ```
 rs/                              # All Rust source code
-  mindojo-core/                  # Shared library (traits, LanceDB, Ollama, pipeline, config)
+  mindojo-core/                  # Shared library (traits, LanceDB, genai, fastembed, pipeline, config)
   mindojo-mcp/                   # MCP server binary (stdio transport)
   mindojo-extract/               # Hook binary — extracts learnings from conversations
   mindojo-import-triaged/        # CLI — imports triaged memories from JSON
