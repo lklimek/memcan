@@ -12,7 +12,7 @@ use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase, Select};
 use lancedb::{Connection, Table, connect};
 use tokio::sync::Mutex;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::error::{MindojoError, Result, ResultExt};
 use crate::traits::{SearchResult, VectorPoint, VectorStore};
@@ -187,27 +187,58 @@ impl LanceDbStore {
         let id_col = batch
             .column_by_name("id")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        if id_col.is_none() {
+            warn!(
+                column = "id",
+                expected = "StringArray",
+                "column downcast failed, returning empty results"
+            );
+            return Vec::new();
+        }
+
         let payload_col = batch
             .column_by_name("payload")
             .and_then(|c| c.as_any().downcast_ref::<LargeStringArray>());
+        if payload_col.is_none() {
+            warn!(
+                column = "payload",
+                expected = "LargeStringArray",
+                "column downcast failed, returning empty results"
+            );
+            return Vec::new();
+        }
+
         let dist_col = if has_distance {
-            batch
+            let col = batch
                 .column_by_name("_distance")
-                .and_then(|c| c.as_any().downcast_ref::<Float32Array>())
+                .and_then(|c| c.as_any().downcast_ref::<Float32Array>());
+            if col.is_none() {
+                warn!(
+                    column = "_distance",
+                    expected = "Float32Array",
+                    "distance column downcast failed, scores will be 0"
+                );
+            }
+            col
         } else {
             None
         };
 
+        let id_col = id_col.unwrap();
+        let payload_col = payload_col.unwrap();
+
         let n = batch.num_rows();
         let mut results = Vec::with_capacity(n);
         for i in 0..n {
-            let id = id_col.map(|c| c.value(i).to_string()).unwrap_or_default();
-            let payload_str = payload_col
-                .map(|c| c.value(i).to_string())
-                .unwrap_or_else(|| "{}".into());
-            let payload: serde_json::Value = serde_json::from_str(&payload_str)
-                .unwrap_or(serde_json::Value::Object(Default::default()));
-            // LanceDB _distance: lower = closer. Convert to a similarity score.
+            let id = id_col.value(i).to_string();
+            let payload_str = payload_col.value(i).to_string();
+            let payload: serde_json::Value = match serde_json::from_str(&payload_str) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(row = i, error = %e, "failed to parse payload JSON, using empty object");
+                    serde_json::Value::Object(Default::default())
+                }
+            };
             let score = dist_col.map(|c| 1.0 / (1.0 + c.value(i))).unwrap_or(0.0);
             results.push(SearchResult { id, score, payload });
         }

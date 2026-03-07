@@ -6,10 +6,12 @@
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use mindojo_core::error::Result;
+use mindojo_core::error::{MindojoError, Result};
 use mindojo_core::lancedb_store::LanceDbStore;
-use mindojo_core::pipeline::{MEMORIES_TABLE, do_add_memory};
-use mindojo_core::traits::{EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, VectorPoint, VectorStore};
+use mindojo_core::pipeline::{MEMORIES_TABLE, do_add_memory, extract_facts};
+use mindojo_core::traits::{
+    EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, VectorPoint, VectorStore,
+};
 use tempfile::tempdir;
 
 /// Embedding dimension used throughout tests.
@@ -81,6 +83,39 @@ impl LlmProvider for MockLlm {
     }
 }
 
+/// Mock LLM that always returns an error (simulates 500 / connection failure).
+struct FailingLlm;
+
+#[async_trait]
+impl LlmProvider for FailingLlm {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: &[LlmMessage],
+        _options: Option<LlmOptions>,
+    ) -> Result<String> {
+        Err(MindojoError::LlmChat {
+            context: "mock server error".into(),
+            detail: "HTTP 500 Internal Server Error".into(),
+        })
+    }
+}
+
+/// Mock LLM that returns malformed JSON (simulates garbled response).
+struct MalformedJsonLlm;
+
+#[async_trait]
+impl LlmProvider for MalformedJsonLlm {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: &[LlmMessage],
+        _options: Option<LlmOptions>,
+    ) -> Result<String> {
+        Ok("this is not valid json at all {{{".to_string())
+    }
+}
+
 /// Helper: open a LanceDbStore in a tempdir, returning both so the tempdir lives long enough.
 async fn temp_store() -> (tempfile::TempDir, LanceDbStore) {
     let tmp = tempdir().expect("failed to create tempdir");
@@ -111,7 +146,7 @@ async fn test_embed_mock() {
 async fn test_chat_mock() {
     let llm = MockLlm::new(vec!["Hello from mock!".to_string()]);
     let messages = vec![LlmMessage {
-        role: "user".into(),
+        role: Role::User,
         content: "Say hello".into(),
     }];
 
@@ -292,7 +327,7 @@ fn test_config_load() {
     assert_eq!(settings.embed_model, "AllMiniLML6V2");
 
     // Test that Settings::load() doesn't panic.
-    let loaded = mindojo_core::config::Settings::load();
+    let loaded = mindojo_core::config::Settings::load().expect("load should succeed");
     assert!(!loaded.llm_model.is_empty());
 }
 
@@ -401,4 +436,32 @@ async fn test_lancedb_crud() {
     let all = store.scroll(table_name, None, 100).await.expect("scroll");
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].id, "id-2");
+}
+
+// -- Test 8: LLM error propagation ------------------------------------------
+
+#[tokio::test]
+async fn test_llm_error_propagates() {
+    let llm = FailingLlm;
+    let result = extract_facts("some content", &llm, "test-model", None).await;
+    // extract_facts swallows LLM errors and returns Ok(None)
+    assert!(result.is_ok());
+    assert!(
+        result.unwrap().is_none(),
+        "LLM failure should yield None (graceful fallback)"
+    );
+}
+
+// -- Test 9: malformed JSON from LLM ----------------------------------------
+
+#[tokio::test]
+async fn test_malformed_llm_json_handled_gracefully() {
+    let llm = MalformedJsonLlm;
+    let result = extract_facts("some content", &llm, "test-model", None).await;
+    // Malformed JSON should be caught and return Ok(None).
+    assert!(result.is_ok());
+    assert!(
+        result.unwrap().is_none(),
+        "malformed JSON should yield None (graceful fallback)"
+    );
 }

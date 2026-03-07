@@ -48,6 +48,9 @@ pub enum MindojoError {
     #[error("could not determine vector dimensions from table schema")]
     SchemaDimensions,
 
+    #[error("invalid configuration: {0}")]
+    Config(String),
+
     // -- Generic (replaces bail!/anyhow!) ------------------------------------
     #[error("{0}")]
     Other(String),
@@ -91,47 +94,27 @@ pub trait ResultExt<T> {
     fn with_context<F: FnOnce() -> String>(self, f: F) -> Result<T>;
 }
 
-impl<T> ResultExt<T> for std::result::Result<T, std::io::Error> {
-    fn context(self, ctx: &str) -> Result<T> {
-        self.map_err(|e| MindojoError::Io {
-            context: ctx.to_string(),
-            source: e,
-        })
-    }
-    fn with_context<F: FnOnce() -> String>(self, f: F) -> Result<T> {
-        self.map_err(|e| MindojoError::Io {
-            context: f(),
-            source: e,
-        })
-    }
+/// Implements [`ResultExt`] for a source error type that maps to a
+/// [`MindojoError`] variant with `context` + `source` fields.
+macro_rules! impl_result_ext {
+    ($source:ty => $variant:ident) => {
+        impl<T> ResultExt<T> for std::result::Result<T, $source> {
+            fn context(self, ctx: &str) -> Result<T> {
+                self.map_err(|e| MindojoError::$variant {
+                    context: ctx.to_string(),
+                    source: e,
+                })
+            }
+            fn with_context<F: FnOnce() -> String>(self, f: F) -> Result<T> {
+                self.map_err(|e| MindojoError::$variant {
+                    context: f(),
+                    source: e,
+                })
+            }
+        }
+    };
 }
 
-impl<T> ResultExt<T> for std::result::Result<T, serde_json::Error> {
-    fn context(self, ctx: &str) -> Result<T> {
-        self.map_err(|e| MindojoError::Json {
-            context: ctx.to_string(),
-            source: e,
-        })
-    }
-    fn with_context<F: FnOnce() -> String>(self, f: F) -> Result<T> {
-        self.map_err(|e| MindojoError::Json {
-            context: f(),
-            source: e,
-        })
-    }
-}
-
-impl<T> ResultExt<T> for std::result::Result<T, lancedb::Error> {
-    fn context(self, ctx: &str) -> Result<T> {
-        self.map_err(|e| MindojoError::LanceDb {
-            context: ctx.to_string(),
-            source: e,
-        })
-    }
-    fn with_context<F: FnOnce() -> String>(self, f: F) -> Result<T> {
-        self.map_err(|e| MindojoError::LanceDb {
-            context: f(),
-            source: e,
-        })
-    }
-}
+impl_result_ext!(std::io::Error => Io);
+impl_result_ext!(serde_json::Error => Json);
+impl_result_ext!(lancedb::Error => LanceDb);

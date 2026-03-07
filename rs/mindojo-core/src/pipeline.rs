@@ -16,7 +16,7 @@ use uuid::Uuid;
 use crate::error::{Result, ResultExt};
 use crate::prompts::{FACT_EXTRACTION_PROMPT, MEMORY_UPDATE_PROMPT, render_prompt};
 use crate::traits::{
-    EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, VectorPoint, VectorStore,
+    EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, VectorPoint, VectorStore,
 };
 
 /// Table name for user memories.
@@ -31,6 +31,14 @@ pub const CODE_TABLE: &str = "mindojo_code";
 /// Reserved payload keys that user metadata must not overwrite.
 const RESERVED_KEYS: &[&str] = &["data", "hash", "user_id", "created_at", "updated_at"];
 
+/// Max length of a single extracted fact (chars). Longer facts are truncated.
+const MAX_FACT_LENGTH: usize = 2000;
+
+/// Max number of facts returned from a single extraction.
+const MAX_FACTS_PER_EXTRACTION: usize = 50;
+
+// INTENTIONAL(SEC-009): MD5 used for content deduplication only, not security.
+// Collision risk negligible for this use case.
 /// Compute MD5 hex digest of a string.
 pub fn md5_hex(data: &str) -> String {
     let mut hasher = Md5::new();
@@ -65,15 +73,57 @@ struct MemoryUpdateResponse {
     events: Vec<MemoryEvent>,
 }
 
+/// Type of memory update operation returned by the dedup LLM.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum EventType {
+    Add,
+    Update,
+    Delete,
+    None,
+}
+
 /// A single memory update event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryEvent {
     #[serde(rename = "type")]
-    pub event_type: String,
+    pub event_type: EventType,
     #[serde(default)]
     pub data: Option<String>,
     #[serde(default)]
     pub memory_id: Option<String>,
+}
+
+/// Validate and sanitize extracted facts: truncate long facts and cap total count.
+fn validate_facts(facts: Vec<String>) -> Vec<String> {
+    let capped = if facts.len() > MAX_FACTS_PER_EXTRACTION {
+        warn!(
+            count = facts.len(),
+            max = MAX_FACTS_PER_EXTRACTION,
+            "truncating fact count to limit"
+        );
+        &facts[..MAX_FACTS_PER_EXTRACTION]
+    } else {
+        &facts[..]
+    };
+
+    capped
+        .iter()
+        .map(|f| {
+            if f.len() > MAX_FACT_LENGTH {
+                warn!(
+                    length = f.len(),
+                    max = MAX_FACT_LENGTH,
+                    "truncating oversized fact"
+                );
+                let mut truncated = f[..MAX_FACT_LENGTH].to_string();
+                truncated.push_str("...");
+                truncated
+            } else {
+                f.clone()
+            }
+        })
+        .collect()
 }
 
 /// Extract individual facts from content using the LLM.
@@ -89,11 +139,11 @@ pub async fn extract_facts(
 
     let messages = vec![
         LlmMessage {
-            role: "system".to_string(),
+            role: Role::System,
             content: rendered,
         },
         LlmMessage {
-            role: "user".to_string(),
+            role: Role::User,
             content: content.to_string(),
         },
     ];
@@ -105,7 +155,7 @@ pub async fn extract_facts(
 
     match llm.chat(llm_model, &messages, options).await {
         Ok(response) => match serde_json::from_str::<FactsResponse>(&response) {
-            Ok(parsed) => Ok(Some(parsed.facts)),
+            Ok(parsed) => Ok(Some(validate_facts(parsed.facts))),
             Err(e) => {
                 warn!("fact extraction JSON parse failed: {e}");
                 Ok(None)
@@ -154,7 +204,7 @@ pub async fn dedup_and_store(
             Err(e) => {
                 warn!("dedup LLM failed, falling back to ADD: {e}");
                 vec![MemoryEvent {
-                    event_type: "ADD".to_string(),
+                    event_type: EventType::Add,
                     data: Some(fact.clone()),
                     memory_id: None,
                 }]
@@ -162,8 +212,8 @@ pub async fn dedup_and_store(
         };
 
         for event in events {
-            match event.event_type.as_str() {
-                "ADD" => {
+            match event.event_type {
+                EventType::Add => {
                     let data = event.data.as_deref().unwrap_or(fact);
                     let now = Utc::now().to_rfc3339();
                     let hash = md5_hex(data);
@@ -188,7 +238,7 @@ pub async fn dedup_and_store(
                     };
                     store.upsert(table_name, &[point]).await?;
                 }
-                "UPDATE" => {
+                EventType::Update => {
                     if let Some(memory_id) = &event.memory_id {
                         if !existing.iter().any(|r| r.id == *memory_id) {
                             warn!("UPDATE memory_id {memory_id} not in search results, skipping");
@@ -231,7 +281,7 @@ pub async fn dedup_and_store(
                         warn!("UPDATE event missing memory_id, skipping");
                     }
                 }
-                "DELETE" => {
+                EventType::Delete => {
                     if let Some(memory_id) = &event.memory_id {
                         if existing.iter().any(|r| r.id == *memory_id) {
                             store
@@ -242,10 +292,7 @@ pub async fn dedup_and_store(
                         }
                     }
                 }
-                "NONE" => {}
-                other => {
-                    warn!("unknown event type: {other}");
-                }
+                EventType::None => {}
             }
         }
     }
@@ -269,7 +316,7 @@ async fn run_dedup_llm(
         ],
     );
     let messages = vec![LlmMessage {
-        role: "user".to_string(),
+        role: Role::User,
         content: prompt,
     }];
     let options = Some(LlmOptions {
@@ -419,13 +466,49 @@ mod tests {
         let json_str = r#"{"events": [{"type": "ADD", "data": "new fact"}, {"type": "NONE"}]}"#;
         let parsed: MemoryUpdateResponse = serde_json::from_str(json_str).unwrap();
         assert_eq!(parsed.events.len(), 2);
-        assert_eq!(parsed.events[0].event_type, "ADD");
+        assert_eq!(parsed.events[0].event_type, EventType::Add);
         assert_eq!(parsed.events[0].data.as_deref(), Some("new fact"));
-        assert_eq!(parsed.events[1].event_type, "NONE");
+        assert_eq!(parsed.events[1].event_type, EventType::None);
     }
 
     #[test]
     fn test_memories_table_name() {
         assert_eq!(MEMORIES_TABLE, "mindojo_memories");
+    }
+
+    #[test]
+    fn test_event_type_serde_roundtrip() {
+        let event = MemoryEvent {
+            event_type: EventType::Add,
+            data: Some("test".into()),
+            memory_id: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"ADD""#));
+        let parsed: MemoryEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.event_type, EventType::Add);
+    }
+
+    #[test]
+    fn test_validate_facts_truncates_long() {
+        let long_fact = "x".repeat(3000);
+        let result = validate_facts(vec![long_fact]);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].len() <= MAX_FACT_LENGTH + 3); // +3 for "..."
+        assert!(result[0].ends_with("..."));
+    }
+
+    #[test]
+    fn test_validate_facts_caps_count() {
+        let facts: Vec<String> = (0..60).map(|i| format!("fact {i}")).collect();
+        let result = validate_facts(facts);
+        assert_eq!(result.len(), MAX_FACTS_PER_EXTRACTION);
+    }
+
+    #[test]
+    fn test_validate_facts_passes_normal() {
+        let facts = vec!["short fact".to_string()];
+        let result = validate_facts(facts.clone());
+        assert_eq!(result, facts);
     }
 }

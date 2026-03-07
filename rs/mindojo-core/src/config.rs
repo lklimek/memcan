@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use tracing::debug;
 
+use crate::error::{MindojoError, Result};
+
 /// Expand a leading `~` to the user's home directory.
 fn expand_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/") {
@@ -71,7 +73,8 @@ impl Settings {
     /// 2. Current working directory: `./.env`
     ///
     /// Environment variables override .env values.
-    pub fn load() -> Self {
+    /// Load and validate settings. Returns an error if values are invalid.
+    pub fn load() -> Result<Self> {
         // Load .env files (later loads do NOT override earlier ones in dotenvy,
         // but env vars always win). We load platform config first, then CWD.
         let mut loaded_files: Vec<PathBuf> = Vec::new();
@@ -113,7 +116,7 @@ impl Settings {
             .parse::<usize>()
             .unwrap_or(defaults.embed_dims);
 
-        Settings {
+        let settings = Settings {
             lancedb_path,
             default_user_id,
             tech_stack,
@@ -122,7 +125,24 @@ impl Settings {
             llm_model,
             embed_model,
             embed_dims,
+        };
+        settings.validate()?;
+        Ok(settings)
+    }
+
+    /// Check invariants on loaded settings.
+    fn validate(&self) -> Result<()> {
+        if self.embed_dims == 0 {
+            return Err(MindojoError::Config(
+                "EMBED_DIMS must be greater than 0".into(),
+            ));
         }
+        if self.lancedb_path.is_empty() {
+            return Err(MindojoError::Config(
+                "LANCEDB_PATH must not be empty".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -154,5 +174,28 @@ mod tests {
         assert_eq!(d.embed_model, "AllMiniLML6V2");
         assert_eq!(d.embed_dims, 384);
         assert!(d.distill_memories);
+    }
+
+    #[test]
+    fn test_validate_zero_embed_dims() {
+        let s = Settings {
+            embed_dims: 0,
+            ..Settings::default()
+        };
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_empty_lancedb_path() {
+        let s = Settings {
+            lancedb_path: String::new(),
+            ..Settings::default()
+        };
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_defaults_ok() {
+        Settings::default().validate().unwrap();
     }
 }

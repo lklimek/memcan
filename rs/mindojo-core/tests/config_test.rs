@@ -43,7 +43,7 @@ fn test_env_override() {
         env::set_var("LLM_MODEL", "openai::gpt-4o");
     }
 
-    let settings = Settings::load();
+    let settings = Settings::load().expect("load should succeed");
 
     assert_eq!(settings.default_user_id, "test-user-42");
     assert_eq!(settings.embed_dims, 768);

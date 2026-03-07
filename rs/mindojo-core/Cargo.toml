@@ -10,12 +10,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-tracing-appender = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 md-5 = { workspace = true }
-sha2 = { workspace = true }
 dotenvy = { workspace = true }
 dirs = { workspace = true }
 async-trait = { workspace = true }
@@ -25,6 +22,7 @@ genai = { workspace = true }
 lancedb = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
+handlebars = "6"
 regex = "1"
 
 [dev-dependencies]

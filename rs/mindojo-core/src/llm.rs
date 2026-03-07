@@ -3,13 +3,11 @@
 //! Replaces the old Ollama-only HTTP client with a provider-agnostic interface
 //! that natively supports Ollama, OpenAI, Anthropic, Gemini, and others.
 
-use async_trait::async_trait;
-use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat};
-use genai::Client;
-use tracing::debug;
-
 use crate::error::{MindojoError, Result};
-use crate::traits::{LlmMessage, LlmOptions, LlmProvider};
+use crate::traits::{LlmMessage, LlmOptions, LlmProvider, Role};
+use async_trait::async_trait;
+use genai::Client;
+use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat};
 
 /// LLM provider backed by [`genai::Client`].
 ///
@@ -68,19 +66,15 @@ impl LlmProvider for GenaiLlmProvider {
         let mut req = ChatRequest::default();
 
         for msg in messages {
-            match msg.role.as_str() {
-                "system" => {
+            match msg.role {
+                Role::System => {
                     req = req.with_system(&msg.content);
                 }
-                "user" => {
+                Role::User => {
                     req = req.append_message(ChatMessage::user(&msg.content));
                 }
-                "assistant" => {
+                Role::Assistant => {
                     req = req.append_message(ChatMessage::assistant(&msg.content));
-                }
-                other => {
-                    debug!(role = other, "Unknown message role, treating as user");
-                    req = req.append_message(ChatMessage::user(&msg.content));
                 }
             }
         }
