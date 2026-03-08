@@ -67,26 +67,25 @@ jobs:
 
       - name: Package binaries
         run: |
-          mkdir -p dist
-          for bin in mindojo-mcp mindojo-extract mindojo-import-triaged mindojo-index-code mindojo-index-standards mindojo-migrate; do
+          for bin in mindojo mindojo-cli; do
             if [ -f "target/${{ matrix.target }}/release/${bin}${{ matrix.suffix }}" ]; then
-              cp "target/${{ matrix.target }}/release/${bin}${{ matrix.suffix }}" "dist/"
+              mkdir -p "dist-${bin}"
+              cp "target/${{ matrix.target }}/release/${bin}${{ matrix.suffix }}" "dist-${bin}/"
+              tar czf "${bin}-${{ matrix.target }}.tar.gz" -C "dist-${bin}" .
+              sha256sum "${bin}-${{ matrix.target }}.tar.gz" > "${bin}-${{ matrix.target }}.tar.gz.sha256"
             fi
           done
-          cd dist
-          tar czf ../mindojo-${{ matrix.target }}.tar.gz *
-
-      - name: Generate checksums
-        run: sha256sum mindojo-${{ matrix.target }}.tar.gz > mindojo-${{ matrix.target }}.tar.gz.sha256
 
       # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mindojo-${{ matrix.target }}
+          name: binaries-${{ matrix.target }}
           path: |
             mindojo-${{ matrix.target }}.tar.gz
             mindojo-${{ matrix.target }}.tar.gz.sha256
+            mindojo-cli-${{ matrix.target }}.tar.gz
+            mindojo-cli-${{ matrix.target }}.tar.gz.sha256
 
   release:
     name: Create Release

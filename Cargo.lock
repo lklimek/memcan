@@ -4062,7 +4062,7 @@ dependencies = [
 
 [[package]]
 name = "mindojo-cli"
-version = "0.1.0"
+version = "0.28.0"
 dependencies = [
  "chrono",
  "clap",
@@ -4081,7 +4081,7 @@ dependencies = [
 
 [[package]]
 name = "mindojo-core"
-version = "0.1.0"
+version = "0.28.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4109,7 +4109,7 @@ dependencies = [
 
 [[package]]
 name = "mindojo-server"
-version = "0.1.0"
+version = "0.28.0"
 dependencies = [
  "axum",
  "chrono",
@@ -4125,6 +4125,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "subtle",
  "tokio",
  "tracing",
  "tracing-appender",

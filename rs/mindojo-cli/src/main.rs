@@ -79,7 +79,7 @@ pub struct CliConfig {
     pub api_key: Option<String>,
 }
 
-fn setup_logging() {
+fn setup_logging() -> tracing_appender::non_blocking::WorkerGuard {
     let log_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
         .join(".claude")
@@ -87,7 +87,7 @@ fn setup_logging() {
     let _ = std::fs::create_dir_all(&log_dir);
 
     let file_appender = tracing_appender::rolling::never(&log_dir, "mindojo-cli.log");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
     tracing_subscriber::fmt()
         .with_writer(non_blocking)
@@ -95,8 +95,7 @@ fn setup_logging() {
         .with_target(true)
         .init();
 
-    // Keep _guard alive for program lifetime
-    std::mem::forget(_guard);
+    guard
 }
 
 #[tokio::main]
@@ -105,7 +104,7 @@ async fn main() {
 
     match cli.command {
         Command::Extract => {
-            setup_logging();
+            let _log_guard = setup_logging();
             if let Err(e) = extract::run().await {
                 tracing::error!(error = %e, "extract hook failed");
             }

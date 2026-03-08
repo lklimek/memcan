@@ -7,7 +7,7 @@
 
 services:
   traefik:
-    image: traefik:latest
+    image: traefik:v3.3.6
     command:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
@@ -67,7 +67,7 @@ services:
       start_period: 120s
 
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.6.2
     profiles: ["gpu"]
     runtime: nvidia
     environment:
@@ -79,7 +79,7 @@ services:
       # Max queued requests before rejecting (default: 512)
       OLLAMA_MAX_QUEUE: 60
     volumes:
-      - /home/lklimek/opt/ollama/data:/root/.ollama
+      - ${OLLAMA_DATA_DIR:-ollama-data}:/root/.ollama
     networks:
       - traefik
       - backend

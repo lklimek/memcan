@@ -24,6 +24,7 @@ clap_complete = { workspace = true }
 lru = { workspace = true }
 uuid = { workspace = true }
 axum = { workspace = true }
+subtle = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
 regex = { workspace = true }

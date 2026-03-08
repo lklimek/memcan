@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.28.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/lklimek/mindojo"
@@ -53,7 +53,9 @@ schemars = "0.8"
 
 # HTTP server
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
-tower-http = { version = "0.6", features = ["cors", "auth"] }
+
+# Crypto
+subtle = "2"
 
 # CLI
 clap_complete = "4"

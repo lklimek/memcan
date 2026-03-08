@@ -24,6 +24,7 @@ use rmcp::{
     },
 };
 use serde::Deserialize;
+use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
 use tracing::info;
 use uuid::Uuid;
@@ -145,7 +146,8 @@ fn sanitize_eq(s: &str) -> String {
 }
 
 fn sanitize_like(s: &str) -> String {
-    s.replace('\'', "''")
+    s.replace('\\', "\\\\")
+        .replace('\'', "''")
         .replace('%', "\\%")
         .replace('_', "\\_")
 }
@@ -292,7 +294,11 @@ impl MindojoService {
         info!(user_id = %uid, len = memory.len(), operation_id = %op_id, "add_memory: queued");
 
         {
-            let mut cache = self.state.queue_status.lock().unwrap();
+            let mut cache = self
+                .state
+                .queue_status
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             cache.put(
                 op_id.clone(),
                 QueueEntry {
@@ -311,10 +317,16 @@ impl MindojoService {
         let op_id_spawn = op_id.clone();
         let uid_clone = uid.clone();
         tokio::spawn(async move {
-            let _permit = sem.acquire().await.expect("semaphore closed");
+            let _permit = match sem.acquire().await {
+                Ok(p) => p,
+                Err(_) => {
+                    tracing::warn!("semaphore closed, aborting background task");
+                    return;
+                }
+            };
 
             {
-                let mut cache = queue_status.lock().unwrap();
+                let mut cache = queue_status.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(entry) = cache.get_mut(&op_id_spawn) {
                     entry.status = "processing".into();
                 }
@@ -334,7 +346,7 @@ impl MindojoService {
             )
             .await;
 
-            let mut cache = queue_status.lock().unwrap();
+            let mut cache = queue_status.lock().unwrap_or_else(|e| e.into_inner());
             let now = chrono::Utc::now().to_rfc3339();
             match result {
                 Ok(_) => {
@@ -511,7 +523,11 @@ impl MindojoService {
         let op_id = Uuid::new_v4().to_string();
 
         {
-            let mut cache = self.state.queue_status.lock().unwrap();
+            let mut cache = self
+                .state
+                .queue_status
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             cache.put(
                 op_id.clone(),
                 QueueEntry {
@@ -532,10 +548,16 @@ impl MindojoService {
         let memory = params.memory;
         let op_id_spawn = op_id.clone();
         tokio::spawn(async move {
-            let _permit = sem.acquire().await.expect("semaphore closed");
+            let _permit = match sem.acquire().await {
+                Ok(p) => p,
+                Err(_) => {
+                    tracing::warn!("semaphore closed, aborting background task");
+                    return;
+                }
+            };
 
             {
-                let mut cache = queue_status.lock().unwrap();
+                let mut cache = queue_status.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(entry) = cache.get_mut(&op_id_spawn) {
                     entry.status = "processing".into();
                 }
@@ -578,7 +600,7 @@ impl MindojoService {
             }
             .await;
 
-            let mut cache = queue_status.lock().unwrap();
+            let mut cache = queue_status.lock().unwrap_or_else(|e| e.into_inner());
             let now = chrono::Utc::now().to_rfc3339();
             match result {
                 Ok(()) => {
@@ -775,7 +797,11 @@ impl MindojoService {
         Parameters(params): Parameters<GetQueueStatusParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let limit = params.limit.unwrap_or(10).clamp(1, 100) as usize;
-        let mut cache = self.state.queue_status.lock().unwrap();
+        let mut cache = self
+            .state
+            .queue_status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         if let Some(ref op_id) = params.operation_id {
             match cache.get(op_id) {
@@ -925,16 +951,16 @@ pub async fn run(args: &ServeArgs) -> Result<(), MindojoError> {
         );
 
         let mcp_clone = mcp_service.clone();
-        let app = Router::new().route("/health", get(health_handler)).route(
+        let mcp_router = Router::new().route(
             "/mcp",
             axum::routing::any(move |req: axum::extract::Request| async move {
                 mcp_clone.handle(req).await
             }),
         );
 
-        let app = if let Some(ref key) = ctx.settings.api_key {
+        let mcp_router = if let Some(ref key) = ctx.settings.api_key {
             let expected = format!("Bearer {key}");
-            app.layer(middleware::from_fn(move |req: Request, next: Next| {
+            mcp_router.layer(middleware::from_fn(move |req: Request, next: Next| {
                 let expected = expected.clone();
                 async move {
                     let auth = req
@@ -942,7 +968,9 @@ pub async fn run(args: &ServeArgs) -> Result<(), MindojoError> {
                         .get(axum::http::header::AUTHORIZATION)
                         .and_then(|v| v.to_str().ok());
                     match auth {
-                        Some(v) if v == expected => next.run(req).await,
+                        Some(v) if bool::from(v.as_bytes().ct_eq(expected.as_bytes())) => {
+                            next.run(req).await
+                        }
                         _ => Response::builder()
                             .status(axum::http::StatusCode::UNAUTHORIZED)
                             .body(axum::body::Body::from("Unauthorized"))
@@ -952,8 +980,12 @@ pub async fn run(args: &ServeArgs) -> Result<(), MindojoError> {
                 }
             }))
         } else {
-            app
+            mcp_router
         };
+
+        let app = Router::new()
+            .route("/health", get(health_handler))
+            .merge(mcp_router);
 
         let listener = TcpListener::bind(&listen_addr)
             .await
