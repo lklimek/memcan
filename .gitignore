@@ -15,6 +15,7 @@ build/
 
 # Rust
 target/
+.fastembed_cache/
 
 # Tools
 .ruff_cache/
