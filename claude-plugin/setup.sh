@@ -13,11 +13,9 @@ mkdir -p "$BIN_DIR"
 
 # Build from source if requested
 if [ -n "${MINDOJO_BUILD_FROM_SOURCE:-}" ]; then
-    REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-    echo "Building mindojo-cli from source ($REPO_ROOT)..."
-    cargo build --release -p mindojo-cli --manifest-path "$REPO_ROOT/Cargo.toml"
-    cp "$REPO_ROOT/target/release/mindojo-cli" "$BIN_DIR/"
-    chmod +x "$BIN_DIR/mindojo-cli"
+    echo "Installing mindojo-cli from source..."
+    cargo install --git https://github.com/lklimek/mindojo mindojo-cli --root "$BIN_DIR/.." --force
+    # cargo install puts binary in $root/bin/, which is $BIN_DIR
     echo "Installed mindojo-cli (built from source) to $BIN_DIR"
     ls -la "$BIN_DIR/mindojo-cli"
 
