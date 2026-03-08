@@ -21,4 +21,5 @@ USER memcan
 EXPOSE 8191
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=120s \
     CMD curl -sf http://localhost:8191/health || exit 1
+STOPSIGNAL SIGTERM
 ENTRYPOINT ["memcan-server", "serve"]

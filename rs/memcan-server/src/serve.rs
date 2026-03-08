@@ -885,6 +885,33 @@ fn setup_logging(log_file: &str) {
     info!(log_file, "MemCan server starting");
 }
 
+// --- Shutdown signal ---
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("Received SIGINT, starting graceful shutdown");
+            }
+            _ = sigterm.recv() => {
+                info!("Received SIGTERM, starting graceful shutdown");
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to listen for Ctrl+C");
+        info!("Received Ctrl+C, starting graceful shutdown");
+    }
+}
+
 // --- Health handler ---
 
 async fn health_handler() -> impl IntoResponse {
@@ -993,6 +1020,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
 
         info!(listen = %listen_addr, "MemCan MCP server running on HTTP");
         axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
             .await
             .map_err(|e| MemcanError::Other(format!("HTTP server error: {e}")))?;
     }

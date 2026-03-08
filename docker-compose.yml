@@ -61,6 +61,7 @@ services:
       - "traefik.http.middlewares.memcan-auth.plugin.traefik-api-token-middleware.tokens=${MEMCAN_API_KEY}"
       - "traefik.http.middlewares.memcan-auth.plugin.traefik-api-token-middleware.removeheadersonsuccess=false"
       - "traefik.http.routers.memcan.middlewares=memcan-ipallow@docker,memcan-auth@docker"
+    stop_grace_period: 30s
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8191/health"]
