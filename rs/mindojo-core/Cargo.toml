@@ -27,5 +27,9 @@ regex = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread", "macros"] }
 serial_test = { workspace = true }
+
+[[bench]]
+name = "embed_bench"
+harness = false
