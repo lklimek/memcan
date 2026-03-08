@@ -51,7 +51,11 @@ memcan count [--project <p>]
 
 **Only the team coordinator (Claudius) bumps versions.** Subagents must NOT modify `plugin.json` version.
 
-Version lives in `.claude-plugin/plugin.json`. Follow [SemVer 2](https://semver.org/).
+Version lives in two places (keep in sync):
+1. `.claude-plugin/plugin.json` — plugin version
+2. `Cargo.toml` (workspace) — crate version
+
+Follow [SemVer 2](https://semver.org/).
 
 - **Major** (x.0.0): breaking changes to MCP tools, removed features, incompatible config changes
 - **Minor** (0.x.0): new MCP tools, new skills, significant behavior changes
