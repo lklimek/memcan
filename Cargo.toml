@@ -2,13 +2,6 @@
 resolver = "2"
 members = [
     "rs/mindojo-core",
-    "rs/mindojo-mcp",
-    "rs/mindojo-import-triaged",
-    "rs/mindojo-index-code",
-    "rs/mindojo-index-standards",
-    "rs/mindojo-migrate",
-    "rs/mindojo-test-classification",
-    "rs/mindojo-extract",
     "rs/mindojo-server",
     "rs/mindojo-cli",
 ]

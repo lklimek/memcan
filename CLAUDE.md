@@ -13,15 +13,8 @@ Architecture: Long-lived HTTP MCP server (`mindojo serve`) with thin CLI client 
 ```
 rs/                              # All Rust source code
   mindojo-core/                  # Shared library (traits, LanceDB, genai, fastembed, pipeline, config)
-  mindojo-server/                # HTTP MCP server binary + admin subcommands (mindojo)
-  mindojo-cli/                   # Thin HTTP client binary (mindojo-cli, no core deps)
-  mindojo-mcp/                   # [legacy] MCP server binary (stdio transport)
-  mindojo-extract/               # [legacy] Hook binary — extracts learnings from conversations
-  mindojo-import-triaged/        # [legacy] CLI — imports triaged memories from JSON
-  mindojo-index-code/            # [legacy] CLI — indexes source code files
-  mindojo-index-standards/       # [legacy] CLI — indexes technical standards documents
-  mindojo-migrate/               # [legacy] CLI — migrates/imports legacy JSON data
-  mindojo-test-classification/   # [legacy] CLI — tests prompt classification accuracy
+  mindojo-server/                # Fat server binary (MCP HTTP/stdio server + admin subcommands)
+  mindojo-cli/                   # Thin HTTP client binary
 Cargo.toml                       # Workspace root
 Dockerfile                       # Multi-stage build for mindojo server
 claude-plugin/                   # Claude Code plugin

@@ -4108,104 +4108,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mindojo-extract"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "dirs",
- "mindojo-core",
- "regex",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "mindojo-import-triaged"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "clap",
- "md-5",
- "mindojo-core",
- "regex",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "mindojo-index-code"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "clap",
- "mindojo-core",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "mindojo-index-standards"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "clap",
- "mindojo-core",
- "regex",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "mindojo-mcp"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "clap",
- "lru 0.16.3",
- "mindojo-core",
- "rmcp",
- "schemars 0.8.22",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "mindojo-migrate"
-version = "0.1.0"
-dependencies = [
- "clap",
- "mindojo-core",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "mindojo-server"
 version = "0.1.0"
 dependencies = [
@@ -4228,22 +4130,6 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uuid",
-]
-
-[[package]]
-name = "mindojo-test-classification"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "clap",
- "dirs",
- "mindojo-core",
- "reqwest 0.13.2",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
