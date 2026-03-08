@@ -42,3 +42,4 @@ claude-plugin/bin/
 # Reports (generated)
 *.report.json
 report.json
+.claude/scheduled_tasks.lock
