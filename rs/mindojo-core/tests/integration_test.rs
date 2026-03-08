@@ -322,9 +322,9 @@ fn test_config_load() {
     let settings = mindojo_core::config::Settings::default();
     assert_eq!(settings.default_user_id, "global");
     assert!(settings.distill_memories);
-    assert_eq!(settings.embed_dims, 384);
+    assert_eq!(settings.embed_dims, 1024);
     assert_eq!(settings.llm_model, "ollama::qwen3.5:4b");
-    assert_eq!(settings.embed_model, "AllMiniLML6V2");
+    assert_eq!(settings.embed_model, "MultilingualE5Large");
 
     // Test that Settings::load() doesn't panic.
     let loaded = mindojo_core::config::Settings::load().expect("load should succeed");

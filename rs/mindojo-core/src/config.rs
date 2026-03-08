@@ -59,8 +59,8 @@ impl Default for Settings {
             distill_memories: true,
             log_file: "~/.claude/logs/mindojo-mcp.log".into(),
             llm_model: "ollama::qwen3.5:4b".into(),
-            embed_model: "AllMiniLML6V2".into(),
-            embed_dims: 384,
+            embed_model: "MultilingualE5Large".into(),
+            embed_dims: 1024,
         }
     }
 }
@@ -171,8 +171,8 @@ mod tests {
     fn test_defaults() {
         let d = Settings::default();
         assert_eq!(d.llm_model, "ollama::qwen3.5:4b");
-        assert_eq!(d.embed_model, "AllMiniLML6V2");
-        assert_eq!(d.embed_dims, 384);
+        assert_eq!(d.embed_model, "MultilingualE5Large");
+        assert_eq!(d.embed_dims, 1024);
         assert!(d.distill_memories);
     }
 

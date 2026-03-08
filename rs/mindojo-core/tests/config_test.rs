@@ -18,8 +18,8 @@ fn test_default_config() {
     assert!(settings.distill_memories);
     assert_eq!(settings.log_file, "~/.claude/logs/mindojo-mcp.log");
     assert_eq!(settings.llm_model, "ollama::qwen3.5:4b");
-    assert_eq!(settings.embed_model, "AllMiniLML6V2");
-    assert_eq!(settings.embed_dims, 384);
+    assert_eq!(settings.embed_model, "MultilingualE5Large");
+    assert_eq!(settings.embed_dims, 1024);
 }
 
 // -- Test 2: env var overrides -----------------------------------------------

@@ -60,7 +60,7 @@ Restart Claude Code after setup to connect the MCP server.
 ## Architecture
 
 - **LanceDB** — embedded vector database (no server needed, data stored locally)
-- **fastembed** — in-process ONNX embeddings (`AllMiniLML6V2`, 384 dimensions)
+- **fastembed** — in-process ONNX embeddings (`MultilingualE5Large`, 1024 dimensions)
 - **genai + Ollama** — LLM inference (`ollama::qwen3.5:4b`); genai uses `OLLAMA_HOST` env var for endpoint configuration
 - **DISTILL_MEMORIES** — when enabled (default: `true`), the LLM extracts structured facts from raw text before storing
 
@@ -150,8 +150,8 @@ cp .env.example ~/.config/mindojo/.env
 | `DEFAULT_USER_ID` | `global` | Default user ID for memory scoping |
 | `TECH_STACK` | — | Default tech stack filter (e.g. "rust", "python") |
 | `LLM_MODEL` | `ollama::qwen3.5:4b` | LLM model (genai format with provider prefix) |
-| `EMBED_MODEL` | `AllMiniLML6V2` | Fastembed model for in-process embeddings |
-| `EMBED_DIMS` | `384` | Embedding vector dimensions (must match embed model) |
+| `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings |
+| `EMBED_DIMS` | `1024` | Embedding vector dimensions (must match embed model) |
 | `LOG_FILE` | `~/.claude/logs/mindojo-mcp.log` | Log file path |
 
 > **Ollama endpoint:** The genai crate reads the standard `OLLAMA_HOST` environment variable (default: `http://localhost:11434`). Set it in your `.env` or system environment if Ollama runs on a remote host.
