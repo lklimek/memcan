@@ -5,22 +5,24 @@ Rust MCP server providing persistent memory via embedded LanceDB + fastembed + g
 ## Quick Start
 
 ```bash
-# 1. Install Ollama (https://ollama.com/download) — needed for LLM only
-ollama pull qwen3.5:4b
-
-# 2. Start the MemCan server (choose one):
-#    a) Docker (recommended):
+# 1. Start the MemCan server (choose one):
+#    a) Docker (recommended) — pulls lklimek/memcan:nightly from Docker Hub:
 docker compose up -d
-#    b) From source:
+#    b) Docker, built from source:
+docker compose up -d --build
+#    c) From source (requires local Ollama — see below):
 cargo build --release -p memcan-server
 ./target/release/memcan-server serve
 
-# 3. Install plugin in Claude Code
+# If running from source (option c), install Ollama and pull the model:
+# ollama pull qwen3.5:4b
+
+# 2. Install plugin in Claude Code
 #    Settings → Plugins → enable memcan@lklimek
 #    Or add to ~/.claude/settings.json:
 #      "enabledPlugins": { "memcan@lklimek": true }
 
-# 4. Configure environment (in a Claude Code session)
+# 3. Configure environment (in a Claude Code session)
 /setup-memcan
 ```
 
@@ -200,8 +202,11 @@ For production deployments, protect the Ollama endpoint with a reverse proxy pro
 ## Docker Deployment
 
 ```bash
-# Start Traefik + MemCan (uses remote Ollama via OLLAMA_HOST)
+# Start Traefik + MemCan (pulls lklimek/memcan:nightly from Docker Hub)
 docker compose up -d
+
+# Build from local Dockerfile instead (for development)
+docker compose up -d --build
 
 # Start with local GPU Ollama + Open WebUI
 docker compose --profile gpu up -d
@@ -214,6 +219,8 @@ The `docker-compose.yml` provides:
 - **Open WebUI** (optional, `gpu` profile) for Ollama web interface
 
 Set `MEMCAN_API_KEY` in `.env` before deploying — it's used for both MemCan server auth and Traefik middleware auth.
+
+> **Note:** Docker Compose defaults `LLM_MODEL` to `ollama::qwen3.5:9b` (a larger model than the server's built-in default of `ollama::qwen3.5:4b`). Override via the `LLM_MODEL` variable in `.env` if needed.
 
 ## License
 

@@ -1,7 +1,8 @@
 # MemCan Docker Compose
 #
 # Usage:
-#   docker compose up                     — traefik + memcan (Ollama on remote host via OLLAMA_HOST)
+#   docker compose up                     — traefik + memcan (pulls lklimek/memcan:nightly)
+#   docker compose up --build             — traefik + memcan (builds from local Dockerfile)
 #   docker compose --profile gpu up       — traefik + memcan + ollama + open-webui
 #   Set COMPOSE_PROFILES=gpu in .env to enable Ollama by default.
 
@@ -26,6 +27,7 @@ services:
     restart: unless-stopped
 
   memcan:
+    image: lklimek/memcan:nightly
     build: .
     environment:
       LANCEDB_PATH: /data/lancedb
