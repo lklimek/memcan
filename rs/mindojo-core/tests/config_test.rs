@@ -29,7 +29,6 @@ fn test_default_config() {
 fn test_env_override() {
     // Save originals so we can restore after the test.
     let original_user = env::var("DEFAULT_USER_ID").ok();
-    let original_dims = env::var("EMBED_DIMS").ok();
     let original_distill = env::var("DISTILL_MEMORIES").ok();
     let original_llm = env::var("LLM_MODEL").ok();
     let original_embed = env::var("EMBED_MODEL").ok();
@@ -41,7 +40,6 @@ fn test_env_override() {
     // execution for #[test] functions in the same file.
     unsafe {
         env::set_var("DEFAULT_USER_ID", "test-user-42");
-        env::set_var("EMBED_DIMS", "768");
         env::set_var("EMBED_MODEL", "NomicEmbedTextV15");
         env::set_var("DISTILL_MEMORIES", "false");
         env::set_var("LLM_MODEL", "openai::gpt-4o");
@@ -50,8 +48,11 @@ fn test_env_override() {
     let settings = Settings::load().expect("load should succeed");
 
     assert_eq!(settings.default_user_id, "test-user-42");
-    assert_eq!(settings.embed_dims, 768);
     assert_eq!(settings.embed_model, "NomicEmbedTextV15");
+    assert_eq!(
+        settings.embed_dims, 768,
+        "dims should be derived from NomicEmbedTextV15"
+    );
     assert!(!settings.distill_memories);
     assert_eq!(settings.llm_model, "openai::gpt-4o");
 
@@ -60,10 +61,6 @@ fn test_env_override() {
         match original_user {
             Some(v) => env::set_var("DEFAULT_USER_ID", v),
             None => env::remove_var("DEFAULT_USER_ID"),
-        }
-        match original_dims {
-            Some(v) => env::set_var("EMBED_DIMS", v),
-            None => env::remove_var("EMBED_DIMS"),
         }
         match original_distill {
             Some(v) => env::set_var("DISTILL_MEMORIES", v),
@@ -94,7 +91,6 @@ fn test_env_file() {
     writeln!(
         tmp.as_file(),
         "DEFAULT_USER_ID=dotenv-user\n\
-         EMBED_DIMS=1024\n\
          DISTILL_MEMORIES=false\n\
          TECH_STACK=rust\n\
          LLM_MODEL=ollama::mistral:7b\n\
@@ -116,7 +112,6 @@ fn test_env_file() {
     };
 
     assert_eq!(find("DEFAULT_USER_ID"), "dotenv-user");
-    assert_eq!(find("EMBED_DIMS"), "1024");
     assert_eq!(find("DISTILL_MEMORIES"), "false");
     assert_eq!(find("TECH_STACK"), "rust");
     assert_eq!(find("LLM_MODEL"), "ollama::mistral:7b");

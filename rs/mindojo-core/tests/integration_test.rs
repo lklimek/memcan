@@ -447,24 +447,14 @@ async fn test_lancedb_crud() {
 async fn test_llm_error_propagates() {
     let llm = FailingLlm;
     let result = extract_facts("some content", &llm, "test-model", None).await;
-    // extract_facts swallows LLM errors and returns Ok(None)
-    assert!(result.is_ok());
-    assert!(
-        result.unwrap().is_none(),
-        "LLM failure should yield None (graceful fallback)"
-    );
+    assert!(result.is_err(), "LLM failure should propagate as Err");
 }
 
 // -- Test 9: malformed JSON from LLM ----------------------------------------
 
 #[tokio::test]
-async fn test_malformed_llm_json_handled_gracefully() {
+async fn test_malformed_llm_json_returns_error() {
     let llm = MalformedJsonLlm;
     let result = extract_facts("some content", &llm, "test-model", None).await;
-    // Malformed JSON should be caught and return Ok(None).
-    assert!(result.is_ok());
-    assert!(
-        result.unwrap().is_none(),
-        "malformed JSON should yield None (graceful fallback)"
-    );
+    assert!(result.is_err(), "malformed JSON from LLM should return Err");
 }

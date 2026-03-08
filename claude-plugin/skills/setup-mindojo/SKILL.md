@@ -44,8 +44,7 @@ Key configuration variables to review with the user:
 - `OLLAMA_HOST` — Ollama endpoint (default: `http://localhost:11434`)
 - `OLLAMA_API_KEY` — Bearer token for Ollama auth (default: none)
 - `LLM_MODEL` — LLM model with provider prefix (default: `ollama::qwen3.5:4b`)
-- `EMBED_MODEL` — fastembed model name (default: `MultilingualE5Large`, runs in-process)
-- `EMBED_DIMS` — embedding dimensions, must match model (default: `1024`)
+- `EMBED_MODEL` — fastembed model name (default: `MultilingualE5Large`, runs in-process; dimensions derived automatically)
 
 Then ask if Ollama requires Bearer token authentication (common when behind a reverse proxy like Traefik, Caddy, or nginx). If yes, ask for the `OLLAMA_API_KEY` value and uncomment/set it in `.env`. If no, leave it commented out (the default).
 

@@ -13,7 +13,7 @@ use serde_json::json;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::error::{Result, ResultExt};
+use crate::error::{MindojoError, Result, ResultExt};
 use crate::prompts::{FACT_EXTRACTION_PROMPT, MEMORY_UPDATE_PROMPT, render_prompt};
 use crate::traits::{
     EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, VectorPoint, VectorStore,
@@ -153,18 +153,13 @@ pub async fn extract_facts(
         ..Default::default()
     });
 
-    match llm.chat(llm_model, &messages, options).await {
-        Ok(response) => match serde_json::from_str::<FactsResponse>(&response) {
-            Ok(parsed) => Ok(Some(validate_facts(parsed.facts))),
-            Err(e) => {
-                warn!("fact extraction JSON parse failed: {e}");
-                Ok(None)
-            }
-        },
-        Err(e) => {
-            warn!("fact extraction LLM call failed: {e}");
-            Ok(None)
-        }
+    let response = llm.chat(llm_model, &messages, options).await?;
+    match serde_json::from_str::<FactsResponse>(&response) {
+        Ok(parsed) => Ok(Some(validate_facts(parsed.facts))),
+        Err(e) => Err(MindojoError::LlmChat {
+            context: "fact extraction response is not valid JSON".into(),
+            detail: e.to_string(),
+        }),
     }
 }
 
@@ -402,11 +397,7 @@ pub async fn do_add_memory(
 
     let facts = extract_facts(content, llm, llm_model, extraction_prompt).await?;
     match facts {
-        None => {
-            warn!("Fact extraction failed, falling back to raw store");
-            store_raw(content, user_id, metadata, table_name, store, embedder).await?;
-            Ok(None)
-        }
+        None => unreachable!("extract_facts no longer returns Ok(None)"),
         Some(ref f) if f.is_empty() => {
             debug!("No facts extracted from content");
             Ok(Some(vec![]))

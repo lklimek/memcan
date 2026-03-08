@@ -32,7 +32,7 @@ pub struct Settings {
     pub llm_model: String,
     /// Fastembed model name, e.g. `"AllMiniLML6V2"`, `"BGESmallENV15"`.
     pub embed_model: String,
-    /// Embedding vector dimensions (must match the chosen embed_model).
+    /// Embedding vector dimensions (derived automatically from embed_model).
     pub embed_dims: usize,
     /// Ollama server URL, e.g. `"http://10.29.188.1:11434"`.
     /// Passed explicitly to the genai client since it does not read
@@ -127,9 +127,16 @@ impl Settings {
         let log_file = expand_tilde(&log_file_raw);
         let llm_model = env_or("LLM_MODEL", &defaults.llm_model);
         let embed_model = env_or("EMBED_MODEL", &defaults.embed_model);
-        let embed_dims = env_or("EMBED_DIMS", &defaults.embed_dims.to_string())
-            .parse::<usize>()
-            .unwrap_or(defaults.embed_dims);
+        let resolved_embed = resolve_model(&embed_model).map_err(|_| {
+            MindojoError::Config(format!(
+                "EMBED_MODEL '{embed_model}' is not a known fastembed model"
+            ))
+        })?;
+        let embed_dims = model_dims(&resolved_embed).ok_or_else(|| {
+            MindojoError::Config(format!(
+                "No known dimensions for embed model '{embed_model}' — add it to model_dims()"
+            ))
+        })?;
         let ollama_host = std::env::var("OLLAMA_HOST").ok().filter(|s| !s.is_empty());
         if let Some(ref host) = ollama_host {
             debug!(ollama_host = %host, "OLLAMA_HOST configured");
@@ -159,34 +166,10 @@ impl Settings {
 
     /// Check invariants on loaded settings.
     fn validate(&self) -> Result<()> {
-        // -- basic checks --
-        if self.embed_dims == 0 {
-            return Err(MindojoError::Config(
-                "EMBED_DIMS must be greater than 0".into(),
-            ));
-        }
         if self.lancedb_path.is_empty() {
             return Err(MindojoError::Config(
                 "LANCEDB_PATH must not be empty".into(),
             ));
-        }
-
-        // -- embed_model is a known fastembed model --
-        let resolved = resolve_model(&self.embed_model).map_err(|_| {
-            MindojoError::Config(format!(
-                "EMBED_MODEL '{}' is not a known fastembed model. See embed.rs for supported models.",
-                self.embed_model
-            ))
-        })?;
-
-        // -- embed_dims matches the chosen model --
-        if let Some(expected) = model_dims(&resolved)
-            && expected != self.embed_dims
-        {
-            return Err(MindojoError::Config(format!(
-                "EMBED_DIMS is {} but model '{}' produces {}-dimensional vectors",
-                self.embed_dims, self.embed_model, expected
-            )));
         }
 
         // -- llm_model format check (warn only) --
@@ -263,15 +246,6 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_zero_embed_dims() {
-        let s = Settings {
-            embed_dims: 0,
-            ..Settings::default()
-        };
-        assert!(s.validate().is_err());
-    }
-
-    #[test]
     fn test_validate_empty_lancedb_path() {
         let s = Settings {
             lancedb_path: String::new(),
@@ -283,34 +257,5 @@ mod tests {
     #[test]
     fn test_validate_defaults_ok() {
         Settings::default().validate().unwrap();
-    }
-
-    #[test]
-    fn test_validate_unknown_embed_model() {
-        let s = Settings {
-            embed_model: "NonexistentModel".into(),
-            ..Settings::default()
-        };
-        let err = s.validate().unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("not a known fastembed model"),
-            "expected 'not a known fastembed model' in: {msg}"
-        );
-    }
-
-    #[test]
-    fn test_validate_mismatched_embed_dims() {
-        let s = Settings {
-            embed_model: "MultilingualE5Large".into(),
-            embed_dims: 384,
-            ..Settings::default()
-        };
-        let err = s.validate().unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("1024"),
-            "expected '1024' in error message: {msg}"
-        );
     }
 }

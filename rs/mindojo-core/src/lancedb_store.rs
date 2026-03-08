@@ -266,10 +266,11 @@ impl VectorStore for LanceDbStore {
             let existing_dims = self.infer_dims(&tbl).await?;
             if existing_dims != dims {
                 return Err(MindojoError::Config(format!(
-                    "Table '{name}' has {existing_dims}-dimensional vectors but EMBED_DIMS is {dims}. \
+                    "Table '{name}' has {existing_dims}-dimensional vectors but the configured \
+                     embedding model produces {dims}-dimensional vectors. \
                      This usually means the embedding model changed. \
                      Migration is not yet supported — back up and recreate the table, \
-                     or revert EMBED_MODEL/EMBED_DIMS to match the existing data."
+                     or revert EMBED_MODEL to match the existing data."
                 )));
             }
             return Ok(());

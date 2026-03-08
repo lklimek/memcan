@@ -73,8 +73,7 @@ Environment variables (loaded from `~/.config/mindojo/.env` or `.env`):
 | `TECH_STACK` | *(none)* | Default tech stack filter |
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction |
 | `LLM_MODEL` | `ollama::qwen3.5:4b` | LLM model (genai format with provider prefix) |
-| `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings |
-| `EMBED_DIMS` | `1024` | Embedding vector dimensions (must match embed model) |
+| `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings (dimensions derived automatically) |
 | `LOG_FILE` | `~/.claude/logs/mindojo-mcp.log` | Log file path |
 | `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`). Passed to genai client explicitly. |
 | `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth (sent as `Authorization: Bearer $key`) |
