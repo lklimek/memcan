@@ -52,6 +52,10 @@ jobs:
         if: runner.os == 'Linux'
         run: bash scripts/setup-ubuntu.sh
 
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
       - name: Install cross-compilation tools
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
