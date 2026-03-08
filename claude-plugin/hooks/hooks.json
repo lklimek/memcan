@@ -1,6 +1,18 @@
 {
-  "description": "Auto-extract learnings when agents finish or context is compacted",
+  "description": "Setup check on session start; auto-extract learnings on agent stop and pre-compact",
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -x ${CLAUDE_PLUGIN_ROOT}/bin/mindojo-mcp || echo '⚠️ MindOJO binaries not found. Run: bash ${CLAUDE_PLUGIN_ROOT}/setup.sh'",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "SubagentStop": [
       {
         "matcher": "*",
