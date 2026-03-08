@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+vendored-openssl = ["memcan-core/vendored-openssl"]
+
 [[bin]]
 name = "memcan-server"
 path = "src/main.rs"
