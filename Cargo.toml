@@ -3,7 +3,7 @@ resolver = "2"
 members = [
     "rs/memcan-core",
     "rs/memcan-server",
-    "rs/memcan-cli",
+    "rs/memcan",
 ]
 
 [workspace.package]

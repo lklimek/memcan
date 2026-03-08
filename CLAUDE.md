@@ -14,7 +14,7 @@ Architecture: Long-lived HTTP MCP server (`memcan-server`) with thin CLI client 
 rs/                              # All Rust source code
   memcan-core/                  # Shared library (traits, LanceDB, genai, fastembed, pipeline, config)
   memcan-server/                # Fat server binary (MCP HTTP/stdio server + admin subcommands)
-  memcan-cli/                   # Thin CLI client (binary: memcan)
+  memcan/                       # Thin CLI client (binary: memcan)
 Cargo.toml                       # Workspace root
 Dockerfile                       # Multi-stage build for memcan-server
 .claude-plugin/                  # Claude Code plugin manifest
