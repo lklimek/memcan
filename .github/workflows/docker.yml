@@ -11,7 +11,7 @@ on:
         default: 'nightly'
 
 env:
-  IMAGE_NAME: lklimek/mindojo
+  IMAGE_NAME: lklimek/memcan
 
 jobs:
   docker:
