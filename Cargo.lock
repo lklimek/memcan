@@ -4266,6 +4266,7 @@ name = "mindojo-mcp"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "clap",
  "mindojo-core",
  "rmcp",
  "schemars 0.8.22",

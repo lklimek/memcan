@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use clap::Parser;
 use rmcp::{
     ServerHandler, ServiceExt, handler::server::router::tool::ToolRouter,
     handler::server::wrapper::Parameters, model::*, schemars, tool, tool_handler, tool_router,
@@ -763,12 +764,35 @@ fn setup_logging(log_file: &str) {
 }
 
 // ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
+
+#[derive(Parser)]
+#[command(about = "MindOJO MCP server — persistent memory for Claude Code")]
+struct Cli {
+    /// Download the configured embedding model and exit.
+    #[arg(long)]
+    download_model: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 #[tokio::main]
 async fn main() -> Result<(), MindojoError> {
+    let cli = Cli::parse();
     let config = Settings::load()?;
+
+    if cli.download_model {
+        let _embedder = FastEmbedProvider::from_settings(&config)?;
+        println!(
+            "Embedding model '{}' ({}d) ready.",
+            config.embed_model, config.embed_dims
+        );
+        return Ok(());
+    }
+
     setup_logging(&config.log_file);
 
     info!("Loading config: lancedb_path={}", config.lancedb_path);

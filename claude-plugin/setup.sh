@@ -21,6 +21,13 @@ if [ -n "${MINDOJO_BUILD_FROM_SOURCE:-}" ]; then
     chmod +x "$BIN_DIR"/mindojo-*
     echo "Installed MindOJO binaries (built from source) to $BIN_DIR"
     ls -la "$BIN_DIR"/mindojo-*
+
+    # Pre-download embedding model
+    echo "Downloading embedding model..."
+    "$BIN_DIR/mindojo-mcp" --download-model || {
+        echo "Warning: Failed to pre-download embedding model. It will download on first use."
+    }
+
     exit 0
 fi
 
@@ -87,3 +94,9 @@ chmod +x "$BIN_DIR"/mindojo-*
 
 echo "Installed MindOJO binaries to $BIN_DIR"
 ls -la "$BIN_DIR"/mindojo-*
+
+# Pre-download embedding model
+echo "Downloading embedding model..."
+"$BIN_DIR/mindojo-mcp" --download-model || {
+    echo "Warning: Failed to pre-download embedding model. It will download on first use."
+}
