@@ -16,7 +16,7 @@ Configures the MindOJO environment. The plugin and MCP server are already instal
 Verify:
 - MindOJO binary exists at `${CLAUDE_PLUGIN_ROOT}/bin/mindojo-mcp` (if not, run `${CLAUDE_PLUGIN_ROOT}/setup.sh`)
 - The setup script automatically downloads the configured embedding model. If the model is missing, it will be downloaded on first MCP server start (may cause a delay).
-- Ollama is reachable (`curl -sf http://localhost:11434/api/tags`) — needed for LLM chat (fact extraction, distillation). Not needed for embeddings, which run in-process via fastembed.
+- Ollama is reachable — needed for LLM chat (fact extraction, distillation). Not needed for embeddings, which run in-process via fastembed. Read `OLLAMA_HOST` and `OLLAMA_API_KEY` from `~/.config/mindojo/.env` (if it exists). Use `OLLAMA_HOST` as the base URL (default `http://localhost:11434`). If `OLLAMA_API_KEY` is set, include `-H "Authorization: Bearer $key"`. Check: `curl -sf [-H "Authorization: Bearer $key"] $host/api/tags`.
 
 No external database needed — MindOJO uses embedded LanceDB (data stored locally at `~/.local/share/mindojo/lancedb`). Embeddings are computed locally via fastembed (ONNX), so no embedding service is required.
 
