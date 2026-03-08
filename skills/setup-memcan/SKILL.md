@@ -2,7 +2,7 @@
 name: setup-memcan
 description: Configure MemCan environment — .env file, Claude Code settings, and user rule. Run once per machine after plugin install.
 user-invocable: true
-allowed-tools: Read, Write, Edit, Bash(bash *), Bash(mkdir *), Bash(curl *), Bash(which *), Bash(cp *), Glob, Grep, mcp__plugin_memcan_brain__search_memories
+allowed-tools: Read, Write, Edit, Bash(bash *), Bash(mkdir *), Bash(curl *), Bash(which *), Bash(cp *), Glob, Grep, AskUserQuestion, mcp__plugin_memcan_brain__search_memories
 ---
 
 # Setup MemCan
@@ -21,23 +21,28 @@ The Claude Code plugin connects to the server via HTTP MCP transport (configured
 
 ### 1. Install CLI and Server
 
-Check `command -v memcan`. If missing, install it using the setup script:
+Check `command -v memcan` and `docker compose version` to assess current state. Then use `AskUserQuestion` to present the user with install options:
 
+- **Full install (Recommended)** — CLI binary + Docker Compose server setup. Requires Docker.
+- **CLI only** — just the `memcan` CLI binary (for machines where the server runs elsewhere)
+- **Skip** — everything is already installed, proceed to configuration
+
+Based on the user's choice, run the appropriate command:
+
+Full install:
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/lklimek/memcan/main/setup.sh)
 ```
 
-The script handles both CLI binary installation and Docker Compose server setup:
-- Downloads and installs the `memcan` CLI binary
-- Downloads `docker-compose.yml` and creates `.env` files with generated API keys
-- Does NOT auto-start the server — prints instructions for `docker compose up -d`
-
-If Docker is not available and the user only needs the CLI, use `--cli-only`:
+CLI only:
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/lklimek/memcan/main/setup.sh) --cli-only
 ```
 
-Other flags: `--version VERSION`, `--install-dir DIR`, `--server-dir DIR`.
+The script:
+- Downloads and installs the `memcan` CLI binary
+- (Full install) Downloads `docker-compose.yml` and creates `.env` files with generated API keys
+- Does NOT auto-start the server — prints instructions for `docker compose up -d`
 
 Verify the install succeeded (`command -v memcan`). If it fails, stop and report the error.
 
