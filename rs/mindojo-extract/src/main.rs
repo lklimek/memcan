@@ -21,7 +21,7 @@ use mindojo_core::lancedb_store::LanceDbStore;
 use mindojo_core::llm::GenaiLlmProvider;
 use mindojo_core::pipeline::{MEMORIES_TABLE, do_add_memory};
 use mindojo_core::prompts::FACT_EXTRACTION_HOOK_PROMPT;
-use mindojo_core::traits::{EmbeddingProvider, VectorStore};
+use mindojo_core::traits::{EmbeddingProvider, LlmProvider, VectorStore};
 
 /// Minimum message length to consider for extraction.
 const MIN_MESSAGE_LENGTH: usize = 70;
@@ -517,8 +517,11 @@ async fn handle_precompact(
         validate_path(Path::new(cwd))?;
     }
 
+    let default_context = 131072_usize;
+    let context_window = llm.context_window(&settings.llm_model).await
+        .unwrap_or(default_context);
     let prompt_overhead = 2000;
-    let max_chars = (settings.context_window * 4 * 80 / 100).saturating_sub(prompt_overhead);
+    let max_chars = (context_window * 4 * 80 / 100).saturating_sub(prompt_overhead);
     let chunks = chunk_messages(&filtered, max_chars);
 
     if chunks.len() > 1 {
