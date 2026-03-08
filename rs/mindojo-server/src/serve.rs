@@ -1,19 +1,30 @@
-//! MindOJO MCP Server — persistent memory for Claude Code via LanceDB.
+//! MCP server — HTTP + stdio transport with /health endpoint.
 //!
-//! Embeddings: fastembed (in-process ONNX). LLM: genai (multi-provider).
-//! Transport: stdio (launched by Claude Code).
+//! Dual transport: `--stdio` for backward compat, default is HTTP via axum.
 
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex as StdMutex};
 
-use clap::Parser;
+use axum::Router;
+use axum::extract::Request;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
 use lru::LruCache;
 use rmcp::{
-    ServerHandler, ServiceExt, handler::server::router::tool::ToolRouter,
-    handler::server::wrapper::Parameters, model::*, schemars, tool, tool_handler, tool_router,
-    transport::stdio,
+    ServerHandler, ServiceExt,
+    handler::server::router::tool::ToolRouter,
+    handler::server::wrapper::Parameters,
+    model::*,
+    schemars, tool, tool_handler, tool_router,
+    transport::io::stdio,
+    transport::streamable_http_server::{
+        session::local::LocalSessionManager,
+        tower::{StreamableHttpServerConfig, StreamableHttpService},
+    },
 };
 use serde::Deserialize;
+use tokio::net::TcpListener;
 use tracing::info;
 use uuid::Uuid;
 
@@ -22,13 +33,12 @@ use mindojo_core::{
     error::MindojoError,
     init::MindojoContext,
     llm::GenaiLlmProvider,
+    ollama::ensure_nothink_model,
     pipeline::{self, CODE_TABLE, MEMORIES_TABLE, STANDARDS_TABLE},
     traits::{EmbeddingProvider, LlmProvider, VectorStore},
 };
 
-// ---------------------------------------------------------------------------
-// Shared state
-// ---------------------------------------------------------------------------
+use crate::ServeArgs;
 
 #[derive(Clone, serde::Serialize)]
 struct QueueEntry {
@@ -50,112 +60,76 @@ struct SharedState {
     llm_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
-// ---------------------------------------------------------------------------
-// Tool parameter structs
-// ---------------------------------------------------------------------------
+// --- Tool parameter structs ---
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AddMemoryParams {
-    /// The memory content to store.
     pub memory: String,
-    /// Git remote origin repo name (not dir name) for project-scoped memory. Omit for global.
     pub project: Option<String>,
-    /// Explicit user ID override.
     pub user_id: Option<String>,
-    /// Optional metadata dict (e.g., {"source": "penny", "type": "lesson"}).
     pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchMemoriesParams {
-    /// Natural language search query.
     pub query: String,
-    /// Git remote origin repo name (not dir name) to scope search. Omit for global.
     pub project: Option<String>,
-    /// Explicit user ID override.
     pub user_id: Option<String>,
-    /// Max results to return (default 10).
     pub limit: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GetMemoriesParams {
-    /// Git remote origin repo name (not dir name) for project-scoped listing. Omit for global.
     pub project: Option<String>,
-    /// Explicit user ID override.
     pub user_id: Option<String>,
-    /// Max memories to return (default 100).
     pub limit: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct CountMemoriesParams {
-    /// Git remote origin repo name (not dir name) for project-scoped count. Omit for global.
     pub project: Option<String>,
-    /// Explicit user ID override.
     pub user_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DeleteMemoryParams {
-    /// The ID of the memory to delete.
     pub memory_id: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct UpdateMemoryParams {
-    /// The ID of the memory to update.
     pub memory_id: String,
-    /// New content for the memory.
     pub memory: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchStandardsParams {
-    /// Natural language search query.
     pub query: String,
-    /// Filter by category ("security", "coding", "cve", "guideline").
     pub standard_type: Option<String>,
-    /// Filter by standard ID. Use list_collections() to discover available values.
     pub standard_id: Option<String>,
-    /// Filter by a cross-reference ID (e.g. "CWE-89", "V5.3.4").
     pub ref_id: Option<String>,
-    /// Filter by technology stack (e.g. "python", "rust").
     pub tech_stack: Option<String>,
-    /// Filter by language code (e.g. "en").
     pub lang: Option<String>,
-    /// Max results (1-100, default 10).
     pub limit: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GetQueueStatusParams {
-    /// Specific operation ID. If omitted, returns most recent operations.
     pub operation_id: Option<String>,
-    /// Max results when listing (default 10, max 100).
     pub limit: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchCodeParams {
-    /// Natural language search query.
     pub query: String,
-    /// Filter by project name.
     pub project: Option<String>,
-    /// Filter by technology stack (e.g. "python", "rust").
     pub tech_stack: Option<String>,
-    /// Filter by source file path (substring match).
     pub file_path: Option<String>,
-    /// Max results (1-100, default 10).
     pub limit: Option<u32>,
 }
 
-// ---------------------------------------------------------------------------
-// Helper functions
-// ---------------------------------------------------------------------------
+// --- Helpers ---
 
-/// Determine the user_id for scoping.
-/// Priority: explicit user_id > project:<name> > settings.default_user_id.
 fn resolve_user_id(project: &Option<String>, user_id: &Option<String>, default: &str) -> String {
     if let Some(uid) = user_id {
         return uid.clone();
@@ -166,25 +140,21 @@ fn resolve_user_id(project: &Option<String>, user_id: &Option<String>, default: 
     default.to_string()
 }
 
-/// Escape a value for use in LanceDB SQL `=` filters (only quote escaping).
 fn sanitize_eq(s: &str) -> String {
     s.replace('\'', "''")
 }
 
-/// Escape a value for use in LanceDB SQL `LIKE` filters (quote + wildcard escaping).
 fn sanitize_like(s: &str) -> String {
     s.replace('\'', "''")
         .replace('%', "\\%")
         .replace('_', "\\_")
 }
 
-/// Build a LanceDB SQL filter for user_id scoping using the dedicated column.
 fn user_filter(user_id: &str) -> String {
     let safe = sanitize_eq(user_id);
     format!("user_id = '{safe}'")
 }
 
-/// Format memory search results into a JSON array matching the Python output.
 fn format_memory_results(results: &[mindojo_core::traits::SearchResult]) -> serde_json::Value {
     let entries: Vec<serde_json::Value> = results
         .iter()
@@ -199,7 +169,6 @@ fn format_memory_results(results: &[mindojo_core::traits::SearchResult]) -> serd
                 "updated_at": payload.get("updated_at"),
                 "user_id": payload.get("user_id").and_then(|v| v.as_str()).unwrap_or(""),
             });
-            // Include extra metadata fields
             if let Some(obj) = payload.as_object()
                 && let Some(entry_obj) = entry.as_object_mut()
             {
@@ -218,7 +187,6 @@ fn format_memory_results(results: &[mindojo_core::traits::SearchResult]) -> serd
     serde_json::Value::Array(entries)
 }
 
-/// Format standards search results into a JSON array.
 fn format_standards_results(results: &[mindojo_core::traits::SearchResult]) -> serde_json::Value {
     let entries: Vec<serde_json::Value> = results
         .iter()
@@ -243,7 +211,6 @@ fn format_standards_results(results: &[mindojo_core::traits::SearchResult]) -> s
     serde_json::Value::Array(entries)
 }
 
-/// Format code search results into a JSON array.
 fn format_code_results(results: &[mindojo_core::traits::SearchResult]) -> serde_json::Value {
     let entries: Vec<serde_json::Value> = results
         .iter()
@@ -263,7 +230,6 @@ fn format_code_results(results: &[mindojo_core::traits::SearchResult]) -> serde_
     serde_json::Value::Array(entries)
 }
 
-/// Build a hint object for empty search results.
 fn empty_hint(filters: &[(&str, Option<&str>)]) -> serde_json::Value {
     let active: Vec<String> = filters
         .iter()
@@ -280,9 +246,7 @@ fn empty_hint(filters: &[(&str, Option<&str>)]) -> serde_json::Value {
     serde_json::json!({ "results": [], "hint": hint })
 }
 
-// ---------------------------------------------------------------------------
-// MCP Service
-// ---------------------------------------------------------------------------
+// --- MCP Service ---
 
 #[derive(Debug, Clone)]
 pub struct MindojoService {
@@ -492,7 +456,6 @@ impl MindojoService {
         )]))
     }
 
-    // INTENTIONAL(SEC-006): No ownership verification — single-user deployment, no multi-user scenarios
     #[tool(description = "Delete a specific memory by ID.")]
     async fn delete_memory(
         &self,
@@ -512,7 +475,6 @@ impl MindojoService {
         )]))
     }
 
-    // INTENTIONAL(SEC-006): No ownership verification — single-user deployment, no multi-user scenarios
     #[tool(description = "Update an existing memory's content.")]
     async fn update_memory(
         &self,
@@ -520,7 +482,6 @@ impl MindojoService {
     ) -> Result<CallToolResult, ErrorData> {
         info!(memory_id = %params.memory_id, "update_memory");
 
-        // Retrieve existing memory
         let existing = self
             .state
             .store
@@ -656,16 +617,11 @@ impl MindojoService {
         let mut collections: Vec<serde_json::Value> = Vec::new();
 
         for name in &known_tables {
-            match self.state.store.count(name, None).await {
-                Ok(count) => {
-                    collections.push(serde_json::json!({
-                        "name": name,
-                        "count": count,
-                    }));
-                }
-                Err(_) => {
-                    // Table doesn't exist yet, skip it
-                }
+            if let Ok(count) = self.state.store.count(name, None).await {
+                collections.push(serde_json::json!({
+                    "name": name,
+                    "count": count,
+                }));
             }
         }
 
@@ -681,7 +637,6 @@ impl MindojoService {
         Parameters(params): Parameters<SearchStandardsParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let limit = params.limit.unwrap_or(10).clamp(1, 100) as usize;
-
         let standard_type = params.standard_type.map(|s| s.to_lowercase());
         let standard_id = params.standard_id.map(|s| s.to_lowercase());
         let ref_id = params.ref_id;
@@ -697,7 +652,6 @@ impl MindojoService {
             .await
             .map_err(|e| ErrorData::internal_error(format!("embedding failed: {e}"), None))?;
 
-        // Build filter using dedicated columns
         let mut filter_parts: Vec<String> = Vec::new();
         if let Some(ref v) = standard_type {
             let safe = sanitize_eq(v);
@@ -711,12 +665,10 @@ impl MindojoService {
             let safe = sanitize_eq(v);
             filter_parts.push(format!("tech_stack = '{safe}'"));
         }
-        // lang has no dedicated column; filter via JSON key match on payload
         if let Some(ref v) = lang {
             let safe = sanitize_like(v);
             filter_parts.push(format!(r#"payload LIKE '%"lang":"{safe}"%'"#));
         }
-        // ref_id has no dedicated column; filter via JSON key match on payload
         if let Some(ref rid) = ref_id {
             let safe = sanitize_like(rid);
             filter_parts.push(format!(r#"payload LIKE '%"ref_id":"{safe}"%'"#));
@@ -759,7 +711,6 @@ impl MindojoService {
         Parameters(params): Parameters<SearchCodeParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let limit = params.limit.unwrap_or(10).clamp(1, 100) as usize;
-
         let project = params.project.map(|s| s.to_lowercase());
         let tech_stack = params.tech_stack.map(|s| s.to_lowercase());
         let file_path = params.file_path;
@@ -773,7 +724,6 @@ impl MindojoService {
             .await
             .map_err(|e| ErrorData::internal_error(format!("embedding failed: {e}"), None))?;
 
-        // Build filter using dedicated columns
         let mut filter_parts: Vec<String> = Vec::new();
         if let Some(ref p) = project {
             let safe = sanitize_eq(p);
@@ -845,9 +795,7 @@ impl MindojoService {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ServerHandler implementation
-// ---------------------------------------------------------------------------
+// --- ServerHandler ---
 
 #[tool_handler]
 impl ServerHandler for MindojoService {
@@ -873,9 +821,7 @@ impl ServerHandler for MindojoService {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Logging setup
-// ---------------------------------------------------------------------------
+// --- Logging ---
 
 fn setup_logging(log_file: &str) {
     use tracing_subscriber::EnvFilter;
@@ -889,7 +835,6 @@ fn setup_logging(log_file: &str) {
         return;
     }
 
-    // Ensure log directory exists
     if let Some(parent) = std::path::Path::new(log_file).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -900,7 +845,7 @@ fn setup_logging(log_file: &str) {
             .unwrap_or(std::path::Path::new(".")),
         std::path::Path::new(log_file)
             .file_name()
-            .unwrap_or(std::ffi::OsStr::new("mindojo-mcp.log")),
+            .unwrap_or(std::ffi::OsStr::new("mindojo.log")),
     );
 
     tracing_subscriber::fmt()
@@ -911,49 +856,26 @@ fn setup_logging(log_file: &str) {
         )
         .init();
 
-    info!(log_file, "MindOJO MCP server starting");
+    info!(log_file, "MindOJO server starting");
 }
 
-// ---------------------------------------------------------------------------
-// CLI
-// ---------------------------------------------------------------------------
+// --- Health handler ---
 
-#[derive(Parser)]
-#[command(about = "MindOJO MCP server — persistent memory for Claude Code")]
-struct Cli {
-    /// Download the configured embedding model and exit.
-    #[arg(long)]
-    download_model: bool,
+async fn health_handler() -> impl IntoResponse {
+    axum::response::Json(serde_json::json!({"status": "ok"}))
 }
 
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
+// --- Entry point ---
 
-#[tokio::main]
-async fn main() -> Result<(), MindojoError> {
-    let cli = Cli::parse();
-
-    // --download-model: load settings + embedder only (no store needed)
-    if cli.download_model {
-        let (settings, _embedder) = MindojoContext::init_settings_and_embedder()?;
-        println!(
-            "Embedding model '{}' ({}d) ready.",
-            settings.embed_model, settings.embed_dims
-        );
-        return Ok(());
-    }
-
+pub async fn run(args: &ServeArgs) -> Result<(), MindojoError> {
     let ctx = MindojoContext::init().await?;
     setup_logging(&ctx.settings.log_file);
 
     info!("Loading config: lancedb_path={}", ctx.settings.lancedb_path);
 
-    // Create LLM provider (genai — multi-provider: Ollama, OpenAI, Anthropic, etc.)
+    let llm_model = ensure_nothink_model(&ctx.settings).await;
     let llm = GenaiLlmProvider::from_settings(&ctx.settings);
-    let llm_model = llm.default_model().to_string();
 
-    // Ensure tables exist
     let dims = ctx.settings.embed_dims;
     ctx.store.ensure_table(MEMORIES_TABLE, dims).await?;
     ctx.store.ensure_table(STANDARDS_TABLE, dims).await?;
@@ -961,11 +883,16 @@ async fn main() -> Result<(), MindojoError> {
 
     info!("Tables ensured: {MEMORIES_TABLE}, {STANDARDS_TABLE}, {CODE_TABLE}");
 
+    let listen_addr = args
+        .listen
+        .clone()
+        .unwrap_or_else(|| ctx.settings.listen.clone());
+
     let shared = Arc::new(SharedState {
         store: Box::new(ctx.store),
         embedder: Box::new(ctx.embedder),
         llm: Box::new(llm),
-        config: ctx.settings,
+        config: ctx.settings.clone(),
         llm_model,
         queue_status: Arc::new(StdMutex::new(LruCache::new(
             NonZeroUsize::new(1000).unwrap(),
@@ -973,19 +900,70 @@ async fn main() -> Result<(), MindojoError> {
         llm_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
     });
 
-    let service = MindojoService::new(shared);
-    let transport = stdio();
-    let server = service
-        .serve(transport)
-        .await
-        .inspect_err(|e| tracing::error!("serving error: {:?}", e))
-        .map_err(|e| MindojoError::Other(format!("MCP serve failed: {e}")))?;
+    if args.stdio {
+        let service = MindojoService::new(Arc::clone(&shared));
+        let transport = stdio();
+        let server = service
+            .serve(transport)
+            .await
+            .inspect_err(|e| tracing::error!("serving error: {:?}", e))
+            .map_err(|e| MindojoError::Other(format!("MCP serve failed: {e}")))?;
 
-    info!("MindOJO MCP server running on stdio");
-    server
-        .waiting()
-        .await
-        .map_err(|e| MindojoError::Other(format!("MCP server error: {e}")))?;
+        info!("MindOJO MCP server running on stdio");
+        server
+            .waiting()
+            .await
+            .map_err(|e| MindojoError::Other(format!("MCP server error: {e}")))?;
+    } else {
+        let config = StreamableHttpServerConfig::default();
+        let session_manager = Arc::new(LocalSessionManager::default());
+        let shared_clone = Arc::clone(&shared);
+        let mcp_service = StreamableHttpService::new(
+            move || Ok(MindojoService::new(Arc::clone(&shared_clone))),
+            session_manager,
+            config,
+        );
+
+        let mcp_clone = mcp_service.clone();
+        let app = Router::new().route("/health", get(health_handler)).route(
+            "/mcp",
+            axum::routing::any(move |req: axum::extract::Request| async move {
+                mcp_clone.handle(req).await
+            }),
+        );
+
+        let app = if let Some(ref key) = ctx.settings.api_key {
+            let expected = format!("Bearer {key}");
+            app.layer(middleware::from_fn(move |req: Request, next: Next| {
+                let expected = expected.clone();
+                async move {
+                    let auth = req
+                        .headers()
+                        .get(axum::http::header::AUTHORIZATION)
+                        .and_then(|v| v.to_str().ok());
+                    match auth {
+                        Some(v) if v == expected => next.run(req).await,
+                        _ => Response::builder()
+                            .status(axum::http::StatusCode::UNAUTHORIZED)
+                            .body(axum::body::Body::from("Unauthorized"))
+                            .unwrap()
+                            .into_response(),
+                    }
+                }
+            }))
+        } else {
+            app
+        };
+
+        let listener = TcpListener::bind(&listen_addr)
+            .await
+            .map_err(|e| MindojoError::Other(format!("failed to bind {listen_addr}: {e}")))?;
+
+        info!(listen = %listen_addr, "MindOJO MCP server running on HTTP");
+        axum::serve(listener, app)
+            .await
+            .map_err(|e| MindojoError::Other(format!("HTTP server error: {e}")))?;
+    }
 
     Ok(())
 }

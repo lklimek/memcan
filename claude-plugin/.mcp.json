@@ -1,6 +1,9 @@
 {
   "brain": {
-    "command": "${CLAUDE_PLUGIN_ROOT}/bin/mindojo-mcp",
-    "args": []
+    "type": "http",
+    "url": "${MINDOJO_URL:-http://localhost:8190}/mcp",
+    "headers": {
+      "Authorization": "Bearer ${MINDOJO_API_KEY}"
+    }
   }
 }

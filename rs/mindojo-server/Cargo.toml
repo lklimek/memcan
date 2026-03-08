@@ -1,0 +1,30 @@
+[package]
+name = "mindojo-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mindojo"
+path = "src/main.rs"
+
+[dependencies]
+mindojo-core = { path = "../mindojo-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing-appender = { workspace = true }
+chrono = { workspace = true }
+rmcp = { workspace = true }
+schemars = { workspace = true }
+clap = { workspace = true }
+clap_complete = { workspace = true }
+lru = { workspace = true }
+uuid = { workspace = true }
+axum = { workspace = true }
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+regex = { workspace = true }
+dirs = { workspace = true }

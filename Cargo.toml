@@ -9,6 +9,8 @@ members = [
     "rs/mindojo-migrate",
     "rs/mindojo-test-classification",
     "rs/mindojo-extract",
+    "rs/mindojo-server",
+    "rs/mindojo-cli",
 ]
 
 [workspace.package]
@@ -53,8 +55,18 @@ arrow-array = "57"
 arrow-schema = "57"
 
 # MCP
-rmcp = { version = "0.16", features = ["server", "transport-io"] }
+rmcp = { version = "1.1", features = ["server", "transport-io", "transport-streamable-http-server"] }
 schemars = "0.8"
+
+# HTTP server
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+tower-http = { version = "0.6", features = ["cors", "auth"] }
+
+# CLI
+clap_complete = "4"
+
+# Caching
+lru = "0.16"
 
 # Regex
 regex = "1"

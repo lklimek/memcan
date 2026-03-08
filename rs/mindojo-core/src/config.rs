@@ -41,6 +41,12 @@ pub struct Settings {
     /// Bearer token for Ollama endpoint auth. When set, every Ollama
     /// request sends `Authorization: Bearer <key>`.
     pub ollama_api_key: Option<String>,
+    /// Server listen address, e.g. `"127.0.0.1:8191"`.
+    pub listen: String,
+    /// Bearer token for MindOJO server auth.
+    pub api_key: Option<String>,
+    /// MindOJO server URL for thin clients, e.g. `"http://localhost:8190"`.
+    pub url: String,
 }
 
 impl std::fmt::Debug for Settings {
@@ -59,6 +65,9 @@ impl std::fmt::Debug for Settings {
                 "ollama_api_key",
                 &self.ollama_api_key.as_ref().map(|_| "***"),
             )
+            .field("listen", &self.listen)
+            .field("api_key", &self.api_key.as_ref().map(|_| "***"))
+            .field("url", &self.url)
             .finish()
     }
 }
@@ -76,6 +85,9 @@ impl Default for Settings {
             embed_dims: 1024,
             ollama_host: None,
             ollama_api_key: None,
+            listen: "127.0.0.1:8191".into(),
+            api_key: None,
+            url: "http://localhost:8190".into(),
         }
     }
 }
@@ -123,7 +135,9 @@ impl Settings {
         let distill_memories = env_or("DISTILL_MEMORIES", "true")
             .parse::<bool>()
             .unwrap_or(true);
-        let log_file_raw = env_or("LOG_FILE", &defaults.log_file);
+        let log_file_raw = std::env::var("MINDOJO_LOG_FILE")
+            .or_else(|_| std::env::var("LOG_FILE"))
+            .unwrap_or_else(|_| defaults.log_file.clone());
         let log_file = expand_tilde(&log_file_raw);
         let llm_model = env_or("LLM_MODEL", &defaults.llm_model);
         let embed_model = env_or("EMBED_MODEL", &defaults.embed_model);
@@ -148,6 +162,12 @@ impl Settings {
             debug!("OLLAMA_API_KEY configured");
         }
 
+        let listen = env_or("MINDOJO_LISTEN", &defaults.listen);
+        let api_key = std::env::var("MINDOJO_API_KEY")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let url = env_or("MINDOJO_URL", &defaults.url);
+
         let settings = Settings {
             lancedb_path,
             default_user_id,
@@ -159,6 +179,9 @@ impl Settings {
             embed_dims,
             ollama_host,
             ollama_api_key,
+            listen,
+            api_key,
+            url,
         };
         settings.validate()?;
         Ok(settings)
@@ -258,5 +281,4 @@ mod tests {
     fn test_validate_defaults_ok() {
         Settings::default().validate().unwrap();
     }
-
 }

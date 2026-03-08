@@ -1,18 +1,58 @@
-# MindOJO — optional Docker Compose for development
+# MindOJO Docker Compose
 #
-# LanceDB is embedded (no server needed). This compose file is only needed
-# if you want to run Ollama in Docker.
-#
-# For most setups, install Ollama directly: https://ollama.com/download
+# Usage:
+#   docker compose up                     — traefik + mindojo (Ollama on remote host via OLLAMA_HOST)
+#   docker compose --profile gpu up       — traefik + mindojo + ollama + open-webui
+#   Set COMPOSE_PROFILES=gpu in .env to enable Ollama by default.
 
 services:
+  mindojo:
+    build: .
+    environment:
+      LANCEDB_PATH: /data/lancedb
+      HF_HOME: /data/fastembed
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-ollama::qwen3.5:9b}
+      MINDOJO_API_KEY: ${MINDOJO_API_KEY}
+      MINDOJO_LISTEN: 0.0.0.0:8191
+      DISTILL_MEMORIES: ${DISTILL_MEMORIES:-true}
+      EMBED_MODEL: ${EMBED_MODEL:-MultilingualE5Large}
+    volumes:
+      - mindojo-data:/data/lancedb
+      - mindojo-models:/data/fastembed
+    networks:
+      - traefik
+      - backend
+    labels:
+      - "traefik.instance=ollama"
+      - "traefik.enable=true"
+      - "traefik.http.routers.mindojo.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.mindojo.entrypoints=mindojo"
+      - "traefik.http.services.mindojo.loadbalancer.server.port=8191"
+      - "traefik.http.middlewares.mindojo-ipallow.ipallowlist.sourcerange=127.0.0.1/32,::1/128,10.29.0.0/16"
+      - "traefik.http.middlewares.mindojo-auth.plugin.traefik-api-token-middleware.bearerheader=true"
+      - "traefik.http.middlewares.mindojo-auth.plugin.traefik-api-token-middleware.tokens=${MINDOJO_API_KEY}"
+      - "traefik.http.middlewares.mindojo-auth.plugin.traefik-api-token-middleware.removeheadersonsuccess=true"
+      - "traefik.http.routers.mindojo.middlewares=mindojo-ipallow@docker,mindojo-auth@docker"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8191/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+
   ollama:
     image: ollama/ollama:latest
+    profiles: ["gpu"]
     restart: unless-stopped
     ports:
       - "11434:11434"
     volumes:
       - ollama-data:/root/.ollama
+    networks:
+      - backend
     environment:
       OLLAMA_NUM_CTX: "131072"
     user: "1000:1000"
@@ -30,5 +70,13 @@ services:
     #           count: all
     #           capabilities: [gpu]
 
+networks:
+  traefik:
+    external: true
+    name: ollama_traefik
+  backend:
+
 volumes:
   ollama-data:
+  mindojo-data:
+  mindojo-models:

@@ -18,6 +18,7 @@ pub mod error;
 pub mod init;
 pub mod lancedb_store;
 pub mod llm;
+pub mod ollama;
 pub mod pipeline;
 pub mod prompts;
 pub mod traits;

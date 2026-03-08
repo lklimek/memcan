@@ -1,0 +1,9 @@
+target/
+.git/
+.github/
+claude-plugin/bin/
+*.md
+.env
+.env.*
+docker-compose.yml
+Dockerfile

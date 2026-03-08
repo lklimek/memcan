@@ -518,7 +518,9 @@ async fn handle_precompact(
     }
 
     let default_context = 131072_usize;
-    let context_window = llm.context_window(&settings.llm_model).await
+    let context_window = llm
+        .context_window(&settings.llm_model)
+        .await
         .unwrap_or(default_context);
     let prompt_overhead = 2000;
     let max_chars = (context_window * 4 * 80 / 100).saturating_sub(prompt_overhead);
