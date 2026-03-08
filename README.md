@@ -8,22 +8,48 @@ Rust MCP server providing persistent memory via embedded LanceDB + fastembed + g
 # 1. Install Ollama (https://ollama.com/download) — needed for LLM only
 ollama pull qwen3.5:4b
 
-# 2. Install plugin in Claude Code
+# 2. Start the MindOJO server (choose one):
+#    a) Docker (recommended):
+docker compose up -d
+#    b) From source:
+cargo build --release -p mindojo-server
+./target/release/mindojo serve
+
+# 3. Install plugin in Claude Code
 #    Settings → Plugins → enable mindojo@lklimek
 #    Or add to ~/.claude/settings.json:
 #      "enabledPlugins": { "mindojo@lklimek": true }
 
-# 3. Configure environment (in a Claude Code session)
+# 4. Configure environment (in a Claude Code session)
 /setup-mindojo
 ```
 
-No external database required — LanceDB runs embedded, storing data at `~/.local/share/mindojo/lancedb`.
+No external database required — LanceDB runs embedded on the server, storing data at `~/.local/share/mindojo/lancedb`.
+
+## Architecture
+
+MindOJO uses a two-component architecture:
+
+- **Server** (`mindojo serve`) — long-lived HTTP MCP server handling embeddings, LLM, and storage. Runs as a Docker container or system service on port 8191 (internal), fronted by Traefik on port 8190.
+- **CLI** (`mindojo-cli`) — thin HTTP client for hooks. No fastembed/LanceDB deps (~5 MB vs ~180 MB server).
+
+The Claude Code plugin connects to the server via HTTP MCP transport (Streamable HTTP).
+
+### Stack
+
+- **LanceDB** — embedded vector database (no server needed, data stored locally)
+- **fastembed** — in-process ONNX embeddings (`MultilingualE5Large`, 1024 dimensions, ~1.3 GB model downloaded on first use)
+- **genai + Ollama** — LLM inference (`ollama::qwen3.5:4b`); MindOJO reads `OLLAMA_HOST` and passes it to the genai client
+- **rmcp 1.1** — Rust MCP SDK with Streamable HTTP transport
+- **axum** — HTTP framework mounting MCP service + health endpoint + auth middleware
+- **DISTILL_MEMORIES** — when enabled (default: `true`), the LLM extracts structured facts from raw text before storing
 
 ## Install
 
 ### Prerequisites
 
-- [Ollama](https://ollama.com/) — LLM inference (embeddings are handled in-process by fastembed)
+- [Ollama](https://ollama.com/) — LLM inference (embeddings are handled in-process by fastembed on the server)
+- Docker + Docker Compose (for containerized deployment) or Rust toolchain (for building from source)
 
 ### Plugin Install
 
@@ -37,9 +63,9 @@ Enable `mindojo@lklimek` in `~/.claude/settings.json`:
 }
 ```
 
-The plugin's `setup.sh` downloads pre-built binaries for your platform and pre-downloads the embedding model (~1.3 GB). The MCP server is registered automatically via `.mcp.json` — no manual `claude mcp add` needed.
+The plugin's `setup.sh` downloads the `mindojo-cli` binary for your platform. The MCP server connection is registered automatically via `.mcp.json` — no manual `claude mcp add` needed.
 
-> **Disk space:** The embedding model (`MultilingualE5Large`) requires ~1.3 GB of disk space, stored in `.fastembed_cache/` (fastembed's default, shared with other fastembed apps; override with `FASTEMBED_CACHE_DIR` or `HF_HOME`). LanceDB data is stored at `~/.local/share/mindojo/lancedb`. Plan for ~2 GB total.
+> **Disk space:** The embedding model (`MultilingualE5Large`) requires ~1.3 GB of disk space, downloaded on the server's first startup. LanceDB data is stored at `~/.local/share/mindojo/lancedb` (or `/data/lancedb` in Docker). Plan for ~2 GB total.
 
 ### Building from Source
 
@@ -47,54 +73,62 @@ The plugin's `setup.sh` downloads pre-built binaries for your platform and pre-d
 cargo build --release --workspace
 ```
 
-Binaries are placed in `target/release/`: `mindojo-mcp`, `mindojo-extract`, `mindojo-import-triaged`, `mindojo-index-code`, `mindojo-index-standards`, `mindojo-migrate`.
+Binaries are placed in `target/release/`:
+- `mindojo` — fat server (MCP HTTP/stdio server + all admin subcommands)
+- `mindojo-cli` — thin HTTP client for hooks and manual operations
 
 ### Environment Setup
 
 After enabling the plugin, run `/setup-mindojo` in a Claude Code session. It will:
 
-1. **Check prerequisites** — MindOJO binary, Ollama reachability
-2. **Configure `.env`** — copy `.env.example`, set `OLLAMA_HOST` if Ollama is remote
+1. **Check prerequisites** — MindOJO CLI binary, server reachability, Ollama reachability
+2. **Configure `.env`** — copy `.env.example`, set server URL, API key, Ollama host
 3. **Create user rule** — writes `~/.claude/rules/mindojo.md` so agents know to use memory
 
 Restart Claude Code after setup to connect the MCP server.
-
-## Architecture
-
-- **LanceDB** — embedded vector database (no server needed, data stored locally)
-- **fastembed** — in-process ONNX embeddings (`MultilingualE5Large`, 1024 dimensions, ~1.3 GB model downloaded on first use)
-- **genai + Ollama** — LLM inference (`ollama::qwen3.5:4b`); MindOJO reads `OLLAMA_HOST` and passes it to the genai client
-- **DISTILL_MEMORIES** — when enabled (default: `true`), the LLM extracts structured facts from raw text before storing
 
 ## MCP Tools
 
 | Tool | Description |
 |------|-------------|
-| `add_memory` | Store a memory with optional project scope and metadata |
+| `add_memory` | Store a memory with optional project scope and metadata (async, returns queued) |
 | `search_memories` | Semantic search across memories |
 | `get_memories` | List all memories for a scope |
 | `delete_memory` | Remove a memory by ID |
-| `update_memory` | Modify existing memory content |
+| `update_memory` | Modify existing memory content (async, returns queued) |
 | `count_memories` | Count memories for a scope (without fetching content) |
 | `list_collections` | Discover available collections, point counts, and valid filter values |
 | `search_standards` | Search indexed standards (CWE, OWASP, etc.) by semantic similarity |
 | `search_code` | Search indexed code snippets by semantic similarity |
+| `get_queue_status` | Check status of async add/update operations |
+
+## Server Subcommands
+
+```
+mindojo serve [--stdio] [--listen ADDR]   # MCP server (default subcommand)
+mindojo index-code <dir> --project <name> [--tech-stack <s>] [--drop]
+mindojo index-standards <file> --standard-id <id> --standard-type <t> [--drop]
+mindojo migrate <file> [--dry-run]
+mindojo import-triaged <file> [--dry-run]
+mindojo test-classification --prompt <f> --model <m>
+mindojo download-model [--model <name>]
+mindojo completions <shell>
+```
+
+## CLI Subcommands
+
+```
+mindojo-cli add <memory> [--project <p>]
+mindojo-cli search <query> [--project <p>] [--limit <n>]
+mindojo-cli extract                        # Hook handler: reads stdin, POSTs to server
+mindojo-cli status [operation_id]
+mindojo-cli count [--project <p>]
+```
 
 ## Memory Scoping
 
 - `project="penny"` → scoped to project (stored as `user_id=project:penny`)
 - No project → global scope (stored as `user_id=global`)
-
-## CLI Tools
-
-| Binary | Description |
-|--------|-------------|
-| `mindojo-mcp` | MCP server (stdio transport) — registered by the plugin |
-| `mindojo-extract` | Hook binary — extracts learnings from conversations |
-| `mindojo-import-triaged` | Imports triaged findings from JSON into memories |
-| `mindojo-index-code` | Indexes source code files for semantic search |
-| `mindojo-index-standards` | Indexes technical standards documents (CWE, OWASP, etc.) |
-| `mindojo-migrate` | Migrates/imports legacy JSON data |
 
 ## Claude Code Context Persistence
 
@@ -112,29 +146,15 @@ Claude Code loads context into the attention window via several mechanisms. Mind
 
 The user rule created by `/setup-mindojo` lives in `~/.claude/rules/mindojo.md` — loaded into every session so agents always know to search and save memories.
 
-### Path-Scoped Rules
-
-For project-specific memory behavior, add rules with `paths:` frontmatter:
-
-```markdown
----
-paths:
-  - "docker-compose.yml"
-  - "Dockerfile*"
----
-Before modifying Docker configuration, search MindOJO for Docker-related
-lessons learned in this project.
-```
-
 ## Configuration
 
-The MCP server searches for `.env` in order:
+The `.env` file configures both the server and CLI. Search order:
 
 | Priority | Location | Use case |
 |----------|----------|----------|
 | 1 | `~/.config/mindojo/.env` (Linux) / `~/Library/Application Support/mindojo/.env` (macOS) | Production — survives plugin updates |
 | 2 | `./.env` in CWD | Development — running from source checkout |
-| 3 | Defaults | Fallback (localhost Ollama, default LanceDB path) |
+| 3 | Defaults | Fallback (localhost, default LanceDB path) |
 
 Environment variables always override `.env` values. Run `/setup-mindojo` to create the config file, or copy `.env.example` manually:
 
@@ -147,17 +167,19 @@ cp .env.example ~/.config/mindojo/.env
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `MINDOJO_LISTEN` | `127.0.0.1:8191` | Server bind address (Docker overrides to `0.0.0.0:8191`) |
+| `MINDOJO_API_KEY` | *(none)* | Bearer token auth for MCP API |
+| `MINDOJO_URL` | `http://localhost:8190` | Server URL for thin clients (`mindojo-cli`) |
+| `MINDOJO_LOG_FILE` | `~/.claude/logs/mindojo-mcp.log` | Log file path (set empty for stdout) |
 | `LANCEDB_PATH` | `~/.local/share/mindojo/lancedb` | LanceDB storage directory |
-| `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction before storing |
-| `DEFAULT_USER_ID` | `global` | Default user ID for memory scoping |
-| `TECH_STACK` | — | Default tech stack filter (e.g. "rust", "python") |
+| `DEFAULT_USER_ID` | `global` | Default memory scope |
+| `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction |
 | `LLM_MODEL` | `ollama::qwen3.5:4b` | LLM model (genai format with provider prefix) |
 | `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings (dimensions derived automatically) |
-| `LOG_FILE` | `~/.claude/logs/mindojo-mcp.log` | Log file path |
 | `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`) |
-| `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth (sent as `Authorization: Bearer $key`) |
+| `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth |
 
-> **Ollama endpoint:** The genai crate does **not** read `OLLAMA_HOST` or `OLLAMA_API_KEY` from environment. MindOJO reads them via `Settings` and passes them to the genai client via `ServiceTargetResolver`. Set them in your `.env` or system environment as needed.
+> **Note:** The genai crate does **not** read `OLLAMA_HOST` or `OLLAMA_API_KEY` from environment — MindOJO reads them via `Settings` and passes them to the genai client via `ServiceTargetResolver`.
 
 ## Remote Ollama
 
@@ -175,12 +197,26 @@ OLLAMA_API_KEY=your-token-here
 
 For production deployments, protect the Ollama endpoint with a reverse proxy providing TLS and access control.
 
-## Docker Services
+## Docker Deployment
 
 ```bash
-docker compose up -d              # Ollama (optional)
+# Start Traefik + MindOJO (uses remote Ollama via OLLAMA_HOST)
+docker compose up -d
+
+# Start with local GPU Ollama + Open WebUI
+docker compose --profile gpu up -d
 ```
 
-The `docker-compose.yml` provides an optional Ollama container for development. LanceDB is embedded and requires no container. For most setups, install Ollama directly from [ollama.com](https://ollama.com/download).
+The `docker-compose.yml` provides:
+- **Traefik** reverse proxy on ports 8190 (MindOJO), 11434 (Ollama), 11400 (Open WebUI)
+- **MindOJO** server with Bearer token auth, health check, named volumes for data/models
+- **Ollama** (optional, `gpu` profile) with NVIDIA runtime
+- **Open WebUI** (optional, `gpu` profile) for Ollama web interface
+
+Set `MINDOJO_API_KEY` in `.env` before deploying — it's used for both MindOJO server auth and Traefik middleware auth.
+
+## License
+
+MIT
 
 <sub>Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>

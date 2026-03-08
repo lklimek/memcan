@@ -8,7 +8,11 @@ user-invocable: true
 
 End-to-end test of every MindOJO MCP endpoint. Uses project scope `__smoke_test__` to isolate test data. Cleans up all test memories on completion (even if earlier phases fail).
 
-Execute each phase in order. Track pass/fail and timing for the summary table.
+Execute each phase in order. Track pass/fail for the summary table.
+
+## Architecture Note
+
+MindOJO uses async processing: `add_memory` and `update_memory` return immediately with `status: queued`. Background tasks handle LLM distillation. Use `get_queue_status` to monitor completion, and add short delays before verification phases.
 
 ## Phase 0: Baseline
 
@@ -17,9 +21,7 @@ Execute each phase in order. Track pass/fail and timing for the summary table.
 
 ## Phase 1: Create Memories
 
-Time each `add_memory` call using `date +%s%N` before and after. Flag WARNING if any call completes in under 2 seconds (LLM distillation may be skipped or broken).
-
-Save all returned memory IDs for later phases.
+Call `add_memory` for each test memory. All should return `status: queued` near-instantly (async processing). Save returned operation IDs for status tracking.
 
 ### 1a. Short (~20 words)
 
@@ -55,16 +57,20 @@ add_memory(
 
 ```
 add_memory(
-  memory="Implementing MCP servers in Rust with the rmcp crate involves several key considerations. The #[tool] macro on async methods generates JSON Schema for tool parameters and registers handlers automatically. Each tool method receives typed parameters and returns a CallToolResult. Async operations use tokio — the MCP server runs on a tokio runtime, and tool handlers are async by default. For error handling, prefer thiserror for library error types with structured variants, and anyhow for application-level errors where you need flexible error chaining. The MCP tool handler should catch errors and return them as text content with is_error=true rather than panicking, because a panic kills the entire server process. JSON Schema generation for tool parameters requires that parameter structs derive JsonSchema (from schemars) and Deserialize. Complex nested types work but optional fields should use Option<T> with #[serde(default)] to make them truly optional in the schema. The stdio transport is the standard for Claude Code plugins — the MCP server reads JSON-RPC from stdin and writes responses to stdout. This means you cannot use println! or any stdout logging — it corrupts the MCP protocol stream. Instead, use the tracing crate with a file appender (tracing-appender or tracing-subscriber with fmt::layer().with_writer(file)). Log to a dedicated file like ~/.claude/logs/mindojo-mcp.log. For embedding operations that call fastembed, these are CPU-intensive and block the async runtime. Use tokio::task::spawn_blocking to offload them to the blocking thread pool. Without this, a single embedding computation can starve other MCP requests of executor time, causing timeouts on concurrent tool calls.",
+  memory="Implementing MCP servers in Rust with the rmcp crate involves several key considerations. The #[tool] macro on async methods generates JSON Schema for tool parameters and registers handlers automatically. Each tool method receives typed parameters and returns a CallToolResult. Async operations use tokio — the MCP server runs on a tokio runtime, and tool handlers are async by default. For error handling, prefer thiserror for library error types with structured variants, and anyhow for application-level errors where you need flexible error chaining. The MCP tool handler should catch errors and return them as text content with is_error=true rather than panicking, because a panic kills the entire server process. JSON Schema generation for tool parameters requires that parameter structs derive JsonSchema (from schemars) and Deserialize. Complex nested types work but optional fields should use Option<T> with #[serde(default)] to make them truly optional in the schema. The HTTP transport uses Streamable HTTP via axum — the MCP server mounts StreamableHttpService on a /mcp route with Bearer token auth. This means the server can handle multiple concurrent clients, unlike stdio which is single-session. For embedding operations that call fastembed, these are CPU-intensive and block the async runtime. Use tokio::task::spawn_blocking to offload them to the blocking thread pool. Without this, a single embedding computation can starve other MCP requests of executor time, causing timeouts on concurrent tool calls.",
   project="__smoke_test__",
   metadata={"type": "lesson"}
 )
 ```
 
-## Phase 2: Verify Creation
+## Phase 2: Wait and Verify Creation
 
-1. `count_memories(project="__smoke_test__")` -- must equal 4.
-2. `get_memories(project="__smoke_test__", limit=10)` -- must return all 4. Record their IDs.
+1. Wait 10 seconds for async processing to complete.
+2. `get_queue_status()` -- check that operations are `completed` or `stored`.
+3. `count_memories(project="__smoke_test__")` -- must equal 4.
+4. `get_memories(project="__smoke_test__", limit=10)` -- must return all 4. Record their IDs.
+
+If count is less than 4, wait another 10 seconds and retry. The LLM distillation step can take time depending on model speed.
 
 ## Phase 3: Search
 
@@ -79,15 +85,15 @@ Mark each search PASS if the expected memory ranks first, WARN if it appears but
 ## Phase 4: Update
 
 1. Take the short memory ID from Phase 2.
-2. Time this call (same `date +%s%N` technique):
+2. Call:
    ```
    update_memory(
      memory_id=<short memory ID>,
      memory="Rust Vec::with_capacity pre-allocates heap space but length remains 0. Use resize() to initialize, or push() to grow. reserve() is similar but for additional capacity beyond current length."
    )
    ```
-3. Flag WARNING if update completes in under 2 seconds.
-4. `get_memories(project="__smoke_test__", limit=10)` -- verify the updated memory contains the new text about `reserve()`.
+3. Should return `status: queued`.
+4. Wait 10 seconds, then `get_memories(project="__smoke_test__", limit=10)` -- verify the updated memory contains the new text about `reserve()`.
 
 ## Phase 5: Search After Update
 
@@ -110,36 +116,37 @@ These calls validate that the code and standards collections are accessible. Emp
 
 ## Phase 8: Log Check
 
-1. Run: `tail -100 ~/.claude/logs/mindojo-mcp.log`
-2. Look for lines containing `ERROR` or `WARN` that appeared during the test window.
-3. Report any issues found, or "no errors in logs" if clean.
+Check server logs for errors during the test window:
+- If running via Docker: `docker compose logs mindojo --tail 100`
+- If running locally: `tail -100 ${MINDOJO_LOG_FILE:-~/.claude/logs/mindojo-mcp.log}`
+
+Look for lines containing `ERROR` or `WARN`. Report any issues found, or "no errors in logs" if clean.
 
 ## Phase 9: Summary
 
-Print a results table with timing:
+Print a results table:
 
 ```
-| Phase | Test                      | Result | Notes           |
-|-------|---------------------------|--------|-----------------|
-| 0     | list_collections          | PASS   |                 |
-| 0     | Baseline count            | PASS   | 0 memories      |
-| 1a    | Add short memory          | PASS   | 3.2s            |
-| 1b    | Add medium memory         | PASS   | 4.1s            |
-| 1c    | Add long memory           | PASS   | 5.0s            |
-| 1d    | Add very long memory      | PASS   | 6.3s            |
-| 2     | Count after create        | PASS   | 4 memories      |
-| 2     | Get all memories          | PASS   | 4 returned      |
-| 3a    | Search: embedding dims    | PASS   | Top = 1b        |
-| 3b    | Search: MCP rmcp          | PASS   | Top = 1d        |
-| 3c    | Search: Vec capacity      | PASS   | Top = 1a        |
-| 4     | Update short memory       | PASS   | 3.5s            |
-| 4     | Verify update content     | PASS   |                 |
-| 5     | Search after update       | PASS   | Found reserve() |
-| 6     | Delete all test memories  | PASS   |                 |
-| 6     | Final count               | PASS   | 0 memories      |
-| 7a    | search_code               | PASS   | 3 results       |
-| 7b    | search_standards          | PASS   | No data indexed |
-| 8     | Log check                 | PASS   | No errors       |
+| Phase | Test                      | Result | Notes             |
+|-------|---------------------------|--------|-------------------|
+| 0     | list_collections          | PASS   |                   |
+| 0     | Baseline count            | PASS   | 0 memories        |
+| 1a    | Add short memory          | PASS   | queued            |
+| 1b    | Add medium memory         | PASS   | queued            |
+| 1c    | Add long memory           | PASS   | queued            |
+| 1d    | Add very long memory      | PASS   | queued            |
+| 2     | Queue status              | PASS   | 4/4 completed     |
+| 2     | Count after create        | PASS   | 4 memories        |
+| 2     | Get all memories          | PASS   | 4 returned        |
+| 3a    | Search: embedding dims    | PASS   | Top = 1b          |
+| 3b    | Search: MCP rmcp          | PASS   | Top = 1d          |
+| 3c    | Search: Vec capacity      | PASS   | Top = 1a          |
+| 4     | Update short memory       | PASS   | queued            |
+| 4     | Verify update content     | PASS   |                   |
+| 5     | Search after update       | PASS   | Found reserve()   |
+| 6     | Delete all test memories  | PASS   |                   |
+| 6     | Final count               | PASS   | 0 memories        |
+| 7a    | search_code               | PASS   | 3 results         |
+| 7b    | search_standards          | PASS   | No data indexed   |
+| 8     | Log check                 | PASS   | No errors         |
 ```
-
-Flag any add/update operation under 2 seconds with WARNING in Notes (e.g., "1.1s WARNING: distillation may be skipped").
