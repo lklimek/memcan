@@ -1,6 +1,6 @@
 {
   "name": "memcan",
-  "version": "0.28.2",
+  "version": "0.28.3",
   "description": "Persistent memory for Claude Code — save and recall learnings, decisions, preferences across sessions.",
   "author": {
     "name": "lklimek",
@@ -9,5 +9,5 @@
   "repository": "https://github.com/lklimek/memcan",
   "license": "MIT",
   "keywords": ["memory", "lancedb", "ollama", "persistent", "mcp"],
-  "mcpServers": "./.mcp.json"
+  "mcpServers": "./.claude-plugin/.mcp.json"
 }
