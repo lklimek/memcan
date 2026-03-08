@@ -8,7 +8,7 @@ use crate::traits::{LlmMessage, LlmOptions, LlmProvider, Role};
 use async_trait::async_trait;
 use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat};
-use genai::resolver::{Endpoint, ServiceTargetResolver};
+use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ClientConfig};
 
 /// LLM provider backed by [`genai::Client`].
@@ -33,29 +33,39 @@ impl GenaiLlmProvider {
 
     /// Build from application settings.
     ///
-    /// Uses `Settings::llm_model` as the default model. If
-    /// `Settings::ollama_host` is set, configures the genai client to use
-    /// that endpoint for Ollama requests (the genai crate does not read
-    /// `OLLAMA_HOST` from the environment on its own).
+    /// Uses `Settings::llm_model` as the default model. When
+    /// `ollama_host` or `ollama_api_key` is set, configures a
+    /// `ServiceTargetResolver` that overrides the endpoint and/or auth
+    /// for Ollama requests (the genai crate reads neither `OLLAMA_HOST`
+    /// nor `OLLAMA_API_KEY` from the environment on its own).
     pub fn from_settings(settings: &crate::config::Settings) -> Self {
-        let client = match &settings.ollama_host {
-            Some(host) => {
+        let ollama_host = settings.ollama_host.clone();
+        let ollama_api_key = settings.ollama_api_key.clone();
+
+        let client = if ollama_host.is_some() || ollama_api_key.is_some() {
+            let endpoint = ollama_host.map(|host| {
                 let mut base = host.trim_end_matches('/').to_string();
                 if !base.ends_with("/v1/") {
                     base.push_str("/v1/");
                 }
-                let endpoint = Endpoint::from_owned(base);
-                let resolver =
-                    ServiceTargetResolver::from_resolver_fn(move |mut st: genai::ServiceTarget| {
-                        if st.model.adapter_kind == AdapterKind::Ollama {
-                            st.endpoint = endpoint.clone();
+                Endpoint::from_owned(base)
+            });
+            let resolver =
+                ServiceTargetResolver::from_resolver_fn(move |mut st: genai::ServiceTarget| {
+                    if st.model.adapter_kind == AdapterKind::Ollama {
+                        if let Some(ref ep) = endpoint {
+                            st.endpoint = ep.clone();
                         }
-                        Ok(st)
-                    });
-                let config = ClientConfig::default().with_service_target_resolver(resolver);
-                Client::builder().with_config(config).build()
-            }
-            None => Client::default(),
+                        if let Some(ref key) = ollama_api_key {
+                            st.auth = AuthData::Key(key.clone());
+                        }
+                    }
+                    Ok(st)
+                });
+            let config = ClientConfig::default().with_service_target_resolver(resolver);
+            Client::builder().with_config(config).build()
+        } else {
+            Client::default()
         };
         Self {
             client,
@@ -148,6 +158,27 @@ mod tests {
     fn test_from_settings_with_ollama_host() {
         let settings = Settings {
             ollama_host: Some("http://10.29.188.1:11434".into()),
+            ..Settings::default()
+        };
+        let provider = GenaiLlmProvider::from_settings(&settings);
+        assert_eq!(provider.default_model(), "ollama::qwen3.5:4b");
+    }
+
+    #[test]
+    fn test_from_settings_with_ollama_api_key() {
+        let settings = Settings {
+            ollama_host: Some("http://10.29.188.1:11434".into()),
+            ollama_api_key: Some("test-token".into()),
+            ..Settings::default()
+        };
+        let provider = GenaiLlmProvider::from_settings(&settings);
+        assert_eq!(provider.default_model(), "ollama::qwen3.5:4b");
+    }
+
+    #[test]
+    fn test_from_settings_with_api_key_only() {
+        let settings = Settings {
+            ollama_api_key: Some("test-token".into()),
             ..Settings::default()
         };
         let provider = GenaiLlmProvider::from_settings(&settings);

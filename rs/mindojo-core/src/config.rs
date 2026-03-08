@@ -38,6 +38,9 @@ pub struct Settings {
     /// Passed explicitly to the genai client since it does not read
     /// `OLLAMA_HOST` from the environment.
     pub ollama_host: Option<String>,
+    /// Bearer token for Ollama endpoint auth. When set, every Ollama
+    /// request sends `Authorization: Bearer <key>`.
+    pub ollama_api_key: Option<String>,
 }
 
 impl std::fmt::Debug for Settings {
@@ -52,6 +55,10 @@ impl std::fmt::Debug for Settings {
             .field("embed_model", &self.embed_model)
             .field("embed_dims", &self.embed_dims)
             .field("ollama_host", &self.ollama_host)
+            .field(
+                "ollama_api_key",
+                &self.ollama_api_key.as_ref().map(|_| "***"),
+            )
             .finish()
     }
 }
@@ -68,6 +75,7 @@ impl Default for Settings {
             embed_model: "MultilingualE5Large".into(),
             embed_dims: 1024,
             ollama_host: None,
+            ollama_api_key: None,
         }
     }
 }
@@ -126,6 +134,12 @@ impl Settings {
         if let Some(ref host) = ollama_host {
             debug!(ollama_host = %host, "OLLAMA_HOST configured");
         }
+        let ollama_api_key = std::env::var("OLLAMA_API_KEY")
+            .ok()
+            .filter(|s| !s.is_empty());
+        if ollama_api_key.is_some() {
+            debug!("OLLAMA_API_KEY configured");
+        }
 
         let settings = Settings {
             lancedb_path,
@@ -137,6 +151,7 @@ impl Settings {
             embed_model,
             embed_dims,
             ollama_host,
+            ollama_api_key,
         };
         settings.validate()?;
         Ok(settings)

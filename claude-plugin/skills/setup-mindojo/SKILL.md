@@ -42,11 +42,12 @@ Ask the user for their Ollama host and update `OLLAMA_HOST` in `.env`. The genai
 
 Key configuration variables to review with the user:
 - `OLLAMA_HOST` — Ollama endpoint (default: `http://localhost:11434`)
+- `OLLAMA_API_KEY` — Bearer token for Ollama auth (default: none)
 - `LLM_MODEL` — LLM model with provider prefix (default: `ollama::qwen3.5:4b`)
 - `EMBED_MODEL` — fastembed model name (default: `MultilingualE5Large`, runs in-process)
 - `EMBED_DIMS` — embedding dimensions, must match model (default: `1024`)
 
-If Ollama is behind a reverse proxy requiring authentication, the user should configure auth at the `OLLAMA_HOST` URL level or through the genai crate's own environment variables. Refer to the [genai documentation](https://crates.io/crates/genai) for supported auth mechanisms.
+Then ask if Ollama requires Bearer token authentication (common when behind a reverse proxy like Traefik, Caddy, or nginx). If yes, ask for the `OLLAMA_API_KEY` value and uncomment/set it in `.env`. If no, leave it commented out (the default).
 
 MCP server logging defaults to `~/.claude/logs/mindojo-mcp.log` (no config needed). If the user wants a custom path, set `LOG_FILE` in `.env` to override.
 
@@ -100,7 +101,7 @@ Print a summary:
 - MCP server is connected (test: call `search_memories(query="test", limit=1)` — success = connected, failure or tool unavailable = not connected)
 
 Security warnings (show only when applicable):
-- If `OLLAMA_HOST` starts with `https://`: remind the user to configure authentication via the genai crate's supported mechanisms if the endpoint requires it.
-- If `OLLAMA_HOST` uses `http://` over an untrusted network: warn that traffic is unencrypted. Recommend switching to HTTPS with a reverse proxy.
+- If `OLLAMA_HOST` starts with `https://` and `OLLAMA_API_KEY` is not set: warn that HTTPS endpoints typically require auth — consider setting `OLLAMA_API_KEY`.
+- If `OLLAMA_API_KEY` is set and `OLLAMA_HOST` starts with `http://` (not HTTPS): warn that the Bearer token will be sent in plaintext — security risk on untrusted networks. Recommend switching to HTTPS.
 
 If the MCP server check failed, tell the user to restart Claude Code so the plugin's `.mcp.json` gets loaded and the MCP server connects. If all checks passed, no restart needed.

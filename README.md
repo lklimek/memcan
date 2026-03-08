@@ -156,8 +156,9 @@ cp .env.example ~/.config/mindojo/.env
 | `EMBED_DIMS` | `1024` | Embedding vector dimensions (must match embed model) |
 | `LOG_FILE` | `~/.claude/logs/mindojo-mcp.log` | Log file path |
 | `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`) |
+| `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth (sent as `Authorization: Bearer $key`) |
 
-> **Ollama endpoint:** The genai crate does **not** read `OLLAMA_HOST` from environment. MindOJO reads it via `Settings` and passes it to the genai client via `ServiceTargetResolver`. Set it in your `.env` or system environment if Ollama runs on a remote host.
+> **Ollama endpoint:** The genai crate does **not** read `OLLAMA_HOST` or `OLLAMA_API_KEY` from environment. MindOJO reads them via `Settings` and passes them to the genai client via `ServiceTargetResolver`. Set them in your `.env` or system environment as needed.
 
 ## Remote Ollama
 
@@ -167,9 +168,13 @@ When Ollama runs on a remote host, set `OLLAMA_HOST` to point to it:
 OLLAMA_HOST=https://ollama.example.com
 ```
 
-Authentication and API keys are managed by the genai crate and Ollama's own environment variables. Refer to the [genai documentation](https://crates.io/crates/genai) and [Ollama environment variables](https://github.com/ollama/ollama/blob/main/docs/faq.md#how-do-i-configure-ollama-server) for details.
+If the endpoint is behind an auth proxy (e.g. Traefik, Caddy, nginx), set `OLLAMA_API_KEY` to send a Bearer token with every request:
 
-For production deployments, protect the Ollama endpoint with a reverse proxy (e.g. Traefik, Caddy, nginx) providing TLS and access control.
+```bash
+OLLAMA_API_KEY=your-token-here
+```
+
+For production deployments, protect the Ollama endpoint with a reverse proxy providing TLS and access control.
 
 ## Docker Services
 
