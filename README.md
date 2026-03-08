@@ -1,32 +1,29 @@
 # MindOJO — Persistent Memory for Claude Code
 
-MCP server providing persistent memory via direct Qdrant + Ollama integration. Store and recall learnings, decisions, and preferences across Claude Code sessions.
+Rust MCP server providing persistent memory via embedded LanceDB + fastembed + genai. Store and recall learnings, decisions, and preferences across Claude Code sessions.
 
 ## Quick Start
 
 ```bash
-# 1. Start Qdrant
-docker compose up -d
+# 1. Install Ollama (https://ollama.com/download) — needed for LLM only
+ollama pull qwen3.5:4b
 
-# 2. Install dependencies
-cd claude-plugin/mcp-server && uv sync && cd ../..
-
-# 3. Install plugin in Claude Code
+# 2. Install plugin in Claude Code
 #    Settings → Plugins → enable mindojo@lklimek
 #    Or add to ~/.claude/settings.json:
 #      "enabledPlugins": { "mindojo@lklimek": true }
 
-# 4. Configure environment (in a Claude Code session)
+# 3. Configure environment (in a Claude Code session)
 /setup-mindojo
 ```
+
+No external database required — LanceDB runs embedded, storing data at `~/.local/share/mindojo/lancedb`.
 
 ## Install
 
 ### Prerequisites
 
-- [uv](https://docs.astral.sh/uv/) — Python package manager
-- [Docker](https://docs.docker.com/get-docker/) — for Qdrant
-- [Ollama](https://ollama.ai/) — LLM + embeddings (external, not in this compose)
+- [Ollama](https://ollama.com/) — LLM inference (embeddings are handled in-process by fastembed)
 
 ### Plugin Install
 
@@ -40,22 +37,31 @@ Enable `mindojo@lklimek` in `~/.claude/settings.json`:
 }
 ```
 
-The plugin registers the MCP server automatically via `.mcp.json`. No manual `claude mcp add` needed.
+The plugin's `setup.sh` downloads pre-built binaries for your platform. The MCP server is registered automatically via `.mcp.json` — no manual `claude mcp add` needed.
+
+### Building from Source
+
+```bash
+cargo build --release --workspace
+```
+
+Binaries are placed in `target/release/`: `mindojo-mcp`, `mindojo-extract`, `mindojo-import-triaged`, `mindojo-index-code`, `mindojo-index-standards`, `mindojo-migrate`.
 
 ### Environment Setup
 
 After enabling the plugin, run `/setup-mindojo` in a Claude Code session. It will:
 
-1. **Check prerequisites** — uv, Qdrant health, MCP server deps
-2. **Configure `.env`** — copy `.env.example`, set your `OLLAMA_URL`
+1. **Check prerequisites** — MindOJO binary, Ollama reachability
+2. **Configure `.env`** — copy `.env.example`, set `OLLAMA_HOST` if Ollama is remote
 3. **Create user rule** — writes `~/.claude/rules/mindojo.md` so agents know to use memory
 
 Restart Claude Code after setup to connect the MCP server.
 
 ## Architecture
 
-- **Qdrant** — vector similarity search (port 6333)
-- **Ollama** — LLM (`gemma3n:e4b`) + embeddings (`qwen3-embedding:4b`)
+- **LanceDB** — embedded vector database (no server needed, data stored locally)
+- **fastembed** — in-process ONNX embeddings (`AllMiniLML6V2`, 384 dimensions)
+- **genai + Ollama** — LLM inference (`ollama::qwen3.5:4b`); genai uses `OLLAMA_HOST` env var for endpoint configuration
 - **DISTILL_MEMORIES** — when enabled (default: `true`), the LLM extracts structured facts from raw text before storing
 
 ## MCP Tools
@@ -76,6 +82,17 @@ Restart Claude Code after setup to connect the MCP server.
 
 - `project="penny"` → scoped to project (stored as `user_id=project:penny`)
 - No project → global scope (stored as `user_id=global`)
+
+## CLI Tools
+
+| Binary | Description |
+|--------|-------------|
+| `mindojo-mcp` | MCP server (stdio transport) — registered by the plugin |
+| `mindojo-extract` | Hook binary — extracts learnings from conversations |
+| `mindojo-import-triaged` | Imports triaged findings from JSON into memories |
+| `mindojo-index-code` | Indexes source code files for semantic search |
+| `mindojo-index-standards` | Indexes technical standards documents (CWE, OWASP, etc.) |
+| `mindojo-migrate` | Migrates/imports legacy JSON data |
 
 ## Claude Code Context Persistence
 
@@ -107,27 +124,6 @@ Before modifying Docker configuration, search MindOJO for Docker-related
 lessons learned in this project.
 ```
 
-## Scripts
-
-Utility scripts in `scripts/` for importing existing knowledge into MindOJO.
-
-### `import_triaged.py`
-
-Reads a triage-annotated report (produced by `triage-findings`), filters for findings with action `fix`, and stores them as memories. Determines memory scope from each finding's recommendation field (`project:<name>` → project-scoped, otherwise global).
-
-```bash
-# Import approved items
-python3 scripts/import_triaged.py report.json
-
-# Preview without storing
-python3 scripts/import_triaged.py --dry-run report.json
-```
-
-| Flag | Description |
-|------|-------------|
-| `report` | Path to triaged `report.json` (required) |
-| `--dry-run` | Show what would be imported without storing |
-
 ## Configuration
 
 The MCP server searches for `.env` in order:
@@ -136,7 +132,7 @@ The MCP server searches for `.env` in order:
 |----------|----------|----------|
 | 1 | `~/.config/mindojo/.env` (Linux) / `~/Library/Application Support/mindojo/.env` (macOS) | Production — survives plugin updates |
 | 2 | `./.env` in CWD | Development — running from source checkout |
-| 3 | Defaults | Fallback (localhost Ollama + Qdrant) |
+| 3 | Defaults | Fallback (localhost Ollama, default LanceDB path) |
 
 Environment variables always override `.env` values. Run `/setup-mindojo` to create the config file, or copy `.env.example` manually:
 
@@ -147,101 +143,37 @@ cp .env.example ~/.config/mindojo/.env
 
 **Settings reference** (see `.env.example`):
 
-**Application:**
-
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OLLAMA_URL` | — | Ollama API endpoint (e.g. `http://host:11434`) |
-| `OLLAMA_API_KEY` | — | Bearer token for Ollama auth (see [Ollama Authentication](#ollama-authentication)) |
-| `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint |
+| `LANCEDB_PATH` | `~/.local/share/mindojo/lancedb` | LanceDB storage directory |
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction before storing |
 | `DEFAULT_USER_ID` | `global` | Default user ID for memory scoping |
 | `TECH_STACK` | — | Default tech stack filter (e.g. "rust", "python") |
+| `LLM_MODEL` | `ollama::qwen3.5:4b` | LLM model (genai format with provider prefix) |
+| `EMBED_MODEL` | `AllMiniLML6V2` | Fastembed model for in-process embeddings |
+| `EMBED_DIMS` | `384` | Embedding vector dimensions (must match embed model) |
+| `LOG_FILE` | `~/.claude/logs/mindojo-mcp.log` | Log file path |
 
-Models and collection names are hardcoded in `config.py`: LLM (`gemma3n:e4b`), embeddings (`qwen3-embedding:4b`), collections (`mindojo-memories`, `mindojo-standards`, `mindojo-code`).
+> **Ollama endpoint:** The genai crate reads the standard `OLLAMA_HOST` environment variable (default: `http://localhost:11434`). Set it in your `.env` or system environment if Ollama runs on a remote host.
 
-**Infrastructure (Docker / Traefik):**
+## Remote Ollama
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `QDRANT_DOMAIN` | — | Domain for Qdrant via Traefik reverse proxy |
-| `TRAEFIK_AUTH` | — | htpasswd hash for Traefik basic auth |
+When Ollama runs on a remote host, set `OLLAMA_HOST` to point to it:
 
-## Ollama Authentication
-
-When Ollama runs on a remote host, protect it with a reverse proxy (e.g. Traefik, Caddy, nginx) that requires Bearer token authentication.
-
-### How it works
-
-The `ollama` Python client reads the `OLLAMA_API_KEY` environment variable and sends it as:
-
-```
-Authorization: Bearer <OLLAMA_API_KEY>
+```bash
+OLLAMA_HOST=https://ollama.example.com
 ```
 
-This is a static shared secret — no signing, expiry, or cryptographic exchange. Security depends entirely on the transport layer:
+Authentication and API keys are managed by the genai crate and Ollama's own environment variables. Refer to the [genai documentation](https://crates.io/crates/genai) and [Ollama environment variables](https://github.com/ollama/ollama/blob/main/docs/faq.md#how-do-i-configure-ollama-server) for details.
 
-| Transport | Security | Recommendation |
-|-----------|----------|----------------|
-| `https://` (TLS) | Token encrypted in transit | Use for remote/cross-network |
-| `http://` (plain) | Token visible on the wire | Only on trusted private networks |
-
-### Setup
-
-1. **Generate a token:**
-
-   ```bash
-   openssl rand -base64 32
-   ```
-
-2. **Configure your reverse proxy** to accept `Authorization: Bearer <token>`. Example Traefik middleware (file provider):
-
-   ```yaml
-   # traefik/dynamic/ollama.yml
-   http:
-     middlewares:
-       ollama-bearer:
-         plugin:
-           apikey:
-             # Or use forwardAuth / custom middleware for Bearer validation
-             headers:
-               - "Authorization: Bearer <your-token>"
-     routers:
-       ollama:
-         rule: "Host(`ollama.example.com`)"
-         entrypoints: websecure
-         tls:
-           certResolver: letsencrypt
-         middlewares:
-           - ollama-bearer
-         service: ollama
-     services:
-       ollama:
-         loadBalancer:
-           servers:
-             - url: "http://localhost:11434"
-   ```
-
-   > **Note:** Traefik doesn't have built-in Bearer auth middleware. Options:
-   > - [traefik-api-key-auth](https://plugins.traefik.io/plugins/669e514b2e1faa5bb4ec1128/api-key-auth) plugin — validates Bearer tokens against a list
-   > - `forwardAuth` middleware pointing to a small auth service
-   > - Caddy or nginx with simple `if ($http_authorization)` matching
-
-3. **Set in MindOJO `.env`:**
-
-   ```bash
-   OLLAMA_URL=https://ollama.example.com    # no credentials in URL
-   OLLAMA_API_KEY=<your-token>              # read by ollama Python client
-   ```
-
-> **Do not embed credentials in `OLLAMA_URL`** (e.g. `http://user:pass@host`). The ollama Python client silently strips userinfo from URLs. Use `OLLAMA_API_KEY` instead.
+For production deployments, protect the Ollama endpoint with a reverse proxy (e.g. Traefik, Caddy, nginx) providing TLS and access control.
 
 ## Docker Services
 
 ```bash
-docker compose up -d              # Qdrant
+docker compose up -d              # Ollama (optional)
 ```
 
-Qdrant includes Traefik labels for reverse proxy with basic auth. Set `QDRANT_DOMAIN` and `TRAEFIK_AUTH` in `.env`.
+The `docker-compose.yml` provides an optional Ollama container for development. LanceDB is embedded and requires no container. For most setups, install Ollama directly from [ollama.com](https://ollama.com/download).
 
 <sub>Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>

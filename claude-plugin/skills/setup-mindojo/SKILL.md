@@ -2,7 +2,7 @@
 name: setup-mindojo
 description: Configure MindOJO environment — .env file and user rule. Run once per machine after plugin install.
 user-invocable: true
-allowed-tools: Read, Write, Edit, Bash(mkdir *), Bash(uv *), Bash(curl *), Bash(which *), Bash(cp *), Glob, Grep, mcp__plugin_mindojo_brain__search_memories
+allowed-tools: Read, Write, Edit, Bash(mkdir *), Bash(curl *), Bash(which *), Bash(cp *), Glob, Grep, mcp__plugin_mindojo_brain__search_memories
 ---
 
 # Setup MindOJO
@@ -14,11 +14,12 @@ Configures the MindOJO environment. The plugin and MCP server are already instal
 ### 1. Check Prerequisites
 
 Verify:
-- `uv` is installed (`which uv` or `~/.local/bin/uv --version`)
-- Qdrant is running (`curl -sf http://localhost:6333/healthz`)
-- MCP server deps are installed (`cd ${CLAUDE_PLUGIN_ROOT}/mcp-server && uv sync`)
+- MindOJO binary exists at `${CLAUDE_PLUGIN_ROOT}/bin/mindojo-mcp` (if not, run `${CLAUDE_PLUGIN_ROOT}/setup.sh`)
+- Ollama is reachable (`curl -sf http://localhost:11434/api/tags`) — needed for LLM chat (fact extraction, distillation). Not needed for embeddings, which run in-process via fastembed.
 
-If any fails, tell the user what's missing and how to fix it, then stop.
+No external database needed — MindOJO uses embedded LanceDB (data stored locally at `~/.local/share/mindojo/lancedb`). Embeddings are computed locally via fastembed (ONNX), so no embedding service is required.
+
+If any prerequisite fails, tell the user what's missing and how to fix it, then stop.
 
 ### 2. Configure .env File
 
@@ -36,11 +37,17 @@ mkdir -p ~/.config/mindojo
 cp ${CLAUDE_PLUGIN_ROOT}/../.env.example ~/.config/mindojo/.env
 ```
 
-Ask the user for their Ollama URL and update `OLLAMA_URL` in `.env`. Verify `QDRANT_URL` — defaults to `http://localhost:6333` which is usually correct.
+Ask the user for their Ollama host and update `OLLAMA_HOST` in `.env`. The genai crate reads `OLLAMA_HOST` (not `OLLAMA_URL`). Default is `http://localhost:11434`. Ollama is used only for LLM chat — embeddings run locally via fastembed.
 
-Then ask if Ollama requires Bearer token authentication (common when behind a reverse proxy like Traefik, Caddy, or nginx). If yes, ask for the `OLLAMA_API_KEY` value and uncomment/set it in `.env`. If no, leave it commented out (the default). Refer to README "Ollama Authentication" for details.
+Key configuration variables to review with the user:
+- `OLLAMA_HOST` — Ollama endpoint (default: `http://localhost:11434`)
+- `LLM_MODEL` — LLM model with provider prefix (default: `ollama::qwen3.5:4b`)
+- `EMBED_MODEL` — fastembed model name (default: `AllMiniLML6V2`, runs in-process)
+- `EMBED_DIMS` — embedding dimensions, must match model (default: `384`)
 
-MCP server logging now defaults to `~/.claude/logs/mindojo-mcp.log` (no config needed). If the user wants a custom path, set `LOG_FILE` in `.env` to override.
+Then ask if Ollama requires Bearer token authentication (common when behind a reverse proxy like Traefik, Caddy, or nginx). If yes, ask for the `OLLAMA_API_KEY` value and uncomment/set it in `.env`. If no, leave it commented out (the default).
+
+MCP server logging defaults to `~/.claude/logs/mindojo-mcp.log` (no config needed). If the user wants a custom path, set `LOG_FILE` in `.env` to override.
 
 ### 3. Create User Rule
 
@@ -84,14 +91,15 @@ Use the MindOJO MCP server to store and recall knowledge across sessions.
 ### 4. Verify
 
 Print a summary:
-- ✅/❌ `.env` exists at `~/.config/mindojo/.env` with `OLLAMA_URL` configured
-- ✅/❌ Qdrant is healthy
-- ✅/❌ User rule exists at `~/.claude/rules/mindojo.md`
-- ✅/❌ Logging: defaults to `~/.claude/logs/mindojo-mcp.log`; custom path if `LOG_FILE` set in `.env`
-- ✅/❌ MCP server is connected (test: call `search_memories(query="test", limit=1)` — success = connected, failure or tool unavailable = not connected)
+- binaries installed at `${CLAUDE_PLUGIN_ROOT}/bin/`
+- `.env` exists at `~/.config/mindojo/.env` with `OLLAMA_HOST` configured
+- LanceDB data dir exists at `~/.local/share/mindojo/lancedb`
+- User rule exists at `~/.claude/rules/mindojo.md`
+- Logging: defaults to `~/.claude/logs/mindojo-mcp.log`; custom path if `LOG_FILE` set in `.env`
+- MCP server is connected (test: call `search_memories(query="test", limit=1)` — success = connected, failure or tool unavailable = not connected)
 
 Security warnings (show only when applicable):
-- If `OLLAMA_URL` starts with `https://` and `OLLAMA_API_KEY` is not set: warn that HTTPS endpoints typically require auth — consider setting `OLLAMA_API_KEY`.
-- If `OLLAMA_API_KEY` is set and `OLLAMA_URL` starts with `http://` (not HTTPS): warn that the Bearer token will be sent in plaintext — security risk on untrusted networks. Recommend switching to HTTPS.
+- If `OLLAMA_HOST` starts with `https://` and `OLLAMA_API_KEY` is not set: warn that HTTPS endpoints typically require auth — consider setting `OLLAMA_API_KEY`.
+- If `OLLAMA_API_KEY` is set and `OLLAMA_HOST` starts with `http://` (not HTTPS): warn that the Bearer token will be sent in plaintext — security risk on untrusted networks. Recommend switching to HTTPS.
 
 If the MCP server check failed, tell the user to restart Claude Code so the plugin's `.mcp.json` gets loaded and the MCP server connects. If all checks passed, no restart needed.

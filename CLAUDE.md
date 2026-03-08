@@ -2,20 +2,31 @@
 
 ## Project Overview
 
-**MindOJO** — Claude Code plugin for persistent memory via Qdrant + Ollama. Stores and recalls learnings, decisions, preferences across sessions. MIT license.
+**MindOJO** — Claude Code plugin for persistent memory via LanceDB + fastembed + genai. Stores and recalls learnings, decisions, preferences across sessions. MIT license.
 
-Stack: Python MCP server (FastMCP), Qdrant (vectors), Ollama (LLM + embeddings).
+Stack: Rust MCP server (rmcp), LanceDB (embedded vectors), genai+Ollama (LLM), fastembed (embeddings).
 
 ## Structure
 
 ```
-claude-plugin/           # Claude Code plugin
-  .claude-plugin/        # Manifest
-  hooks/                 # Event hooks (SubagentStop)
-  mcp-server/            # MCP server (Python, uv-managed)
-  skills/                # Plugin skills
-docker-compose.yml       # Qdrant
-scripts/                 # Import/migration utilities (see README.md § Scripts)
+rs/                              # All Rust source code
+  mindojo-core/                  # Shared library (traits, LanceDB, genai, fastembed, pipeline, config)
+  mindojo-mcp/                   # MCP server binary (stdio transport)
+  mindojo-extract/               # Hook binary — extracts learnings from conversations
+  mindojo-import-triaged/        # CLI — imports triaged memories from JSON
+  mindojo-index-code/            # CLI — indexes source code files
+  mindojo-index-standards/       # CLI — indexes technical standards documents
+  mindojo-migrate/               # CLI — migrates/imports legacy JSON data
+  mindojo-test-classification/   # CLI — tests prompt classification accuracy
+Cargo.toml                       # Workspace root
+claude-plugin/                   # Claude Code plugin
+  .claude-plugin/                # Manifest
+  hooks/                         # Event hooks (SubagentStop)
+  skills/                        # Plugin skills
+  setup.sh                       # Downloads release binaries
+  bin/                           # Downloaded binaries (gitignored)
+.github/workflows/               # CI + Release workflows
+docker-compose.yml               # Optional Ollama container
 ```
 
 ## Versioning
@@ -28,22 +39,42 @@ Version lives in `claude-plugin/.claude-plugin/plugin.json`. Follow [SemVer 2](h
 - **Minor** (0.x.0): new MCP tools, new skills, significant behavior changes
 - **Patch** (0.0.x): bug fixes, doc corrections, minor tweaks
 
-## Testing
-
-Tests live in `claude-plugin/mcp-server/tests/`. Run from `claude-plugin/mcp-server/`:
+## Building
 
 ```bash
-uv run pytest                    # unit + integration (default)
-uv run pytest -m benchmark -v -s # 10-write/10-read perf report (~3 min)
-uv run pytest -m mcp_roundtrip -v -s  # async fire-and-forget roundtrip (~10s)
-uv run pytest -o "addopts=" -v -s     # everything (~5 min)
+cargo build --workspace          # debug build
+cargo build --release --workspace # release build
 ```
 
-| Marker | Default | Requires | Notes |
-|---|---|---|---|
-| *(none)* | ✅ runs | — | Unit tests (config, server) |
-| `integration` | ✅ runs | Live Ollama + Qdrant | Connectivity, model availability, sync roundtrip |
-| `benchmark` | ❌ excluded | Live Ollama + Qdrant | 10 writes + 10 reads, prints timing report |
-| `mcp_roundtrip` | ❌ excluded | Live Ollama + Qdrant | Async `add_memory` fire-and-forget end-to-end |
+## Testing
 
-Exclusions configured via `addopts` in `pyproject.toml`.
+```bash
+cargo test --workspace           # all unit tests (uses mock Ollama + tempdir LanceDB)
+cargo test -p mindojo-core       # core library tests only
+```
+
+Tests use `mockito` for HTTP mocking and `tempfile` for ephemeral LanceDB directories. No live Ollama or external services required.
+
+## Quality Checks
+
+```bash
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
+```
+
+## Configuration
+
+Environment variables (loaded from `~/.config/mindojo/.env` or `.env`):
+
+| Variable | Default | Description |
+|---|---|---|
+| `LANCEDB_PATH` | `~/.local/share/mindojo/lancedb` | LanceDB storage directory |
+| `DEFAULT_USER_ID` | `global` | Default memory scope |
+| `TECH_STACK` | *(none)* | Default tech stack filter |
+| `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction |
+| `LLM_MODEL` | `ollama::qwen3.5:4b` | LLM model (genai format with provider prefix) |
+| `EMBED_MODEL` | `AllMiniLML6V2` | Fastembed model for in-process embeddings |
+| `EMBED_DIMS` | `384` | Embedding vector dimensions (must match embed model) |
+| `LOG_FILE` | `~/.claude/logs/mindojo-mcp.log` | Log file path |
+
+> **Note:** genai reads `OLLAMA_HOST` (default `http://localhost:11434`) for the Ollama endpoint. `OLLAMA_URL` and `OLLAMA_API_KEY` are no longer used.
