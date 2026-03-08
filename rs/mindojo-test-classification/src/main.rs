@@ -119,6 +119,7 @@ async fn main() -> MindojoResult<()> {
 
     // Load settings via Settings::load() (handles .env files via dotenvy)
     let settings = Settings::load()?;
+    settings.ensure_log_dir()?;
     let llm = GenaiLlmProvider::from_settings(&settings);
 
     if !cli.prompt.is_file() {

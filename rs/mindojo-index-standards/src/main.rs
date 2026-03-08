@@ -261,6 +261,7 @@ async fn main() -> MindojoResult<()> {
         .init();
 
     let settings = Settings::load()?;
+    settings.ensure_log_dir()?;
     let model = cli.model.as_deref().unwrap_or(&settings.llm_model);
 
     let embedder = FastEmbedProvider::from_settings(&settings)?;

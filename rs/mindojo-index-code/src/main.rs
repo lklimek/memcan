@@ -410,6 +410,7 @@ async fn main() -> MindojoResult<()> {
         .init();
 
     let settings = Settings::load()?;
+    settings.ensure_log_dir()?;
     let embedder = FastEmbedProvider::from_settings(&settings)?;
     let store = LanceDbStore::open(&settings.lancedb_path).await?;
 

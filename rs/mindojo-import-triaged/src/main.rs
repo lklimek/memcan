@@ -136,6 +136,7 @@ async fn main() -> MindojoResult<()> {
     }
 
     let settings = Settings::load()?;
+    settings.ensure_log_dir()?;
     let embedder = FastEmbedProvider::from_settings(&settings)?;
 
     let store = if !cli.dry_run {

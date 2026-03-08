@@ -262,6 +262,16 @@ impl VectorStore for LanceDbStore {
         let names = self.conn.table_names().execute().await?;
         if names.contains(&name.to_string()) {
             debug!(name, "table already exists");
+            let tbl = self.open_table(name).await?;
+            let existing_dims = self.infer_dims(&tbl).await?;
+            if existing_dims != dims {
+                return Err(MindojoError::Config(format!(
+                    "Table '{name}' has {existing_dims}-dimensional vectors but EMBED_DIMS is {dims}. \
+                     This usually means the embedding model changed. \
+                     Migration is not yet supported — back up and recreate the table, \
+                     or revert EMBED_MODEL/EMBED_DIMS to match the existing data."
+                )));
+            }
             return Ok(());
         }
         debug!(name, dims, "creating table");
@@ -457,6 +467,34 @@ mod tests {
         let batch = LanceDbStore::points_to_batch(&points, dims).unwrap();
         assert_eq!(batch.num_rows(), 1);
         assert_eq!(batch.num_columns(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_ensure_table_dimension_mismatch() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().to_str().expect("tempdir path");
+        let store = LanceDbStore::open(path).await.expect("open lancedb");
+
+        store
+            .ensure_table("test-dims", 384)
+            .await
+            .expect("create table with 384 dims");
+
+        let err = store
+            .ensure_table("test-dims", 1024)
+            .await
+            .expect_err("should fail with dimension mismatch");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("dimensional vectors"),
+            "error should mention dimensional vectors, got: {msg}"
+        );
+        assert!(msg.contains("384"), "error should mention 384, got: {msg}");
+        assert!(
+            msg.contains("1024"),
+            "error should mention 1024, got: {msg}"
+        );
     }
 
     #[test]

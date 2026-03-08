@@ -171,7 +171,24 @@ impl Settings {
             );
         }
 
-        // -- log_file parent directory --
+        // -- log_file parent directory (warn only, don't create) --
+        let log_path = Path::new(&self.log_file);
+        if let Some(parent) = log_path.parent()
+            && !parent.as_os_str().is_empty()
+            && !parent.exists()
+        {
+            warn!(
+                "LOG_FILE directory '{}' does not exist. It will be created on first use.",
+                parent.display()
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Create the log file's parent directory if it doesn't exist.
+    /// Call this after validation, before starting the server.
+    pub fn ensure_log_dir(&self) -> Result<()> {
         let log_path = Path::new(&self.log_file);
         if let Some(parent) = log_path.parent()
             && !parent.as_os_str().is_empty()
@@ -179,13 +196,12 @@ impl Settings {
         {
             std::fs::create_dir_all(parent).map_err(|err| {
                 MindojoError::Config(format!(
-                    "LOG_FILE directory '{}' does not exist and could not be created: {}",
+                    "LOG_FILE directory '{}' could not be created: {}",
                     parent.display(),
                     err
                 ))
             })?;
         }
-
         Ok(())
     }
 }

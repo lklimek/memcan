@@ -512,6 +512,7 @@ async fn run(hook_data_log: &Path) -> MindojoResult<()> {
     );
 
     let settings = Settings::load()?;
+    settings.ensure_log_dir()?;
     let embedder = FastEmbedProvider::from_settings(&settings)?;
     let llm = GenaiLlmProvider::from_settings(&settings);
     let store = LanceDbStore::open(&settings.lancedb_path).await?;

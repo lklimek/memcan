@@ -793,6 +793,7 @@ async fn main() -> Result<(), MindojoError> {
         return Ok(());
     }
 
+    config.ensure_log_dir()?;
     setup_logging(&config.log_file);
 
     info!("Loading config: lancedb_path={}", config.lancedb_path);
