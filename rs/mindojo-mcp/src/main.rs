@@ -3,9 +3,11 @@
 //! Embeddings: fastembed (in-process ONNX). LLM: genai (multi-provider).
 //! Transport: stdio (launched by Claude Code).
 
-use std::sync::Arc;
+use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use clap::Parser;
+use lru::LruCache;
 use rmcp::{
     ServerHandler, ServiceExt, handler::server::router::tool::ToolRouter,
     handler::server::wrapper::Parameters, model::*, schemars, tool, tool_handler, tool_router,
@@ -13,6 +15,7 @@ use rmcp::{
 };
 use serde::Deserialize;
 use tracing::info;
+use uuid::Uuid;
 
 use mindojo_core::{
     config::Settings,
@@ -27,12 +30,24 @@ use mindojo_core::{
 // Shared state
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, serde::Serialize)]
+struct QueueEntry {
+    operation: String,
+    user_id: String,
+    status: String,
+    error: Option<String>,
+    queued_at: String,
+    completed_at: Option<String>,
+}
+
 struct SharedState {
     store: Box<dyn VectorStore>,
     embedder: Box<dyn EmbeddingProvider>,
     llm: Box<dyn LlmProvider>,
     config: Settings,
     llm_model: String,
+    queue_status: Arc<StdMutex<LruCache<String, QueueEntry>>>,
+    llm_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 // ---------------------------------------------------------------------------
@@ -114,6 +129,14 @@ pub struct SearchStandardsParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetQueueStatusParams {
+    /// Specific operation ID. If omitted, returns most recent operations.
+    pub operation_id: Option<String>,
+    /// Max results when listing (default 10, max 100).
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchCodeParams {
     /// Natural language search query.
     pub query: String,
@@ -143,9 +166,13 @@ fn resolve_user_id(project: &Option<String>, user_id: &Option<String>, default: 
     default.to_string()
 }
 
-/// Escape a value for safe use in LanceDB SQL filters.
-/// Escapes single quotes (SQL injection) and LIKE wildcards.
-fn sanitize_sql_value(s: &str) -> String {
+/// Escape a value for use in LanceDB SQL `=` filters (only quote escaping).
+fn sanitize_eq(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
+/// Escape a value for use in LanceDB SQL `LIKE` filters (quote + wildcard escaping).
+fn sanitize_like(s: &str) -> String {
     s.replace('\'', "''")
         .replace('%', "\\%")
         .replace('_', "\\_")
@@ -153,7 +180,7 @@ fn sanitize_sql_value(s: &str) -> String {
 
 /// Build a LanceDB SQL filter for user_id scoping using the dedicated column.
 fn user_filter(user_id: &str) -> String {
-    let safe = sanitize_sql_value(user_id);
+    let safe = sanitize_eq(user_id);
     format!("user_id = '{safe}'")
 }
 
@@ -297,10 +324,38 @@ impl MindojoService {
         let state = Arc::clone(&self.state);
         let llm_model = self.state.llm_model.clone();
 
-        info!(user_id = %uid, len = memory.len(), "add_memory: queued");
+        let op_id = Uuid::new_v4().to_string();
+        info!(user_id = %uid, len = memory.len(), operation_id = %op_id, "add_memory: queued");
 
+        {
+            let mut cache = self.state.queue_status.lock().unwrap();
+            cache.put(
+                op_id.clone(),
+                QueueEntry {
+                    operation: "add_memory".into(),
+                    user_id: uid.clone(),
+                    status: "queued".into(),
+                    error: None,
+                    queued_at: chrono::Utc::now().to_rfc3339(),
+                    completed_at: None,
+                },
+            );
+        }
+
+        let queue_status = Arc::clone(&self.state.queue_status);
+        let sem = Arc::clone(&self.state.llm_semaphore);
+        let op_id_spawn = op_id.clone();
         let uid_clone = uid.clone();
         tokio::spawn(async move {
+            let _permit = sem.acquire().await.expect("semaphore closed");
+
+            {
+                let mut cache = queue_status.lock().unwrap();
+                if let Some(entry) = cache.get_mut(&op_id_spawn) {
+                    entry.status = "processing".into();
+                }
+            }
+
             let result = pipeline::do_add_memory(
                 &memory,
                 &uid_clone,
@@ -314,8 +369,17 @@ impl MindojoService {
                 None,
             )
             .await;
+
+            let mut cache = queue_status.lock().unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
             match result {
-                Ok(_) => info!(user_id = %uid_clone, "add_memory: persisted"),
+                Ok(_) => {
+                    info!(user_id = %uid_clone, "add_memory: persisted");
+                    if let Some(entry) = cache.get_mut(&op_id_spawn) {
+                        entry.status = "completed".into();
+                        entry.completed_at = Some(now);
+                    }
+                }
                 Err(e) => {
                     let preview: String = memory.chars().take(120).collect();
                     tracing::error!(
@@ -324,11 +388,17 @@ impl MindojoService {
                         memory_preview = %preview,
                         "add_memory: pipeline failed to store memory"
                     );
+                    if let Some(entry) = cache.get_mut(&op_id_spawn) {
+                        entry.status = "failed".into();
+                        entry.error = Some(e.to_string());
+                        entry.completed_at = Some(now);
+                    }
                 }
             }
         });
 
-        let response = serde_json::json!({ "status": "queued", "user_id": uid });
+        let response =
+            serde_json::json!({ "status": "queued", "user_id": uid, "operation_id": op_id });
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string(&response).unwrap_or_default(),
         )]))
@@ -466,59 +536,113 @@ impl MindojoService {
             )]));
         }
 
-        let old_payload = &existing[0].payload;
+        let old_payload = existing[0].payload.clone();
         let old_user_id = old_payload
             .get("user_id")
             .and_then(|v| v.as_str())
-            .unwrap_or("");
+            .unwrap_or("")
+            .to_string();
         let old_created_at = old_payload
             .get("created_at")
             .cloned()
             .unwrap_or_else(|| serde_json::Value::String(chrono::Utc::now().to_rfc3339()));
 
-        // Re-embed the new content
-        let vectors = self
-            .state
-            .embedder
-            .embed(std::slice::from_ref(&params.memory))
-            .await
-            .map_err(|e| ErrorData::internal_error(format!("embedding failed: {e}"), None))?;
+        let op_id = Uuid::new_v4().to_string();
 
-        let hash = pipeline::md5_hex(&params.memory);
-        let now = chrono::Utc::now().to_rfc3339();
-
-        let mut payload = serde_json::json!({
-            "data": params.memory,
-            "hash": hash,
-            "user_id": old_user_id,
-            "created_at": old_created_at,
-            "updated_at": now,
-        });
-
-        // Preserve extra metadata from old payload
-        if let (Some(old_obj), Some(new_obj)) = (old_payload.as_object(), payload.as_object_mut()) {
-            for (k, v) in old_obj {
-                if !matches!(
-                    k.as_str(),
-                    "data" | "hash" | "user_id" | "created_at" | "updated_at"
-                ) {
-                    new_obj.insert(k.clone(), v.clone());
-                }
-            }
+        {
+            let mut cache = self.state.queue_status.lock().unwrap();
+            cache.put(
+                op_id.clone(),
+                QueueEntry {
+                    operation: "update_memory".into(),
+                    user_id: old_user_id.clone(),
+                    status: "queued".into(),
+                    error: None,
+                    queued_at: chrono::Utc::now().to_rfc3339(),
+                    completed_at: None,
+                },
+            );
         }
 
-        let point = mindojo_core::traits::VectorPoint {
-            id: params.memory_id.clone(),
-            vector: vectors[0].clone(),
-            payload,
-        };
-        self.state
-            .store
-            .upsert(MEMORIES_TABLE, &[point])
-            .await
-            .map_err(|e| ErrorData::internal_error(format!("upsert failed: {e}"), None))?;
+        let state = Arc::clone(&self.state);
+        let queue_status = Arc::clone(&self.state.queue_status);
+        let sem = Arc::clone(&self.state.llm_semaphore);
+        let memory_id = params.memory_id.clone();
+        let memory = params.memory;
+        let op_id_spawn = op_id.clone();
+        tokio::spawn(async move {
+            let _permit = sem.acquire().await.expect("semaphore closed");
 
-        let response = serde_json::json!({ "status": "updated", "memory_id": params.memory_id });
+            {
+                let mut cache = queue_status.lock().unwrap();
+                if let Some(entry) = cache.get_mut(&op_id_spawn) {
+                    entry.status = "processing".into();
+                }
+            }
+
+            let result: Result<(), MindojoError> = async {
+                let vectors = state.embedder.embed(std::slice::from_ref(&memory)).await?;
+
+                let hash = pipeline::md5_hex(&memory);
+                let now = chrono::Utc::now().to_rfc3339();
+
+                let mut payload = serde_json::json!({
+                    "data": memory,
+                    "hash": hash,
+                    "user_id": old_user_id,
+                    "created_at": old_created_at,
+                    "updated_at": now,
+                });
+
+                if let (Some(old_obj), Some(new_obj)) =
+                    (old_payload.as_object(), payload.as_object_mut())
+                {
+                    for (k, v) in old_obj {
+                        if !matches!(
+                            k.as_str(),
+                            "data" | "hash" | "user_id" | "created_at" | "updated_at"
+                        ) {
+                            new_obj.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+
+                let point = mindojo_core::traits::VectorPoint {
+                    id: memory_id.clone(),
+                    vector: vectors[0].clone(),
+                    payload,
+                };
+                state.store.upsert(MEMORIES_TABLE, &[point]).await?;
+                Ok(())
+            }
+            .await;
+
+            let mut cache = queue_status.lock().unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            match result {
+                Ok(()) => {
+                    info!(memory_id = %memory_id, "update_memory: persisted");
+                    if let Some(entry) = cache.get_mut(&op_id_spawn) {
+                        entry.status = "completed".into();
+                        entry.completed_at = Some(now);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(memory_id = %memory_id, error = %e, "update_memory: failed");
+                    if let Some(entry) = cache.get_mut(&op_id_spawn) {
+                        entry.status = "failed".into();
+                        entry.error = Some(e.to_string());
+                        entry.completed_at = Some(now);
+                    }
+                }
+            }
+        });
+
+        let response = serde_json::json!({
+            "status": "queued",
+            "memory_id": params.memory_id,
+            "operation_id": op_id,
+        });
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string(&response).unwrap_or_default(),
         )]))
@@ -576,25 +700,25 @@ impl MindojoService {
         // Build filter using dedicated columns
         let mut filter_parts: Vec<String> = Vec::new();
         if let Some(ref v) = standard_type {
-            let safe = sanitize_sql_value(v);
+            let safe = sanitize_eq(v);
             filter_parts.push(format!("standard_type = '{safe}'"));
         }
         if let Some(ref v) = standard_id {
-            let safe = sanitize_sql_value(v);
+            let safe = sanitize_eq(v);
             filter_parts.push(format!("standard_id = '{safe}'"));
         }
         if let Some(ref v) = tech_stack {
-            let safe = sanitize_sql_value(v);
+            let safe = sanitize_eq(v);
             filter_parts.push(format!("tech_stack = '{safe}'"));
         }
         // lang has no dedicated column; filter via JSON key match on payload
         if let Some(ref v) = lang {
-            let safe = sanitize_sql_value(v);
+            let safe = sanitize_like(v);
             filter_parts.push(format!(r#"payload LIKE '%"lang":"{safe}"%'"#));
         }
         // ref_id has no dedicated column; filter via JSON key match on payload
         if let Some(ref rid) = ref_id {
-            let safe = sanitize_sql_value(rid);
+            let safe = sanitize_like(rid);
             filter_parts.push(format!(r#"payload LIKE '%"ref_id":"{safe}"%'"#));
         }
 
@@ -652,15 +776,15 @@ impl MindojoService {
         // Build filter using dedicated columns
         let mut filter_parts: Vec<String> = Vec::new();
         if let Some(ref p) = project {
-            let safe = sanitize_sql_value(p);
+            let safe = sanitize_eq(p);
             filter_parts.push(format!("project = '{safe}'"));
         }
         if let Some(ref ts) = tech_stack {
-            let safe = sanitize_sql_value(ts);
+            let safe = sanitize_eq(ts);
             filter_parts.push(format!("tech_stack = '{safe}'"));
         }
         if let Some(ref fp) = file_path {
-            let safe = sanitize_sql_value(fp);
+            let safe = sanitize_like(fp);
             filter_parts.push(format!("file_path LIKE '%{safe}%'"));
         }
 
@@ -691,6 +815,33 @@ impl MindojoService {
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string(&output).unwrap_or_default(),
         )]))
+    }
+
+    #[tool(
+        description = "Check status of queued async operations (add_memory, update_memory). Returns recent operations or a specific one by ID."
+    )]
+    async fn get_queue_status(
+        &self,
+        Parameters(params): Parameters<GetQueueStatusParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let limit = params.limit.unwrap_or(10).clamp(1, 100) as usize;
+        let mut cache = self.state.queue_status.lock().unwrap();
+
+        if let Some(ref op_id) = params.operation_id {
+            match cache.get(op_id) {
+                Some(entry) => {
+                    let json = serde_json::to_string(entry).unwrap_or_default();
+                    Ok(CallToolResult::success(vec![Content::text(json)]))
+                }
+                None => Ok(CallToolResult::success(vec![Content::text(
+                    r#"{"error":"operation not found or expired from LRU cache"}"#,
+                )])),
+            }
+        } else {
+            let entries: Vec<&QueueEntry> = cache.iter().take(limit).map(|(_, v)| v).collect();
+            let json = serde_json::to_string(&entries).unwrap_or_default();
+            Ok(CallToolResult::success(vec![Content::text(json)]))
+        }
     }
 }
 
@@ -815,6 +966,10 @@ async fn main() -> Result<(), MindojoError> {
         llm: Box::new(llm),
         config: ctx.settings,
         llm_model,
+        queue_status: Arc::new(StdMutex::new(LruCache::new(
+            NonZeroUsize::new(1000).unwrap(),
+        ))),
+        llm_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
     });
 
     let service = MindojoService::new(shared);
