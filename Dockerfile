@@ -1,25 +1,18 @@
-FROM rust:slim-trixie AS builder
+FROM rust:slim-trixie AS chef
+RUN cargo install cargo-chef
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential libssl-dev pkg-config protobuf-compiler libprotobuf-dev && \
     rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 
-# Layer 1: Cache dependency builds.
-# Copy only manifests and lock file, create stub sources, build deps.
-COPY Cargo.toml Cargo.lock ./
-COPY rs/memcan-core/Cargo.toml rs/memcan-core/Cargo.toml
-COPY rs/memcan-server/Cargo.toml rs/memcan-server/Cargo.toml
-COPY rs/memcan/Cargo.toml rs/memcan/Cargo.toml
-RUN mkdir -p rs/memcan-core/src rs/memcan-server/src rs/memcan/src && \
-    echo "// stub" > rs/memcan-core/src/lib.rs && \
-    echo "fn main() {}" > rs/memcan-server/src/main.rs && \
-    echo "fn main() {}" > rs/memcan/src/main.rs && \
-    echo "fn main() {}" > rs/memcan-server/build.rs && \
-    cargo build --release -p memcan-server 2>/dev/null || true && \
-    rm -rf rs/
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Layer 2: Build actual source (deps already cached).
-COPY rs/ rs/
+FROM chef AS builder
+COPY --from=planner /src/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json -p memcan-server
+COPY . .
 RUN cargo build --release -p memcan-server && \
     find target -name "libonnxruntime*.so*" -exec cp {} /usr/lib/ \;
 
