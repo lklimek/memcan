@@ -20,5 +20,5 @@ chrono = { workspace = true }
 rmcp = { workspace = true }
 schemars = { workspace = true }
 clap = { workspace = true }
-lru = "0.14"
+lru = "0.16"
 uuid = { workspace = true }
