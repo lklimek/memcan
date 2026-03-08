@@ -25,7 +25,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MEMCAN_DIR="${MEMCAN_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-MCP_SERVER_DIR="$MEMCAN_DIR/claude-plugin/mcp-server"
+MCP_SERVER_DIR="$MEMCAN_DIR/mcp-server"
 INDEX_SCRIPT="$SCRIPT_DIR/index-standards.py"
 CACHE_DIR="$MEMCAN_DIR/.cache"
 

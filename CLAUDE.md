@@ -17,12 +17,11 @@ rs/                              # All Rust source code
   memcan-cli/                   # Thin HTTP client binary
 Cargo.toml                       # Workspace root
 Dockerfile                       # Multi-stage build for memcan server
-claude-plugin/                   # Claude Code plugin
-  .claude-plugin/                # Manifest
-  hooks/                         # Event hooks (SubagentStop, PreCompact)
-  skills/                        # Plugin skills
-  setup.sh                       # Downloads memcan-cli binary
-  bin/                           # Downloaded binaries (gitignored)
+.claude-plugin/                  # Claude Code plugin manifest
+hooks/                           # Event hooks (SubagentStop, PreCompact)
+skills/                          # Plugin skills
+setup.sh                         # Downloads memcan-cli binary
+bin/                             # Downloaded binaries (gitignored)
 .github/workflows/               # CI + Release workflows
 docker-compose.yml               # Traefik + memcan + optional Ollama
 ```
@@ -54,7 +53,7 @@ memcan-cli count [--project <p>]
 
 **Only the team coordinator (Claudius) bumps versions.** Subagents must NOT modify `plugin.json` version.
 
-Version lives in `claude-plugin/.claude-plugin/plugin.json`. Follow [SemVer 2](https://semver.org/).
+Version lives in `.claude-plugin/plugin.json`. Follow [SemVer 2](https://semver.org/).
 
 - **Major** (x.0.0): breaking changes to MCP tools, removed features, incompatible config changes
 - **Minor** (0.x.0): new MCP tools, new skills, significant behavior changes

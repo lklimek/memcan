@@ -2,7 +2,7 @@
 # MemCan plugin setup — downloads the latest release binary for the current platform.
 #
 # Called by Claude Code when the plugin is installed or updated.
-# Puts the memcan-cli binary in claude-plugin/bin/
+# Puts the memcan-cli binary in bin/
 #
 # Set MEMCAN_BUILD_FROM_SOURCE=1 to build from the local repo instead of downloading.
 

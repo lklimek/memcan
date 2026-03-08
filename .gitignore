@@ -34,11 +34,11 @@ target/
 Thumbs.db
 
 # Local marketplace (not pushed — use github source in lklimek/agents)
-claude-plugin/.claude-plugin/marketplace.json
+.claude-plugin/marketplace.json
 
 # Plugin binaries (downloaded from releases)
-claude-plugin/bin/*
-!claude-plugin/bin/configure-secrets.sh
+bin/*
+!bin/configure-secrets.sh
 
 # Reports (generated)
 *.report.json
