@@ -6,7 +6,7 @@
 
 Stack: Rust MCP server (rmcp), LanceDB (embedded vectors), genai+Ollama (LLM), fastembed (embeddings).
 
-Architecture: Long-lived HTTP MCP server (`memcan serve`) with thin CLI client (`memcan-cli`). Server handles all heavy operations (embedding, LLM, storage). CLI is a lightweight HTTP client with no fastembed/LanceDB deps.
+Architecture: Long-lived HTTP MCP server (`memcan-server`) with thin CLI client (`memcan`). Server handles all heavy operations (embedding, LLM, storage). CLI is a lightweight HTTP client with no fastembed/LanceDB deps.
 
 ## Structure
 
@@ -14,14 +14,12 @@ Architecture: Long-lived HTTP MCP server (`memcan serve`) with thin CLI client (
 rs/                              # All Rust source code
   memcan-core/                  # Shared library (traits, LanceDB, genai, fastembed, pipeline, config)
   memcan-server/                # Fat server binary (MCP HTTP/stdio server + admin subcommands)
-  memcan-cli/                   # Thin HTTP client binary
+  memcan-cli/                   # Thin CLI client (binary: memcan)
 Cargo.toml                       # Workspace root
-Dockerfile                       # Multi-stage build for memcan server
+Dockerfile                       # Multi-stage build for memcan-server
 .claude-plugin/                  # Claude Code plugin manifest
 hooks/                           # Event hooks (SubagentStop, PreCompact)
 skills/                          # Plugin skills
-setup.sh                         # Downloads memcan-cli binary
-bin/                             # Downloaded binaries (gitignored)
 .github/workflows/               # CI + Release workflows
 docker-compose.yml               # Traefik + memcan + optional Ollama
 ```
@@ -29,24 +27,24 @@ docker-compose.yml               # Traefik + memcan + optional Ollama
 ## Server Subcommands
 
 ```
-memcan serve [--stdio] [--listen ADDR]   # MCP server (default subcommand)
-memcan index-code <dir> --project <name> [--tech-stack <s>] [--drop]
-memcan index-standards <file> --standard-id <id> --standard-type <t> [--drop]
-memcan migrate <file> [--dry-run]
-memcan import-triaged <file> [--dry-run]
-memcan test-classification --prompt <f> --model <m>
-memcan download-model [--model <name>]
-memcan completions <shell>
+memcan-server serve [--stdio] [--listen ADDR]   # MCP server (default subcommand)
+memcan-server index-code <dir> --project <name> [--tech-stack <s>] [--drop]
+memcan-server index-standards <file> --standard-id <id> --standard-type <t> [--drop]
+memcan-server migrate <file> [--dry-run]
+memcan-server import-triaged <file> [--dry-run]
+memcan-server test-classification --prompt <f> --model <m>
+memcan-server download-model [--model <name>]
+memcan-server completions <shell>
 ```
 
 ## CLI Subcommands
 
 ```
-memcan-cli add <memory> [--project <p>]
-memcan-cli search <query> [--project <p>] [--limit <n>]
-memcan-cli extract                        # Hook handler: reads stdin, POSTs to server
-memcan-cli status [operation_id]
-memcan-cli count [--project <p>]
+memcan add <memory> [--project <p>]
+memcan search <query> [--project <p>] [--limit <n>]
+memcan extract                        # Hook handler: reads stdin, POSTs to server
+memcan status [operation_id]
+memcan count [--project <p>]
 ```
 
 ## Versioning
@@ -90,7 +88,7 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 |---|---|---|
 | `MEMCAN_LISTEN` | `127.0.0.1:8191` | Server bind address (Docker overrides to `0.0.0.0:8191`) |
 | `MEMCAN_API_KEY` | *(none)* | Bearer token auth for MCP API |
-| `MEMCAN_URL` | `http://localhost:8190` | Server URL for thin clients (`memcan-cli`) |
+| `MEMCAN_URL` | `http://localhost:8190` | Server URL for thin clients (`memcan`) |
 | `MEMCAN_LOG_FILE` | *(none = stdout)* | Log file path (renamed from `LOG_FILE`) |
 | `LANCEDB_PATH` | `~/.local/share/memcan/lancedb` | LanceDB storage directory |
 | `DEFAULT_USER_ID` | `global` | Default memory scope |

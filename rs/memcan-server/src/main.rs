@@ -14,7 +14,7 @@ mod test_classification;
 
 #[derive(Parser)]
 #[command(
-    name = "memcan",
+    name = "memcan-server",
     about = "MemCan — persistent memory for Claude Code",
     version = env!("MEMCAN_VERSION"),
 )]
@@ -238,7 +238,12 @@ async fn main() -> Result<(), MemcanError> {
         Some(Command::Completions(args)) => {
             use clap::CommandFactory;
             let mut cmd = Cli::command();
-            clap_complete::generate(args.shell, &mut cmd, "memcan", &mut std::io::stdout());
+            clap_complete::generate(
+                args.shell,
+                &mut cmd,
+                "memcan-server",
+                &mut std::io::stdout(),
+            );
             Ok(())
         }
     }

@@ -13,7 +13,7 @@ ollama pull qwen3.5:4b
 docker compose up -d
 #    b) From source:
 cargo build --release -p memcan-server
-./target/release/memcan serve
+./target/release/memcan-server serve
 
 # 3. Install plugin in Claude Code
 #    Settings → Plugins → enable memcan@lklimek
@@ -30,8 +30,8 @@ No external database required — LanceDB runs embedded on the server, storing d
 
 MemCan uses a two-component architecture:
 
-- **Server** (`memcan serve`) — long-lived HTTP MCP server handling embeddings, LLM, and storage. Runs as a Docker container or system service on port 8191 (internal), fronted by Traefik on port 8190.
-- **CLI** (`memcan-cli`) — thin HTTP client for hooks. No fastembed/LanceDB deps (~5 MB vs ~180 MB server).
+- **Server** (`memcan-server`) — long-lived HTTP MCP server handling embeddings, LLM, and storage. Runs as a Docker container or system service on port 8191 (internal), fronted by Traefik on port 8190.
+- **CLI** (`memcan`) — thin HTTP client for hooks. Installed via `cargo install memcan`. No fastembed/LanceDB deps (~5 MB vs ~180 MB server).
 
 The Claude Code plugin connects to the server via HTTP MCP transport (Streamable HTTP).
 
@@ -63,7 +63,7 @@ Enable `memcan@lklimek` in `~/.claude/settings.json`:
 }
 ```
 
-The plugin's `setup.sh` downloads the `memcan-cli` binary for your platform. The MCP server connection is registered automatically via `.mcp.json` — no manual `claude mcp add` needed.
+Install the CLI with `cargo install memcan`. The MCP server connection is registered automatically via `.mcp.json` — no manual `claude mcp add` needed.
 
 > **Disk space:** The embedding model (`MultilingualE5Large`) requires ~1.3 GB of disk space, downloaded on the server's first startup. LanceDB data is stored at `~/.local/share/memcan/lancedb` (or `/data/lancedb` in Docker). Plan for ~2 GB total.
 
@@ -74,8 +74,8 @@ cargo build --release --workspace
 ```
 
 Binaries are placed in `target/release/`:
-- `memcan` — fat server (MCP HTTP/stdio server + all admin subcommands)
-- `memcan-cli` — thin HTTP client for hooks and manual operations
+- `memcan-server` — fat server (MCP HTTP/stdio server + all admin subcommands)
+- `memcan` — thin HTTP client for hooks and manual operations
 
 ### Environment Setup
 
@@ -105,24 +105,24 @@ Restart Claude Code after setup to connect the MCP server.
 ## Server Subcommands
 
 ```
-memcan serve [--stdio] [--listen ADDR]   # MCP server (default subcommand)
-memcan index-code <dir> --project <name> [--tech-stack <s>] [--drop]
-memcan index-standards <file> --standard-id <id> --standard-type <t> [--drop]
-memcan migrate <file> [--dry-run]
-memcan import-triaged <file> [--dry-run]
-memcan test-classification --prompt <f> --model <m>
-memcan download-model [--model <name>]
-memcan completions <shell>
+memcan-server serve [--stdio] [--listen ADDR]   # MCP server (default subcommand)
+memcan-server index-code <dir> --project <name> [--tech-stack <s>] [--drop]
+memcan-server index-standards <file> --standard-id <id> --standard-type <t> [--drop]
+memcan-server migrate <file> [--dry-run]
+memcan-server import-triaged <file> [--dry-run]
+memcan-server test-classification --prompt <f> --model <m>
+memcan-server download-model [--model <name>]
+memcan-server completions <shell>
 ```
 
 ## CLI Subcommands
 
 ```
-memcan-cli add <memory> [--project <p>]
-memcan-cli search <query> [--project <p>] [--limit <n>]
-memcan-cli extract                        # Hook handler: reads stdin, POSTs to server
-memcan-cli status [operation_id]
-memcan-cli count [--project <p>]
+memcan add <memory> [--project <p>]
+memcan search <query> [--project <p>] [--limit <n>]
+memcan extract                        # Hook handler: reads stdin, POSTs to server
+memcan status [operation_id]
+memcan count [--project <p>]
 ```
 
 ## Memory Scoping
@@ -169,7 +169,7 @@ cp .env.example ~/.config/memcan/.env
 |----------|---------|-------------|
 | `MEMCAN_LISTEN` | `127.0.0.1:8191` | Server bind address (Docker overrides to `0.0.0.0:8191`) |
 | `MEMCAN_API_KEY` | *(none)* | Bearer token auth for MCP API |
-| `MEMCAN_URL` | `http://localhost:8190` | Server URL for thin clients (`memcan-cli`) |
+| `MEMCAN_URL` | `http://localhost:8190` | Server URL for thin clients (`memcan`) |
 | `MEMCAN_LOG_FILE` | `~/.claude/logs/memcan-mcp.log` | Log file path (set empty for stdout) |
 | `LANCEDB_PATH` | `~/.local/share/memcan/lancedb` | LanceDB storage directory |
 | `DEFAULT_USER_ID` | `global` | Default memory scope |

@@ -67,7 +67,7 @@ jobs:
 
       - name: Package binaries
         run: |
-          for bin in memcan memcan-cli; do
+          for bin in memcan-server memcan; do
             if [ -f "target/${{ matrix.target }}/release/${bin}${{ matrix.suffix }}" ]; then
               mkdir -p "dist-${bin}"
               cp "target/${{ matrix.target }}/release/${bin}${{ matrix.suffix }}" "dist-${bin}/"
@@ -82,10 +82,10 @@ jobs:
         with:
           name: binaries-${{ matrix.target }}
           path: |
+            memcan-server-${{ matrix.target }}.tar.gz
+            memcan-server-${{ matrix.target }}.tar.gz.sha256
             memcan-${{ matrix.target }}.tar.gz
             memcan-${{ matrix.target }}.tar.gz.sha256
-            memcan-cli-${{ matrix.target }}.tar.gz
-            memcan-cli-${{ matrix.target }}.tar.gz.sha256
 
   release:
     name: Create Release

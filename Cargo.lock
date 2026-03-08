@@ -4030,7 +4030,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "memcan-cli"
+name = "memcan"
 version = "0.28.1"
 dependencies = [
  "chrono",

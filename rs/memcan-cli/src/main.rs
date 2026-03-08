@@ -1,4 +1,4 @@
-//! memcan-cli — thin MCP client for MemCan server operations.
+//! memcan — thin MCP client for MemCan server operations.
 //!
 //! No dependency on memcan-core (no fastembed, LanceDB, or genai).
 //! Communicates with the MemCan server over HTTP via MCP protocol.
@@ -10,7 +10,7 @@ mod extract;
 
 #[derive(Parser)]
 #[command(
-    name = "memcan-cli",
+    name = "memcan",
     about = "MemCan thin CLI client",
     version = env!("CARGO_PKG_VERSION"),
 )]
@@ -86,7 +86,7 @@ fn setup_logging() -> tracing_appender::non_blocking::WorkerGuard {
         .join("logs");
     let _ = std::fs::create_dir_all(&log_dir);
 
-    let file_appender = tracing_appender::rolling::never(&log_dir, "memcan-cli.log");
+    let file_appender = tracing_appender::rolling::never(&log_dir, "memcan.log");
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
     tracing_subscriber::fmt()

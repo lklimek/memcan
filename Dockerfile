@@ -15,10 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     groupadd -r memcan && useradd -r -g memcan -d /data memcan && \
     mkdir -p /data/lancedb /data/fastembed && chown -R memcan:memcan /data
 COPY --from=builder /usr/lib/libonnxruntime*.so* /usr/lib/
-COPY --from=builder /src/target/release/memcan /usr/local/bin/
+COPY --from=builder /src/target/release/memcan-server /usr/local/bin/
 RUN ldconfig
 USER memcan
 EXPOSE 8191
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=120s \
     CMD curl -sf http://localhost:8191/health || exit 1
-ENTRYPOINT ["memcan", "serve"]
+ENTRYPOINT ["memcan-server", "serve"]

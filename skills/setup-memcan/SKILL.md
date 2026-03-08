@@ -12,8 +12,8 @@ Configures the MemCan environment. The plugin and MCP server are already install
 ## Architecture
 
 MemCan uses a two-component architecture:
-- **Server** (`memcan serve`) — long-lived HTTP MCP server handling embeddings, LLM, and storage. Runs as a Docker container or system service.
-- **CLI** (`memcan-cli`) — thin HTTP client for hooks. Downloaded by `setup.sh`, lives at `${CLAUDE_PLUGIN_ROOT}/bin/memcan-cli`.
+- **Server** (`memcan-server serve`) — long-lived HTTP MCP server handling embeddings, LLM, and storage. Runs as a Docker container or system service.
+- **CLI** (`memcan`) — thin HTTP client for hooks. Installed via `cargo install memcan`.
 
 The Claude Code plugin connects to the server via HTTP MCP transport (configured in `.mcp.json`).
 
@@ -22,7 +22,7 @@ The Claude Code plugin connects to the server via HTTP MCP transport (configured
 ### 1. Check Prerequisites
 
 Verify:
-- MemCan CLI binary exists at `${CLAUDE_PLUGIN_ROOT}/bin/memcan-cli` (if not, run `${CLAUDE_PLUGIN_ROOT}/setup.sh`)
+- MemCan CLI is on PATH: `command -v memcan`. If missing, tell the user to run `cargo install memcan`.
 
 Note: Server connectivity is checked in Step 4. Don't require it here.
 
@@ -30,15 +30,25 @@ If any prerequisite fails, tell the user what's missing and how to fix it, then 
 
 ### 2. Configure Secrets & Settings
 
-Run the secret configuration script. It resolves API keys (from existing `.env` → env var → auto-generate), writes `~/.config/memcan/.env`, and merges `MEMCAN_API_KEY` + `MEMCAN_URL` into `~/.claude/settings.json`. Secrets never appear in conversation context.
+Resolve API keys and write configuration. Secrets never appear in conversation context.
 
-```bash
-bash ${CLAUDE_PLUGIN_ROOT}/bin/configure-secrets.sh
-```
+Perform these steps:
 
-Review the script's status output. If it reports `MEMCAN_API_KEY=<generated>`, a new key was created — the server will need restarting to pick it up.
+1. **Resolve MEMCAN_API_KEY**: Check `~/.config/memcan/.env` for existing value, then `$MEMCAN_API_KEY` env var. If neither exists, generate a new key: `openssl rand -hex 32` (or `head -c 32 /dev/urandom | xxd -p -c 64` if openssl unavailable).
 
-After the script completes, review non-secret settings in `~/.config/memcan/.env` with the user:
+2. **Resolve MEMCAN_URL**: Check `~/.config/memcan/.env`, then `$MEMCAN_URL` env var. Default: `http://localhost:8190`.
+
+3. **Resolve OLLAMA_API_KEY**: Check `~/.config/memcan/.env`, then `$OLLAMA_API_KEY` env var. May be empty.
+
+4. **Write `~/.config/memcan/.env`**: Create directory if needed. If the file exists, update `MEMCAN_API_KEY`, `MEMCAN_URL`, and `OLLAMA_API_KEY` (if non-empty) in-place. If creating new, write a template with resolved values and commented defaults for `OLLAMA_HOST`, `LLM_MODEL`, `EMBED_MODEL`, `MEMCAN_LOG_FILE`.
+
+5. **Merge into `~/.claude/settings.json`**: Read existing file (or `{}`), set `.env.MEMCAN_API_KEY` and `.env.MEMCAN_URL`, write back. Use `jq` or `python3` for JSON manipulation.
+
+After completing, report status (without revealing secret values):
+- Whether MEMCAN_API_KEY was existing or newly generated
+- The MEMCAN_URL value
+
+Review non-secret settings in `~/.config/memcan/.env` with the user:
 - `MEMCAN_URL` — Server URL (default: `http://localhost:8190`)
 - `OLLAMA_HOST` — Ollama endpoint (default: `http://localhost:11434`)
 - `LLM_MODEL` — LLM model with provider prefix (default: `ollama::qwen3.5:4b`)
@@ -87,7 +97,7 @@ Use the MemCan MCP server to store and recall knowledge across sessions.
 ### 4. Verify
 
 Print a summary:
-- CLI binary installed at `${CLAUDE_PLUGIN_ROOT}/bin/memcan-cli`
+- CLI installed and on PATH (`memcan`)
 - `.env` exists at `~/.config/memcan/.env` with `MEMCAN_URL` and `MEMCAN_API_KEY` configured
 - Claude Code settings at `~/.claude/settings.json` has `MEMCAN_API_KEY` and `MEMCAN_URL` in `env` block
 - User rule exists at `~/.claude/rules/memcan.md`

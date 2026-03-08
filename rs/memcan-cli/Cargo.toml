@@ -1,11 +1,17 @@
 [package]
-name = "memcan-cli"
+name = "memcan"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Persistent memory for Claude Code — CLI client"
+keywords = ["claude-code", "mcp", "memory", "cli"]
+categories = ["command-line-utilities"]
+repository.workspace = true
+homepage = "https://github.com/lklimek/memcan"
+readme = "../../README.md"
 
 [[bin]]
-name = "memcan-cli"
+name = "memcan"
 path = "src/main.rs"
 
 [dependencies]

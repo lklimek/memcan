@@ -48,8 +48,8 @@ let app = Router::new()
 ## Architecture Decisions
 
 ### Two-Binary Split
-- Fat server `memcan` (~180MB): fastembed ONNX + LanceDB + genai + all subcommands
-- Thin CLI `memcan-cli` (~5-10MB): reqwest + rmcp client only, NO memcan-core dep
+- Fat server `memcan-server` (~180MB): fastembed ONNX + LanceDB + genai + all subcommands
+- Thin CLI `memcan` (~5-10MB): reqwest + rmcp client only, NO memcan-core dep
 - Key insight: fastembed's ONNX runtime is the size driver. Any binary linking memcan-core inherits it.
 
 ### Docker Networking

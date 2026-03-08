@@ -36,9 +36,6 @@ Thumbs.db
 # Local marketplace (not pushed — use github source in lklimek/agents)
 .claude-plugin/marketplace.json
 
-# Plugin binaries (downloaded from releases)
-bin/*
-!bin/configure-secrets.sh
 
 # Reports (generated)
 *.report.json
