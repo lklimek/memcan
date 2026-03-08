@@ -1,33 +1,15 @@
 # Publish the `memcan` crate to crates.io on GitHub release.
-# Runs CI checks first (check, test, clippy, fmt), then publishes if all pass.
+# Reuses CI workflow for checks, then publishes if all pass.
 name: Publish to crates.io
 
 on:
   release:
     types: [published]
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   ci:
     name: CI
-    runs-on: ubuntu-latest
-    steps:
-      # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
-      - uses: actions/checkout@v4
-      - name: Install Ubuntu dependencies
-        run: bash scripts/setup-ubuntu.sh
-      # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check
-      - run: cargo check --workspace
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+    uses: ./.github/workflows/ci.yml
 
   publish:
     name: Publish memcan
