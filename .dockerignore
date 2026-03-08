@@ -11,7 +11,7 @@ bin/
 hooks/
 skills/
 *.md
-*.json
+report.json
 .env
 .env.*
 docker-compose.yml
