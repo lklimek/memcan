@@ -9,10 +9,8 @@ use clap::Parser;
 use serde::Deserialize;
 use tracing::info;
 
-use mindojo_core::config::Settings;
-use mindojo_core::embed::FastEmbedProvider;
 use mindojo_core::error::{MindojoError, Result as MindojoResult, ResultExt};
-use mindojo_core::lancedb_store::LanceDbStore;
+use mindojo_core::init::MindojoContext;
 use mindojo_core::pipeline::MEMORIES_TABLE;
 use mindojo_core::traits::{EmbeddingProvider, VectorPoint, VectorStore};
 
@@ -96,13 +94,10 @@ async fn main() -> MindojoResult<()> {
         return Ok(());
     }
 
-    let settings = Settings::load()?;
-    settings.ensure_log_dir()?;
-    let embedder = FastEmbedProvider::from_settings(&settings)?;
-    let store = LanceDbStore::open(&settings.lancedb_path).await?;
+    let ctx = MindojoContext::init().await?;
 
-    store
-        .ensure_table(MEMORIES_TABLE, settings.embed_dims)
+    ctx.store
+        .ensure_table(MEMORIES_TABLE, ctx.settings.embed_dims)
         .await?;
 
     // Embed all texts
@@ -110,7 +105,7 @@ async fn main() -> MindojoResult<()> {
 
     info!(
         count = texts.len(),
-        model = %settings.embed_model,
+        model = %ctx.settings.embed_model,
         "Embedding texts"
     );
 
@@ -121,7 +116,7 @@ async fn main() -> MindojoResult<()> {
         let batch_end = (batch_start + BATCH_SIZE).min(texts.len());
         let batch_texts = &texts[batch_start..batch_end];
 
-        let batch_embeddings = embedder.embed(batch_texts).await?;
+        let batch_embeddings = ctx.embedder.embed(batch_texts).await?;
 
         all_embeddings.extend(batch_embeddings);
         info!(
@@ -138,9 +133,9 @@ async fn main() -> MindojoResult<()> {
             records.len()
         )));
     }
-    if all_embeddings[0].len() != settings.embed_dims {
+    if all_embeddings[0].len() != ctx.settings.embed_dims {
         return Err(MindojoError::DimensionMismatch {
-            expected: settings.embed_dims,
+            expected: ctx.settings.embed_dims,
             actual: all_embeddings[0].len(),
         });
     }
@@ -172,7 +167,7 @@ async fn main() -> MindojoResult<()> {
             })
             .collect();
 
-        store.upsert(MEMORIES_TABLE, &points).await?;
+        ctx.store.upsert(MEMORIES_TABLE, &points).await?;
         total_upserted += points.len();
         info!(
             progress = total_upserted,
@@ -182,7 +177,7 @@ async fn main() -> MindojoResult<()> {
     }
 
     // Verify
-    let final_count = store.count(MEMORIES_TABLE, None).await?;
+    let final_count = ctx.store.count(MEMORIES_TABLE, None).await?;
     info!(
         records = final_count,
         table = MEMORIES_TABLE,

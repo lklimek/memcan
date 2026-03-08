@@ -15,9 +15,7 @@ use serde::Deserialize;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use mindojo_core::config::Settings;
-use mindojo_core::embed::FastEmbedProvider;
-use mindojo_core::lancedb_store::LanceDbStore;
+use mindojo_core::init::MindojoContext;
 use mindojo_core::llm::GenaiLlmProvider;
 use mindojo_core::pipeline::STANDARDS_TABLE;
 use mindojo_core::prompts::{METADATA_EXTRACTION_PROMPT, render_prompt};
@@ -260,31 +258,27 @@ async fn main() -> MindojoResult<()> {
         )
         .init();
 
-    let settings = Settings::load()?;
-    settings.ensure_log_dir()?;
-    let model = cli.model.as_deref().unwrap_or(&settings.llm_model);
-
-    let embedder = FastEmbedProvider::from_settings(&settings)?;
-    let llm = GenaiLlmProvider::from_settings(&settings);
-    let store = LanceDbStore::open(&settings.lancedb_path).await?;
+    let ctx = MindojoContext::init().await?;
+    let model = cli.model.as_deref().unwrap_or(&ctx.settings.llm_model);
+    let llm = GenaiLlmProvider::from_settings(&ctx.settings);
 
     // Handle --drop mode
     if cli.drop {
-        store
-            .ensure_table(STANDARDS_TABLE, settings.embed_dims)
+        ctx.store
+            .ensure_table(STANDARDS_TABLE, ctx.settings.embed_dims)
             .await?;
         let filter = format!(
             "JSON_EXTRACT(payload, '$.standard_id') = '{}'",
             cli.standard_id.replace('\'', "''")
         );
 
-        let count = store.count(STANDARDS_TABLE, Some(&filter)).await?;
+        let count = ctx.store.count(STANDARDS_TABLE, Some(&filter)).await?;
         if count == 0 {
             info!(standard_id = %cli.standard_id, "No points found");
             return Ok(());
         }
 
-        let deleted = store.delete_by_filter(STANDARDS_TABLE, &filter).await?;
+        let deleted = ctx.store.delete_by_filter(STANDARDS_TABLE, &filter).await?;
         info!(deleted, standard_id = %cli.standard_id, "Deleted points");
         return Ok(());
     }
@@ -318,8 +312,8 @@ async fn main() -> MindojoResult<()> {
     let chunks = chunk_markdown(&text);
     info!(count = chunks.len(), file = %file.display(), "Parsed chunks");
 
-    store
-        .ensure_table(STANDARDS_TABLE, settings.embed_dims)
+    ctx.store
+        .ensure_table(STANDARDS_TABLE, ctx.settings.embed_dims)
         .await?;
 
     let now = Utc::now().to_rfc3339();
@@ -359,7 +353,7 @@ async fn main() -> MindojoResult<()> {
         };
 
         // Embed the chunk
-        let vectors = match embedder.embed(std::slice::from_ref(&chunk_text)).await {
+        let vectors = match ctx.embedder.embed(std::slice::from_ref(&chunk_text)).await {
             Ok(v) => v,
             Err(e) => {
                 tracing::error!(chunk_index, error = %e, "Embedding failed");
@@ -433,7 +427,7 @@ async fn main() -> MindojoResult<()> {
             payload: serde_json::Value::Object(payload),
         };
 
-        if let Err(e) = store.upsert(STANDARDS_TABLE, &[point]).await {
+        if let Err(e) = ctx.store.upsert(STANDARDS_TABLE, &[point]).await {
             tracing::error!(chunk_index, error = %e, "Upsert failed");
             errors.push(serde_json::json!({
                 "chunk_index": chunk_index,

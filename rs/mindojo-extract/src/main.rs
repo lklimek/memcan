@@ -14,6 +14,7 @@ use tracing::info;
 
 use mindojo_core::config::Settings;
 use mindojo_core::embed::FastEmbedProvider;
+use mindojo_core::init::MindojoContext;
 use mindojo_core::lancedb_store::LanceDbStore;
 use mindojo_core::llm::GenaiLlmProvider;
 use mindojo_core::pipeline::{MEMORIES_TABLE, do_add_memory};
@@ -511,18 +512,31 @@ async fn run(hook_data_log: &Path) -> MindojoResult<()> {
         "Hook: dispatching event"
     );
 
-    let settings = Settings::load()?;
-    settings.ensure_log_dir()?;
-    let embedder = FastEmbedProvider::from_settings(&settings)?;
-    let llm = GenaiLlmProvider::from_settings(&settings);
-    let store = LanceDbStore::open(&settings.lancedb_path).await?;
+    let ctx = MindojoContext::init().await?;
+    let llm = GenaiLlmProvider::from_settings(&ctx.settings);
 
     match payload.hook_event_name.as_str() {
         "SubagentStop" => {
-            handle_subagent_stop(&payload, &settings, &embedder, &llm, &store, hook_data_log).await
+            handle_subagent_stop(
+                &payload,
+                &ctx.settings,
+                &ctx.embedder,
+                &llm,
+                &ctx.store,
+                hook_data_log,
+            )
+            .await
         }
         "PreCompact" => {
-            handle_precompact(&payload, &settings, &embedder, &llm, &store, hook_data_log).await
+            handle_precompact(
+                &payload,
+                &ctx.settings,
+                &ctx.embedder,
+                &llm,
+                &ctx.store,
+                hook_data_log,
+            )
+            .await
         }
         other => {
             info!(event = other, "Hook: unhandled event, skipping");

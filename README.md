@@ -63,7 +63,7 @@ Restart Claude Code after setup to connect the MCP server.
 
 - **LanceDB** — embedded vector database (no server needed, data stored locally)
 - **fastembed** — in-process ONNX embeddings (`MultilingualE5Large`, 1024 dimensions, ~1.3 GB model downloaded on first use)
-- **genai + Ollama** — LLM inference (`ollama::qwen3.5:4b`); genai uses `OLLAMA_HOST` env var for endpoint configuration
+- **genai + Ollama** — LLM inference (`ollama::qwen3.5:4b`); MindOJO reads `OLLAMA_HOST` and passes it to the genai client
 - **DISTILL_MEMORIES** — when enabled (default: `true`), the LLM extracts structured facts from raw text before storing
 
 ## MCP Tools
@@ -155,8 +155,9 @@ cp .env.example ~/.config/mindojo/.env
 | `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings |
 | `EMBED_DIMS` | `1024` | Embedding vector dimensions (must match embed model) |
 | `LOG_FILE` | `~/.claude/logs/mindojo-mcp.log` | Log file path |
+| `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`) |
 
-> **Ollama endpoint:** The genai crate reads the standard `OLLAMA_HOST` environment variable (default: `http://localhost:11434`). Set it in your `.env` or system environment if Ollama runs on a remote host.
+> **Ollama endpoint:** The genai crate does **not** read `OLLAMA_HOST` from environment. MindOJO reads it via `Settings` and passes it to the genai client via `ServiceTargetResolver`. Set it in your `.env` or system environment if Ollama runs on a remote host.
 
 ## Remote Ollama
 

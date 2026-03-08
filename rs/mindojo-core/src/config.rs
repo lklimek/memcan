@@ -34,6 +34,10 @@ pub struct Settings {
     pub embed_model: String,
     /// Embedding vector dimensions (must match the chosen embed_model).
     pub embed_dims: usize,
+    /// Ollama server URL, e.g. `"http://10.29.188.1:11434"`.
+    /// Passed explicitly to the genai client since it does not read
+    /// `OLLAMA_HOST` from the environment.
+    pub ollama_host: Option<String>,
 }
 
 impl std::fmt::Debug for Settings {
@@ -47,6 +51,7 @@ impl std::fmt::Debug for Settings {
             .field("llm_model", &self.llm_model)
             .field("embed_model", &self.embed_model)
             .field("embed_dims", &self.embed_dims)
+            .field("ollama_host", &self.ollama_host)
             .finish()
     }
 }
@@ -62,6 +67,7 @@ impl Default for Settings {
             llm_model: "ollama::qwen3.5:4b".into(),
             embed_model: "MultilingualE5Large".into(),
             embed_dims: 1024,
+            ollama_host: None,
         }
     }
 }
@@ -116,6 +122,10 @@ impl Settings {
         let embed_dims = env_or("EMBED_DIMS", &defaults.embed_dims.to_string())
             .parse::<usize>()
             .unwrap_or(defaults.embed_dims);
+        let ollama_host = std::env::var("OLLAMA_HOST").ok().filter(|s| !s.is_empty());
+        if let Some(ref host) = ollama_host {
+            debug!(ollama_host = %host, "OLLAMA_HOST configured");
+        }
 
         let settings = Settings {
             lancedb_path,
@@ -126,6 +136,7 @@ impl Settings {
             llm_model,
             embed_model,
             embed_dims,
+            ollama_host,
         };
         settings.validate()?;
         Ok(settings)

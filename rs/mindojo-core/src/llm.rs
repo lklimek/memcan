@@ -6,8 +6,10 @@
 use crate::error::{MindojoError, Result};
 use crate::traits::{LlmMessage, LlmOptions, LlmProvider, Role};
 use async_trait::async_trait;
-use genai::Client;
+use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat};
+use genai::resolver::{Endpoint, ServiceTargetResolver};
+use genai::{Client, ClientConfig};
 
 /// LLM provider backed by [`genai::Client`].
 ///
@@ -31,15 +33,30 @@ impl GenaiLlmProvider {
 
     /// Build from application settings.
     ///
-    /// Uses `Settings::llm_model` as the default model. Provider-specific
-    /// configuration (API keys, endpoints) is resolved by `genai` from
-    /// environment variables automatically:
-    ///
-    /// * Ollama: `OLLAMA_HOST` (defaults to `http://localhost:11434`)
-    /// * OpenAI: `OPENAI_API_KEY`
-    /// * Anthropic: `ANTHROPIC_API_KEY`
+    /// Uses `Settings::llm_model` as the default model. If
+    /// `Settings::ollama_host` is set, configures the genai client to use
+    /// that endpoint for Ollama requests (the genai crate does not read
+    /// `OLLAMA_HOST` from the environment on its own).
     pub fn from_settings(settings: &crate::config::Settings) -> Self {
-        let client = Client::default();
+        let client = match &settings.ollama_host {
+            Some(host) => {
+                let mut base = host.trim_end_matches('/').to_string();
+                if !base.ends_with("/v1/") {
+                    base.push_str("/v1/");
+                }
+                let endpoint = Endpoint::from_owned(base);
+                let resolver =
+                    ServiceTargetResolver::from_resolver_fn(move |mut st: genai::ServiceTarget| {
+                        if st.model.adapter_kind == AdapterKind::Ollama {
+                            st.endpoint = endpoint.clone();
+                        }
+                        Ok(st)
+                    });
+                let config = ClientConfig::default().with_service_target_resolver(resolver);
+                Client::builder().with_config(config).build()
+            }
+            None => Client::default(),
+        };
         Self {
             client,
             default_model: settings.llm_model.clone(),
@@ -112,10 +129,28 @@ impl LlmProvider for GenaiLlmProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Settings;
 
     #[test]
     fn test_default_model() {
         let provider = GenaiLlmProvider::new(Client::default(), "test-model".into());
         assert_eq!(provider.default_model(), "test-model");
+    }
+
+    #[test]
+    fn test_from_settings_without_ollama_host() {
+        let settings = Settings::default();
+        let provider = GenaiLlmProvider::from_settings(&settings);
+        assert_eq!(provider.default_model(), "ollama::qwen3.5:4b");
+    }
+
+    #[test]
+    fn test_from_settings_with_ollama_host() {
+        let settings = Settings {
+            ollama_host: Some("http://10.29.188.1:11434".into()),
+            ..Settings::default()
+        };
+        let provider = GenaiLlmProvider::from_settings(&settings);
+        assert_eq!(provider.default_model(), "ollama::qwen3.5:4b");
     }
 }

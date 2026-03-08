@@ -16,9 +16,8 @@ use tracing::info;
 
 use mindojo_core::{
     config::Settings,
-    embed::FastEmbedProvider,
     error::MindojoError,
-    lancedb_store::LanceDbStore,
+    init::MindojoContext,
     llm::GenaiLlmProvider,
     pipeline::{self, CODE_TABLE, MEMORIES_TABLE, STANDARDS_TABLE},
     traits::{EmbeddingProvider, LlmProvider, VectorStore},
@@ -782,45 +781,39 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<(), MindojoError> {
     let cli = Cli::parse();
-    let config = Settings::load()?;
 
+    // --download-model: load settings + embedder only (no store needed)
     if cli.download_model {
-        let _embedder = FastEmbedProvider::from_settings(&config)?;
+        let (settings, _embedder) = MindojoContext::init_settings_and_embedder()?;
         println!(
             "Embedding model '{}' ({}d) ready.",
-            config.embed_model, config.embed_dims
+            settings.embed_model, settings.embed_dims
         );
         return Ok(());
     }
 
-    config.ensure_log_dir()?;
-    setup_logging(&config.log_file);
+    let ctx = MindojoContext::init().await?;
+    setup_logging(&ctx.settings.log_file);
 
-    info!("Loading config: lancedb_path={}", config.lancedb_path);
-
-    // Create embedding provider (in-process fastembed ONNX)
-    let embedder = FastEmbedProvider::from_settings(&config)?;
+    info!("Loading config: lancedb_path={}", ctx.settings.lancedb_path);
 
     // Create LLM provider (genai — multi-provider: Ollama, OpenAI, Anthropic, etc.)
-    let llm = GenaiLlmProvider::from_settings(&config);
+    let llm = GenaiLlmProvider::from_settings(&ctx.settings);
     let llm_model = llm.default_model().to_string();
 
-    // Open LanceDB store
-    let store = LanceDbStore::open(&config.lancedb_path).await?;
-
     // Ensure tables exist
-    let dims = config.embed_dims;
-    store.ensure_table(MEMORIES_TABLE, dims).await?;
-    store.ensure_table(STANDARDS_TABLE, dims).await?;
-    store.ensure_table(CODE_TABLE, dims).await?;
+    let dims = ctx.settings.embed_dims;
+    ctx.store.ensure_table(MEMORIES_TABLE, dims).await?;
+    ctx.store.ensure_table(STANDARDS_TABLE, dims).await?;
+    ctx.store.ensure_table(CODE_TABLE, dims).await?;
 
     info!("Tables ensured: {MEMORIES_TABLE}, {STANDARDS_TABLE}, {CODE_TABLE}");
 
     let shared = Arc::new(SharedState {
-        store: Box::new(store),
-        embedder: Box::new(embedder),
+        store: Box::new(ctx.store),
+        embedder: Box::new(ctx.embedder),
         llm: Box::new(llm),
-        config,
+        config: ctx.settings,
         llm_model,
     });
 

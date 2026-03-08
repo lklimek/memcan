@@ -16,10 +16,8 @@ use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use mindojo_core::config::Settings;
-use mindojo_core::embed::FastEmbedProvider;
 use mindojo_core::error::{MindojoError, Result as MindojoResult, ResultExt};
-use mindojo_core::lancedb_store::LanceDbStore;
+use mindojo_core::init::MindojoContext;
 use mindojo_core::pipeline::CODE_TABLE;
 use mindojo_core::traits::{EmbeddingProvider, VectorPoint, VectorStore};
 
@@ -409,21 +407,20 @@ async fn main() -> MindojoResult<()> {
         )
         .init();
 
-    let settings = Settings::load()?;
-    settings.ensure_log_dir()?;
-    let embedder = FastEmbedProvider::from_settings(&settings)?;
-    let store = LanceDbStore::open(&settings.lancedb_path).await?;
+    let ctx = MindojoContext::init().await?;
 
     let table = CODE_TABLE;
 
     // Handle --drop mode
     if cli.drop {
-        store.ensure_table(table, settings.embed_dims).await?;
+        ctx.store
+            .ensure_table(table, ctx.settings.embed_dims)
+            .await?;
         let filter = format!(
             "JSON_EXTRACT(payload, '$.project') = '{}'",
             cli.project.replace('\'', "''")
         );
-        let deleted = store.delete_by_filter(table, &filter).await?;
+        let deleted = ctx.store.delete_by_filter(table, &filter).await?;
         info!(deleted, project = %cli.project, "Dropped indexed data");
         return Ok(());
     }
@@ -446,7 +443,9 @@ async fn main() -> MindojoResult<()> {
         )));
     }
 
-    store.ensure_table(table, settings.embed_dims).await?;
+    ctx.store
+        .ensure_table(table, ctx.settings.embed_dims)
+        .await?;
 
     let git_hash = git_short_hash(&project_dir);
     let now = Utc::now().to_rfc3339();
@@ -458,7 +457,8 @@ async fn main() -> MindojoResult<()> {
         "JSON_EXTRACT(payload, '$.project') = '{}'",
         cli.project.replace('\'', "''")
     );
-    let existing_records = store
+    let existing_records = ctx
+        .store
         .scroll(table, Some(&project_filter), 100_000, 0)
         .await?;
     let mut existing_hashes: HashMap<String, (String, String)> = HashMap::new();
@@ -546,8 +546,8 @@ async fn main() -> MindojoResult<()> {
         let effective_lang = lang.unwrap_or("unknown");
 
         for sym in &symbols {
-            let ctx = context_line(&rel_path, effective_lang, tech_stack);
-            let data = format!("{}\n{}", ctx, sym.text);
+            let ctx_line = context_line(&rel_path, effective_lang, tech_stack);
+            let data = format!("{}\n{}", ctx_line, sym.text);
             let chash = content_hash(&data);
             let pid = point_id(&cli.project, &rel_path, &sym.symbol_name, sym.start_line);
 
@@ -598,14 +598,14 @@ async fn main() -> MindojoResult<()> {
 
             let point = VectorPoint {
                 id: pid,
-                vector: vec![0.0; settings.embed_dims],
+                vector: vec![0.0; ctx.settings.embed_dims],
                 payload: serde_json::Value::Object(payload),
             };
 
             batch.push((point, data));
 
             if batch.len() >= BATCH_SIZE {
-                match flush_batch(&embedder, &store, table, &mut batch).await {
+                match flush_batch(&ctx.embedder, &ctx.store, table, &mut batch).await {
                     Ok(n) => {
                         total_upserted += n;
                         info!(upserted = total_upserted, "Progress");
@@ -621,7 +621,7 @@ async fn main() -> MindojoResult<()> {
     }
 
     // Flush remaining batch
-    match flush_batch(&embedder, &store, table, &mut batch).await {
+    match flush_batch(&ctx.embedder, &ctx.store, table, &mut batch).await {
         Ok(n) => total_upserted += n,
         Err(e) => {
             warn!(error = %e, "Final batch embedding failed");
@@ -642,7 +642,7 @@ async fn main() -> MindojoResult<()> {
             cli.project.replace('\'', "''"),
             fp.replace('\'', "''")
         );
-        match store.delete_by_filter(table, &filter).await {
+        match ctx.store.delete_by_filter(table, &filter).await {
             Ok(n) => total_deleted += n,
             Err(e) => warn!(file = %fp, error = %e, "Failed to delete removed file points"),
         }
@@ -661,8 +661,8 @@ async fn main() -> MindojoResult<()> {
 
 /// Embed and upsert a batch of points.
 async fn flush_batch(
-    embedder: &FastEmbedProvider,
-    store: &LanceDbStore,
+    embedder: &dyn EmbeddingProvider,
+    store: &dyn VectorStore,
     table: &str,
     batch: &mut Vec<(VectorPoint, String)>,
 ) -> MindojoResult<usize> {

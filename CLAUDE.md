@@ -76,5 +76,6 @@ Environment variables (loaded from `~/.config/mindojo/.env` or `.env`):
 | `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings |
 | `EMBED_DIMS` | `1024` | Embedding vector dimensions (must match embed model) |
 | `LOG_FILE` | `~/.claude/logs/mindojo-mcp.log` | Log file path |
+| `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`). Passed to genai client explicitly. |
 
-> **Note:** genai reads `OLLAMA_HOST` (default `http://localhost:11434`) for the Ollama endpoint.
+> **Note:** The genai crate does **not** read `OLLAMA_HOST` from environment — MindOJO reads it via `Settings` and passes it to the genai client via `ServiceTargetResolver`.
