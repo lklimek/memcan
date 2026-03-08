@@ -1,0 +1,63 @@
+name: Docker
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Docker image tag override (defaults to "nightly")'
+        required: false
+        default: 'nightly'
+
+env:
+  IMAGE_NAME: lklimek/memcan
+
+jobs:
+  docker:
+    name: Build and push Docker image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
+      - uses: actions/checkout@v4
+
+      # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Determine image tags
+        id: tags
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+            TAGS="${{ env.IMAGE_NAME }}:${VERSION}"
+            # Add "latest" only for full (non-pre) releases
+            if [ "${{ github.event.release.prerelease }}" = "false" ]; then
+              TAGS="${TAGS},${{ env.IMAGE_NAME }}:latest"
+            fi
+          else
+            # workflow_dispatch — use user-supplied tag or "nightly"
+            OVERRIDE="${{ github.event.inputs.tag }}"
+            TAGS="${{ env.IMAGE_NAME }}:${OVERRIDE:-nightly}"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
