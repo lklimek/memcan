@@ -37,7 +37,8 @@ Thumbs.db
 claude-plugin/.claude-plugin/marketplace.json
 
 # Plugin binaries (downloaded from releases)
-claude-plugin/bin/
+claude-plugin/bin/*
+!claude-plugin/bin/configure-secrets.sh
 
 # Reports (generated)
 *.report.json
