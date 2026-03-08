@@ -88,6 +88,10 @@ pub trait LlmProvider: Send + Sync {
         messages: &[LlmMessage],
         options: Option<LlmOptions>,
     ) -> Result<String>;
+
+    /// Query the model's context window size in tokens.
+    /// Returns None if the provider doesn't support this query.
+    async fn context_window(&self, model: &str) -> Option<usize>;
 }
 
 /// Role of a participant in an LLM conversation.

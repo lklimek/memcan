@@ -81,6 +81,10 @@ impl LlmProvider for MockLlm {
             Ok(responses.remove(0))
         }
     }
+
+    async fn context_window(&self, _model: &str) -> Option<usize> {
+        None
+    }
 }
 
 /// Mock LLM that always returns an error (simulates 500 / connection failure).
@@ -98,6 +102,10 @@ impl LlmProvider for FailingLlm {
             context: "mock server error".into(),
             detail: "HTTP 500 Internal Server Error".into(),
         })
+    }
+
+    async fn context_window(&self, _model: &str) -> Option<usize> {
+        None
     }
 }
 
@@ -130,6 +138,10 @@ impl LlmProvider for MalformedJsonLlm {
         _options: Option<LlmOptions>,
     ) -> Result<String> {
         Ok("this is not valid json at all {{{".to_string())
+    }
+
+    async fn context_window(&self, _model: &str) -> Option<usize> {
+        None
     }
 }
 

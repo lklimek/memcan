@@ -29,6 +29,8 @@ pub fn strip_ollama_prefix(name: &str) -> &str {
 pub struct GenaiLlmProvider {
     client: Client,
     default_model: String,
+    ollama_host: Option<String>,
+    ollama_api_key: Option<String>,
 }
 
 impl GenaiLlmProvider {
@@ -37,6 +39,8 @@ impl GenaiLlmProvider {
         Self {
             client,
             default_model,
+            ollama_host: None,
+            ollama_api_key: None,
         }
     }
 
@@ -86,6 +90,8 @@ impl GenaiLlmProvider {
         Self {
             client,
             default_model: settings.llm_model.clone(),
+            ollama_host: settings.ollama_host.clone(),
+            ollama_api_key: settings.ollama_api_key.clone(),
         }
     }
 
@@ -155,11 +161,46 @@ impl LlmProvider for GenaiLlmProvider {
             })?;
 
         response
-            .content_text_into_string()
+            .into_first_text()
             .ok_or_else(|| MindojoError::LlmChat {
                 context: "empty response from LLM".into(),
                 detail: format!("model '{model}' returned no text content"),
             })
+    }
+
+    async fn context_window(&self, model: &str) -> Option<usize> {
+        if !model.to_lowercase().contains("ollama") {
+            return None;
+        }
+
+        let host = self
+            .ollama_host
+            .as_deref()
+            .unwrap_or("http://localhost:11434");
+        let url = format!("{}/api/show", host.trim_end_matches('/'));
+
+        let model_name = strip_ollama_prefix(model);
+
+        let client = reqwest::Client::new();
+        let mut req = client
+            .post(&url)
+            .json(&serde_json::json!({"name": model_name}));
+
+        if let Some(ref key) = self.ollama_api_key {
+            req = req.header("Authorization", format!("Bearer {}", key));
+        }
+
+        let resp = req.send().await.ok()?;
+        let body: serde_json::Value = resp.json().await.ok()?;
+
+        let model_info = body.get("model_info")?.as_object()?;
+        for (key, value) in model_info {
+            if key.ends_with(".context_length") {
+                return value.as_u64().map(|v| v as usize);
+            }
+        }
+
+        None
     }
 }
 
@@ -207,6 +248,12 @@ mod tests {
         let think = Some(false);
         let disable = think == Some(false) && model.to_lowercase().contains("ollama");
         assert!(disable);
+    }
+
+    #[test]
+    fn test_context_window_non_ollama_returns_none() {
+        let model = "gpt-4o";
+        assert!(!model.to_lowercase().contains("ollama"));
     }
 
     #[test]
