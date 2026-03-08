@@ -41,6 +41,8 @@ pub struct Settings {
     /// Bearer token for Ollama endpoint auth. When set, every Ollama
     /// request sends `Authorization: Bearer <key>`.
     pub ollama_api_key: Option<String>,
+    /// LLM context window size in tokens. Used for chunking in hook processing.
+    pub context_window: usize,
 }
 
 impl std::fmt::Debug for Settings {
@@ -59,6 +61,7 @@ impl std::fmt::Debug for Settings {
                 "ollama_api_key",
                 &self.ollama_api_key.as_ref().map(|_| "***"),
             )
+            .field("context_window", &self.context_window)
             .finish()
     }
 }
@@ -76,6 +79,7 @@ impl Default for Settings {
             embed_dims: 1024,
             ollama_host: None,
             ollama_api_key: None,
+            context_window: 131072,
         }
     }
 }
@@ -148,6 +152,21 @@ impl Settings {
             debug!("OLLAMA_API_KEY configured");
         }
 
+        let context_window = {
+            let raw = env_or("LLM_CONTEXT_WINDOW", &defaults.context_window.to_string());
+            match raw.parse::<usize>() {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(
+                        value = %raw,
+                        error = %e,
+                        "invalid LLM_CONTEXT_WINDOW, using default"
+                    );
+                    defaults.context_window
+                }
+            }
+        };
+
         let settings = Settings {
             lancedb_path,
             default_user_id,
@@ -159,6 +178,7 @@ impl Settings {
             embed_dims,
             ollama_host,
             ollama_api_key,
+            context_window,
         };
         settings.validate()?;
         Ok(settings)
@@ -166,6 +186,13 @@ impl Settings {
 
     /// Check invariants on loaded settings.
     fn validate(&self) -> Result<()> {
+        if self.context_window < 1024 {
+            warn!(
+                context_window = self.context_window,
+                "LLM_CONTEXT_WINDOW is very small (< 1024), extraction may fail"
+            );
+        }
+
         if self.lancedb_path.is_empty() {
             return Err(MindojoError::Config(
                 "LANCEDB_PATH must not be empty".into(),
@@ -257,5 +284,11 @@ mod tests {
     #[test]
     fn test_validate_defaults_ok() {
         Settings::default().validate().unwrap();
+    }
+
+    #[test]
+    fn test_context_window_default() {
+        let d = Settings::default();
+        assert_eq!(d.context_window, 131072);
     }
 }

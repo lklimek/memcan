@@ -18,3 +18,4 @@ tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
+regex = { workspace = true }

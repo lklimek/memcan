@@ -3922,6 +3922,7 @@ dependencies = [
  "chrono",
  "dirs",
  "mindojo-core",
+ "regex",
  "serde",
  "serde_json",
  "tokio",

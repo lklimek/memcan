@@ -150,6 +150,7 @@ pub async fn extract_facts(
 
     let options = Some(LlmOptions {
         format_json: true,
+        think: Some(false),
         ..Default::default()
     });
 
@@ -327,6 +328,7 @@ async fn run_dedup_llm(
     }];
     let options = Some(LlmOptions {
         format_json: true,
+        think: Some(false),
         ..Default::default()
     });
     let response = llm.chat(llm_model, &messages, options).await?;

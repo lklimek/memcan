@@ -108,10 +108,18 @@ impl LlmProvider for GenaiLlmProvider {
         // Build the ChatRequest from our generic messages.
         let mut req = ChatRequest::default();
 
+        // Disable thinking for Ollama models when explicitly requested
+        let disable_think = opts.think == Some(false) && model.to_lowercase().contains("ollama");
+
         for msg in messages {
             match msg.role {
                 Role::System => {
-                    req = req.with_system(&msg.content);
+                    let content = if disable_think {
+                        format!("/no_think\n{}", msg.content)
+                    } else {
+                        msg.content.clone()
+                    };
+                    req = req.with_system(&content);
                 }
                 Role::User => {
                     req = req.append_message(ChatMessage::user(&msg.content));
@@ -132,6 +140,9 @@ impl LlmProvider for GenaiLlmProvider {
         }
         if opts.format_json {
             chat_opts = chat_opts.with_response_format(ChatResponseFormat::JsonMode);
+        }
+        if opts.think == Some(false) {
+            chat_opts = chat_opts.with_normalize_reasoning_content(true);
         }
 
         let response = self
@@ -180,6 +191,22 @@ mod tests {
     #[test]
     fn test_strip_ollama_prefix_partial() {
         assert_eq!(strip_ollama_prefix("ollama:model"), "ollama:model");
+    }
+
+    #[test]
+    fn test_no_think_not_applied_to_non_ollama() {
+        let model = "gpt-4o";
+        let think = Some(false);
+        let disable = think == Some(false) && model.to_lowercase().contains("ollama");
+        assert!(!disable);
+    }
+
+    #[test]
+    fn test_no_think_applied_to_ollama() {
+        let model = "ollama::qwen3.5:9b";
+        let think = Some(false);
+        let disable = think == Some(false) && model.to_lowercase().contains("ollama");
+        assert!(disable);
     }
 
     #[test]

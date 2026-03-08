@@ -13,6 +13,8 @@ services:
       - "11434:11434"
     volumes:
       - ollama-data:/root/.ollama
+    environment:
+      OLLAMA_NUM_CTX: "131072"
     user: "1000:1000"
     logging:
       driver: json-file
