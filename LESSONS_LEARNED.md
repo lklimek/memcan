@@ -1,6 +1,6 @@
-# Lessons Learned — MindOJO HTTP Refactoring (2026-03-08)
+# Lessons Learned — MemCan HTTP Refactoring (2026-03-08)
 
-Import these into MindOJO memory once the server is running.
+Import these into MemCan memory once the server is running.
 
 ## rmcp 0.16 → 1.1 Migration
 
@@ -24,7 +24,7 @@ Import these into MindOJO memory once the server is running.
 
 ```rust
 async fn bearer_auth(req: Request, next: Next) -> Response {
-    let expected = std::env::var("MINDOJO_API_KEY").unwrap_or_default();
+    let expected = std::env::var("MEMCAN_API_KEY").unwrap_or_default();
     if expected.is_empty() { return next.run(req).await; }
     match req.headers().get("authorization").and_then(|v| v.to_str().ok()) {
         Some(h) if h.strip_prefix("Bearer ").map(|t| t == expected).unwrap_or(false) => next.run(req).await,
@@ -48,21 +48,21 @@ let app = Router::new()
 ## Architecture Decisions
 
 ### Two-Binary Split
-- Fat server `mindojo` (~180MB): fastembed ONNX + LanceDB + genai + all subcommands
-- Thin CLI `mindojo-cli` (~5-10MB): reqwest + rmcp client only, NO mindojo-core dep
-- Key insight: fastembed's ONNX runtime is the size driver. Any binary linking mindojo-core inherits it.
+- Fat server `memcan` (~180MB): fastembed ONNX + LanceDB + genai + all subcommands
+- Thin CLI `memcan-cli` (~5-10MB): reqwest + rmcp client only, NO memcan-core dep
+- Key insight: fastembed's ONNX runtime is the size driver. Any binary linking memcan-core inherits it.
 
 ### Docker Networking
 - Traefik uses `network_mode: host` but discovers containers via Docker API filtered by `--providers.docker.network=ollama_traefik`
 - Containers MUST join the `traefik` (ollama_traefik) network for discovery, even if they don't need external access
-- No `ports:` mapping on mindojo = not directly accessible from host
-- Mindojo also joins `backend` (internal) for direct Ollama access
+- No `ports:` mapping on memcan = not directly accessible from host
+- Memcan also joins `backend` (internal) for direct Ollama access
 
 ### Nothink Model Auto-Creation
 - Ollama API: `POST /api/show {"name": "model"}` returns 200 if exists, 404 if not
 - Ollama API: `POST /api/create {"model": "name", "from": "base", "system": "prompt"}` creates derived model
 - Must send `Authorization: Bearer {key}` header when behind auth proxy
-- Derived name pattern: `{base}-mindojo-nothink` (e.g. `qwen3.5:9b-mindojo-nothink`)
+- Derived name pattern: `{base}-memcan-nothink` (e.g. `qwen3.5:9b-memcan-nothink`)
 - System prompt: `/no_think\nAlways respond with valid JSON only. No markdown, no commentary.`
 
 ### genai Reasoning vs /no_think
@@ -74,7 +74,7 @@ let app = Router::new()
 
 1. **Docker Compose profiles**: `profiles: ["gpu"]` on a service means it's excluded from `docker compose up` unless `--profile gpu` or `COMPOSE_PROFILES=gpu` is set.
 
-2. **Settings backward compat**: When renaming env vars (LOG_FILE → MINDOJO_LOG_FILE), read both and prefer the new name.
+2. **Settings backward compat**: When renaming env vars (LOG_FILE → MEMCAN_LOG_FILE), read both and prefer the new name.
 
 3. **Workspace Cargo.toml**: When adding new workspace members, also add their deps to `[workspace.dependencies]` if they use `workspace = true`.
 

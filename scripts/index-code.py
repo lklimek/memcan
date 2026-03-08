@@ -2,7 +2,7 @@
 """Index source code into Qdrant using tree-sitter for symbol extraction.
 
 Parses supported languages (Rust, Python, Go, TypeScript) with tree-sitter,
-extracts top-level symbols, embeds them, and upserts into the mindojo-code
+extracts top-level symbols, embeds them, and upserts into the memcan-code
 Qdrant collection. Falls back to 100-line chunks when parsing fails.
 
 Usage (run from claude-plugin/mcp-server/):
@@ -30,8 +30,8 @@ from qdrant_client.models import (
 )
 from tree_sitter_language_pack import get_parser
 
-from mindojo_mcp.config import CODE_COLLECTION, EMBED_DIMS
-from mindojo_mcp.qdrant_utils import (
+from memcan_mcp.config import CODE_COLLECTION, EMBED_DIMS
+from memcan_mcp.qdrant_utils import (
     PointStruct,
     drop_by_filter,
     embed,

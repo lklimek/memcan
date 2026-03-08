@@ -1,18 +1,18 @@
 ---
 name: smoke-test
-description: "End-to-end smoke test of all MindOJO MCP endpoints. Creates, searches, updates, deletes memories and checks logs. Use when verifying MindOJO installation or after upgrades."
+description: "End-to-end smoke test of all MemCan MCP endpoints. Creates, searches, updates, deletes memories and checks logs. Use when verifying MemCan installation or after upgrades."
 user-invocable: true
 ---
 
 # Smoke Test
 
-End-to-end test of every MindOJO MCP endpoint. Uses project scope `__smoke_test__` to isolate test data. Cleans up all test memories on completion (even if earlier phases fail).
+End-to-end test of every MemCan MCP endpoint. Uses project scope `__smoke_test__` to isolate test data. Cleans up all test memories on completion (even if earlier phases fail).
 
 Execute each phase in order. Track pass/fail for the summary table.
 
 ## Architecture Note
 
-MindOJO uses async processing: `add_memory` and `update_memory` return immediately with `status: queued`. Background tasks handle LLM distillation. Use `get_queue_status` to monitor completion, and add short delays before verification phases.
+MemCan uses async processing: `add_memory` and `update_memory` return immediately with `status: queued`. Background tasks handle LLM distillation. Use `get_queue_status` to monitor completion, and add short delays before verification phases.
 
 ## Phase 0: Baseline
 
@@ -47,7 +47,7 @@ add_memory(
 
 ```
 add_memory(
-  memory="When configuring Ollama for remote access with authentication, several details matter. OLLAMA_HOST must include the protocol and port (e.g., https://ollama.example.com:11434). OLLAMA_API_KEY is sent as a Bearer token in the Authorization header. The genai crate does not read OLLAMA_HOST or OLLAMA_API_KEY from environment variables — MindOJO reads them from Settings and passes them explicitly via ServiceTargetResolver. A common pitfall is omitting the port number: HTTPS defaults to 443, which causes connection-refused errors if Ollama listens on 11434. Another frequent mistake is the model name format — genai requires a provider prefix like ollama::qwen3.5:4b rather than just the bare model name. Without the prefix, genai cannot route the request to the correct backend.",
+  memory="When configuring Ollama for remote access with authentication, several details matter. OLLAMA_HOST must include the protocol and port (e.g., https://ollama.example.com:11434). OLLAMA_API_KEY is sent as a Bearer token in the Authorization header. The genai crate does not read OLLAMA_HOST or OLLAMA_API_KEY from environment variables — MemCan reads them from Settings and passes them explicitly via ServiceTargetResolver. A common pitfall is omitting the port number: HTTPS defaults to 443, which causes connection-refused errors if Ollama listens on 11434. Another frequent mistake is the model name format — genai requires a provider prefix like ollama::qwen3.5:4b rather than just the bare model name. Without the prefix, genai cannot route the request to the correct backend.",
   project="__smoke_test__",
   metadata={"type": "decision"}
 )
@@ -117,8 +117,8 @@ These calls validate that the code and standards collections are accessible. Emp
 ## Phase 8: Log Check
 
 Check server logs for errors during the test window:
-- If running via Docker: `docker compose logs mindojo --tail 100`
-- If running locally: `tail -100 ${MINDOJO_LOG_FILE:-~/.claude/logs/mindojo-mcp.log}`
+- If running via Docker: `docker compose logs memcan --tail 100`
+- If running locally: `tail -100 ${MEMCAN_LOG_FILE:-~/.claude/logs/memcan-mcp.log}`
 
 Look for lines containing `ERROR` or `WARN`. Report any issues found, or "no errors in logs" if clean.
 

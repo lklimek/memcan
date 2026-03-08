@@ -4,7 +4,7 @@
 Splits a markdown file on ## and ### headings, extracts metadata via LLM,
 embeds each chunk, and upserts into the standards collection.
 
-Must be run from claude-plugin/mcp-server/ so mindojo_mcp imports resolve.
+Must be run from claude-plugin/mcp-server/ so memcan_mcp imports resolve.
 
 Usage:
     cd claude-plugin/mcp-server
@@ -31,9 +31,9 @@ from qdrant_client.models import (
     PayloadSchemaType,
 )
 
-from mindojo_mcp.config import EXTRACTION_MODEL, STANDARDS_COLLECTION, settings
-from mindojo_mcp.prompts import _load
-from mindojo_mcp.qdrant_utils import PointStruct, embed, ensure_collection, get_qdrant
+from memcan_mcp.config import EXTRACTION_MODEL, STANDARDS_COLLECTION, settings
+from memcan_mcp.prompts import _load
+from memcan_mcp.qdrant_utils import PointStruct, embed, ensure_collection, get_qdrant
 
 logger = logging.getLogger(__name__)
 

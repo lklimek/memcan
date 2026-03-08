@@ -4030,6 +4030,79 @@ dependencies = [
 ]
 
 [[package]]
+name = "memcan-cli"
+version = "0.28.1"
+dependencies = [
+ "chrono",
+ "clap",
+ "dirs",
+ "dotenvy",
+ "regex",
+ "reqwest 0.13.2",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "memcan-core"
+version = "0.28.1"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "async-trait",
+ "chrono",
+ "dirs",
+ "dotenvy",
+ "fastembed",
+ "futures",
+ "genai",
+ "handlebars",
+ "lancedb",
+ "md-5",
+ "regex",
+ "reqwest 0.13.2",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "memcan-server"
+version = "0.28.1"
+dependencies = [
+ "axum",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "dirs",
+ "lru 0.16.3",
+ "memcan-core",
+ "regex",
+ "reqwest 0.13.2",
+ "rmcp",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4058,79 +4131,6 @@ checksum = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e"
 dependencies = [
  "mime",
  "unicase",
-]
-
-[[package]]
-name = "mindojo-cli"
-version = "0.28.0"
-dependencies = [
- "chrono",
- "clap",
- "dirs",
- "dotenvy",
- "regex",
- "reqwest 0.13.2",
- "rmcp",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "mindojo-core"
-version = "0.28.0"
-dependencies = [
- "arrow-array",
- "arrow-schema",
- "async-trait",
- "chrono",
- "dirs",
- "dotenvy",
- "fastembed",
- "futures",
- "genai",
- "handlebars",
- "lancedb",
- "md-5",
- "regex",
- "reqwest 0.13.2",
- "serde",
- "serde_json",
- "serial_test",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "mindojo-server"
-version = "0.28.0"
-dependencies = [
- "axum",
- "chrono",
- "clap",
- "clap_complete",
- "dirs",
- "lru 0.16.3",
- "mindojo-core",
- "regex",
- "reqwest 0.13.2",
- "rmcp",
- "schemars 0.8.22",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "tokio",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]

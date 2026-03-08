@@ -25,8 +25,8 @@ sys.path.insert(
         Path(__file__).resolve().parent.parent / "claude-plugin" / "mcp-server" / "src"
     ),
 )
-from mindojo_mcp.config import QDRANT_COLLECTION  # noqa: E402
-from mindojo_mcp.qdrant_utils import embed, ensure_collection, get_qdrant  # noqa: E402
+from memcan_mcp.config import QDRANT_COLLECTION  # noqa: E402
+from memcan_mcp.qdrant_utils import embed, ensure_collection, get_qdrant  # noqa: E402
 
 from qdrant_client.models import PointStruct  # noqa: E402
 

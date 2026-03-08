@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# MindOJO secret configuration — resolves API keys, writes .env, updates settings.json.
+# MemCan secret configuration — resolves API keys, writes .env, updates settings.json.
 # Never prints secret values to stdout/stderr.
 set -euo pipefail
 
-ENV_DIR="$HOME/.config/mindojo"
+ENV_DIR="$HOME/.config/memcan"
 ENV_FILE="$ENV_DIR/.env"
 SETTINGS_FILE="$HOME/.claude/settings.json"
 PREFIX="[configure-secrets]"
@@ -45,19 +45,19 @@ update_env_line() {
     fi
 }
 
-# --- Step 1: Resolve MINDOJO_API_KEY ---
+# --- Step 1: Resolve MEMCAN_API_KEY ---
 
-resolve_mindojo_api_key() {
+resolve_memcan_api_key() {
     local val=""
     local source=""
 
-    val="$(read_env_value MINDOJO_API_KEY "$ENV_FILE")"
+    val="$(read_env_value MEMCAN_API_KEY "$ENV_FILE")"
     if [ -n "$val" ]; then
         source="existing"
     fi
 
-    if [ -z "$val" ] && [ -n "${MINDOJO_API_KEY:-}" ]; then
-        val="$MINDOJO_API_KEY"
+    if [ -z "$val" ] && [ -n "${MEMCAN_API_KEY:-}" ]; then
+        val="$MEMCAN_API_KEY"
         source="existing"
     fi
 
@@ -66,8 +66,8 @@ resolve_mindojo_api_key() {
         source="generated"
     fi
 
-    RESOLVED_MINDOJO_API_KEY="$val"
-    RESOLVED_MINDOJO_API_KEY_SOURCE="$source"
+    RESOLVED_MEMCAN_API_KEY="$val"
+    RESOLVED_MEMCAN_API_KEY_SOURCE="$source"
 }
 
 # --- Step 2: Resolve OLLAMA_API_KEY ---
@@ -83,17 +83,17 @@ resolve_ollama_api_key() {
     RESOLVED_OLLAMA_API_KEY="$val"
 }
 
-# --- Step 3: Resolve MINDOJO_URL ---
+# --- Step 3: Resolve MEMCAN_URL ---
 
-resolve_mindojo_url() {
+resolve_memcan_url() {
     local val=""
 
-    val="$(read_env_value MINDOJO_URL "$ENV_FILE")"
-    if [ -z "$val" ] && [ -n "${MINDOJO_URL:-}" ]; then
-        val="$MINDOJO_URL"
+    val="$(read_env_value MEMCAN_URL "$ENV_FILE")"
+    if [ -z "$val" ] && [ -n "${MEMCAN_URL:-}" ]; then
+        val="$MEMCAN_URL"
     fi
 
-    RESOLVED_MINDOJO_URL="${val:-http://localhost:8190}"
+    RESOLVED_MEMCAN_URL="${val:-http://localhost:8190}"
 }
 
 # --- Step 4: Write/update .env ---
@@ -103,20 +103,20 @@ write_env_file() {
 
     if [ -f "$ENV_FILE" ]; then
         # Update existing file, preserving all other lines
-        update_env_line "MINDOJO_API_KEY" "$RESOLVED_MINDOJO_API_KEY" "$ENV_FILE"
-        update_env_line "MINDOJO_URL" "$RESOLVED_MINDOJO_URL" "$ENV_FILE"
+        update_env_line "MEMCAN_API_KEY" "$RESOLVED_MEMCAN_API_KEY" "$ENV_FILE"
+        update_env_line "MEMCAN_URL" "$RESOLVED_MEMCAN_URL" "$ENV_FILE"
         if [ -n "$RESOLVED_OLLAMA_API_KEY" ]; then
             update_env_line "OLLAMA_API_KEY" "$RESOLVED_OLLAMA_API_KEY" "$ENV_FILE"
         fi
     else
         # Create new file with resolved values and commented templates
         {
-            echo "# MindOJO configuration"
-            echo "# See: https://github.com/lklimek/mindojo"
+            echo "# MemCan configuration"
+            echo "# See: https://github.com/lklimek/memcan"
             echo ""
             echo "# Server connection"
-            echo "MINDOJO_API_KEY=$RESOLVED_MINDOJO_API_KEY"
-            echo "MINDOJO_URL=$RESOLVED_MINDOJO_URL"
+            echo "MEMCAN_API_KEY=$RESOLVED_MEMCAN_API_KEY"
+            echo "MEMCAN_URL=$RESOLVED_MEMCAN_URL"
             echo ""
             echo "# Ollama"
             echo "# OLLAMA_HOST=http://localhost:11434"
@@ -131,11 +131,11 @@ write_env_file() {
             echo "# EMBED_MODEL=MultilingualE5Large"
             echo ""
             echo "# Logging"
-            echo "# MINDOJO_LOG_FILE="
+            echo "# MEMCAN_LOG_FILE="
         } > "$ENV_FILE"
     fi
 
-    echo "$PREFIX .env: MINDOJO_API_KEY=<$RESOLVED_MINDOJO_API_KEY_SOURCE> MINDOJO_URL=$RESOLVED_MINDOJO_URL"
+    echo "$PREFIX .env: MEMCAN_API_KEY=<$RESOLVED_MEMCAN_API_KEY_SOURCE> MEMCAN_URL=$RESOLVED_MEMCAN_URL"
 }
 
 # --- Step 5: Merge into settings.json ---
@@ -174,19 +174,19 @@ update_settings_json() {
     local updated=""
     if [ "$json_tool" = "jq" ]; then
         updated="$(echo "$existing" | jq \
-            --arg key "$RESOLVED_MINDOJO_API_KEY" \
-            --arg url "$RESOLVED_MINDOJO_URL" \
-            '.env = ((.env // {}) + {MINDOJO_API_KEY: $key, MINDOJO_URL: $url})')"
+            --arg key "$RESOLVED_MEMCAN_API_KEY" \
+            --arg url "$RESOLVED_MEMCAN_URL" \
+            '.env = ((.env // {}) + {MEMCAN_API_KEY: $key, MEMCAN_URL: $url})')"
     else
         updated="$(python3 -c "
 import json, sys
 data = json.loads(sys.stdin.read())
 env = data.get('env', {})
-env['MINDOJO_API_KEY'] = sys.argv[1]
-env['MINDOJO_URL'] = sys.argv[2]
+env['MEMCAN_API_KEY'] = sys.argv[1]
+env['MEMCAN_URL'] = sys.argv[2]
 data['env'] = env
 print(json.dumps(data, indent=2))
-" "$RESOLVED_MINDOJO_API_KEY" "$RESOLVED_MINDOJO_URL" <<< "$existing")"
+" "$RESOLVED_MEMCAN_API_KEY" "$RESOLVED_MEMCAN_URL" <<< "$existing")"
     fi
 
     echo "$updated" > "$SETTINGS_FILE"
@@ -196,9 +196,9 @@ print(json.dumps(data, indent=2))
 # --- Main ---
 
 main() {
-    resolve_mindojo_api_key
+    resolve_memcan_api_key
     resolve_ollama_api_key
-    resolve_mindojo_url
+    resolve_memcan_url
     write_env_file
     update_settings_json
     echo "$PREFIX Done."

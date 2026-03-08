@@ -20,7 +20,7 @@ from string import Template
 
 import httpx
 
-_DEFAULT_DATA = Path.home() / ".claude" / "logs" / "mindojo-hook-data.jsonl"
+_DEFAULT_DATA = Path.home() / ".claude" / "logs" / "memcan-hook-data.jsonl"
 _DEFAULT_OLLAMA_URL = "http://localhost:11434"
 
 

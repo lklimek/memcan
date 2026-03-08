@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Index OWASP security standards into MindOJO's mindojo-standards collection.
+# Index OWASP security standards into MemCan's memcan-standards collection.
 #
 # Sources (shallow-cloned from GitHub on first run):
 #   - OWASP Cheat Sheets: github.com/OWASP/CheatSheetSeries (master)
@@ -17,17 +17,17 @@
 # Environment:
 #   CHEATSHEETS_DIR  override cheat sheets location (skip clone)
 #   ASVS_DIR         override ASVS location (skip clone)
-#   MINDOJO_DIR      override mindojo repo root (default: script's repo)
+#   MEMCAN_DIR      override memcan repo root (default: script's repo)
 
 set -euo pipefail
 
 # --- paths ---
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-MINDOJO_DIR="${MINDOJO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-MCP_SERVER_DIR="$MINDOJO_DIR/claude-plugin/mcp-server"
+MEMCAN_DIR="${MEMCAN_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+MCP_SERVER_DIR="$MEMCAN_DIR/claude-plugin/mcp-server"
 INDEX_SCRIPT="$SCRIPT_DIR/index-standards.py"
-CACHE_DIR="$MINDOJO_DIR/.cache"
+CACHE_DIR="$MEMCAN_DIR/.cache"
 
 CHEATSHEETS_DIR="${CHEATSHEETS_DIR:-$CACHE_DIR/owasp-cheatsheets}"
 ASVS_DIR="${ASVS_DIR:-$CACHE_DIR/owasp-asvs-5.0}"

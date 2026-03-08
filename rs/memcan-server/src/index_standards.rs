@@ -1,0 +1,380 @@
+//! Index markdown standards documents into vector store (moved from `memcan-index-standards`).
+
+use std::sync::OnceLock;
+
+use chrono::Utc;
+use regex::Regex;
+use serde::Deserialize;
+use tracing::{debug, info, warn};
+use uuid::Uuid;
+
+use memcan_core::error::{MemcanError, Result as MemcanResult, ResultExt};
+use memcan_core::init::MemcanContext;
+use memcan_core::llm::GenaiLlmProvider;
+use memcan_core::pipeline::STANDARDS_TABLE;
+use memcan_core::prompts::{METADATA_EXTRACTION_PROMPT, render_prompt};
+use memcan_core::traits::{
+    EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, VectorPoint, VectorStore,
+};
+
+use crate::IndexStandardsArgs;
+
+const VALID_TYPES: &[&str] = &["security", "coding", "cve", "guideline"];
+
+fn safe_id_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^[A-Za-z0-9\-.:_/]+$").unwrap())
+}
+
+#[derive(Debug, Deserialize)]
+struct ChunkMetadata {
+    #[serde(default)]
+    section_id: String,
+    #[serde(default)]
+    section_title: String,
+    #[serde(default)]
+    chapter: String,
+    #[serde(default)]
+    ref_ids: Vec<String>,
+    #[serde(default)]
+    code_patterns: String,
+}
+
+struct MdChunk {
+    heading: String,
+    parent_heading: String,
+    level: usize,
+    body: String,
+}
+
+fn chunk_markdown(text: &str) -> Vec<MdChunk> {
+    let heading_re = Regex::new(r"(?m)^(#{2,3})\s+(.+)").unwrap();
+    let matches: Vec<_> = heading_re.find_iter(text).collect();
+
+    if matches.is_empty() {
+        return vec![MdChunk {
+            heading: String::new(),
+            parent_heading: String::new(),
+            level: 0,
+            body: text.trim().to_string(),
+        }];
+    }
+
+    let mut chunks = Vec::new();
+    let preamble = text[..matches[0].start()].trim();
+    if !preamble.is_empty() {
+        chunks.push(MdChunk {
+            heading: String::new(),
+            parent_heading: String::new(),
+            level: 0,
+            body: preamble.to_string(),
+        });
+    }
+
+    let captures: Vec<_> = heading_re.captures_iter(text).collect();
+    let match_positions: Vec<_> = heading_re.find_iter(text).collect();
+    let mut current_h2 = String::new();
+
+    for (i, cap) in captures.iter().enumerate() {
+        let level = cap[1].len();
+        let heading = cap[2].trim().to_string();
+        let start = match_positions[i].end();
+        let end = if i + 1 < match_positions.len() {
+            match_positions[i + 1].start()
+        } else {
+            text.len()
+        };
+        let body = text[start..end].trim().to_string();
+
+        let parent = if level == 2 {
+            current_h2 = heading.clone();
+            String::new()
+        } else {
+            current_h2.clone()
+        };
+
+        chunks.push(MdChunk {
+            heading,
+            parent_heading: parent,
+            level,
+            body,
+        });
+    }
+
+    chunks
+}
+
+fn validate_metadata(mut meta: ChunkMetadata) -> ChunkMetadata {
+    let safe_re = safe_id_re();
+    meta.ref_ids.retain(|id| safe_re.is_match(id));
+    if !meta.section_id.is_empty() && !safe_re.is_match(&meta.section_id) {
+        meta.section_id = String::new();
+    }
+    if meta.section_title.len() > 200 {
+        meta.section_title.truncate(200);
+    }
+    meta.section_title = meta.section_title.trim().to_string();
+    if meta.chapter.len() > 200 {
+        meta.chapter.truncate(200);
+    }
+    meta.chapter = meta.chapter.trim().to_string();
+    meta
+}
+
+async fn extract_metadata(
+    chunk_text: &str,
+    model: &str,
+    llm: &dyn LlmProvider,
+) -> MemcanResult<ChunkMetadata> {
+    let prompt = render_prompt(METADATA_EXTRACTION_PROMPT, &[("chunk_text", chunk_text)]);
+    let messages = vec![LlmMessage {
+        role: Role::User,
+        content: prompt,
+    }];
+    let options = Some(LlmOptions {
+        format_json: true,
+        temperature: Some(0.0),
+        max_tokens: Some(512),
+        think: Some(false),
+    });
+    let response = llm.chat(model, &messages, options).await?;
+    let meta: ChunkMetadata = serde_json::from_str(&response).with_context(|| {
+        format!(
+            "Failed to parse metadata: {}",
+            &response[..response.len().min(200)]
+        )
+    })?;
+    Ok(validate_metadata(meta))
+}
+
+fn fallback_metadata(heading: &str, parent_heading: &str) -> ChunkMetadata {
+    ChunkMetadata {
+        section_id: String::new(),
+        section_title: heading.to_string(),
+        chapter: parent_heading.to_string(),
+        ref_ids: Vec::new(),
+        code_patterns: String::new(),
+    }
+}
+
+fn build_chunk_text(chunk: &MdChunk) -> String {
+    let mut parts = Vec::new();
+    if !chunk.heading.is_empty() {
+        let prefix = if chunk.level == 2 { "##" } else { "###" };
+        parts.push(format!("{} {}", prefix, chunk.heading));
+    }
+    if !chunk.body.is_empty() {
+        parts.push(chunk.body.clone());
+    }
+    parts.join("\n\n")
+}
+
+pub async fn run(args: &IndexStandardsArgs) -> MemcanResult<()> {
+    let ctx = MemcanContext::init().await?;
+    let model = args.model.as_deref().unwrap_or(&ctx.settings.llm_model);
+    let llm = GenaiLlmProvider::from_settings(&ctx.settings);
+
+    if args.drop {
+        ctx.store
+            .ensure_table(STANDARDS_TABLE, ctx.settings.embed_dims)
+            .await?;
+        let filter = format!(
+            "JSON_EXTRACT(payload, '$.standard_id') = '{}'",
+            args.standard_id.replace('\'', "''")
+        );
+        let count = ctx.store.count(STANDARDS_TABLE, Some(&filter)).await?;
+        if count == 0 {
+            info!(standard_id = %args.standard_id, "No points found");
+            return Ok(());
+        }
+        let deleted = ctx.store.delete_by_filter(STANDARDS_TABLE, &filter).await?;
+        info!(deleted, standard_id = %args.standard_id, "Deleted points");
+        return Ok(());
+    }
+
+    let file = args
+        .file
+        .as_ref()
+        .ok_or_else(|| MemcanError::Other("file is required unless --drop is specified".into()))?;
+    let standard_type = args.standard_type.as_deref().ok_or_else(|| {
+        MemcanError::Other("--standard-type is required unless --drop is specified".into())
+    })?;
+
+    if !VALID_TYPES.contains(&standard_type) {
+        return Err(MemcanError::Other(format!(
+            "Invalid standard type '{}'. Must be one of: {}",
+            standard_type,
+            VALID_TYPES.join(", ")
+        )));
+    }
+
+    if !file.is_file() {
+        return Err(MemcanError::Other(format!(
+            "File not found: {}",
+            file.display()
+        )));
+    }
+
+    let text = std::fs::read_to_string(file)
+        .with_context(|| format!("failed to read {}", file.display()))?;
+    let chunks = chunk_markdown(&text);
+    info!(count = chunks.len(), file = %file.display(), "Parsed chunks");
+
+    ctx.store
+        .ensure_table(STANDARDS_TABLE, ctx.settings.embed_dims)
+        .await?;
+
+    let now = Utc::now().to_rfc3339();
+    let mut errors: Vec<serde_json::Value> = Vec::new();
+    let mut indexed = 0usize;
+
+    for (chunk_index, chunk) in chunks.iter().enumerate() {
+        if chunk_index < args.retry_from {
+            continue;
+        }
+
+        let chunk_text = build_chunk_text(chunk);
+        if chunk_text.trim().is_empty() {
+            debug!(chunk_index, "Skipping empty chunk");
+            continue;
+        }
+
+        let meta = {
+            let mut result = None;
+            for attempt in 0..2 {
+                match extract_metadata(&chunk_text, model, &llm).await {
+                    Ok(m) => {
+                        result = Some(m);
+                        break;
+                    }
+                    Err(e) => {
+                        if attempt == 0 {
+                            warn!(chunk_index, error = %e, "LLM extraction failed (retrying)");
+                        } else {
+                            warn!(chunk_index, error = %e, "LLM extraction failed (using fallback)");
+                        }
+                    }
+                }
+            }
+            result.unwrap_or_else(|| fallback_metadata(&chunk.heading, &chunk.parent_heading))
+        };
+
+        let vectors = match ctx.embedder.embed(std::slice::from_ref(&chunk_text)).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!(chunk_index, error = %e, "Embedding failed");
+                errors.push(serde_json::json!({
+                    "chunk_index": chunk_index,
+                    "heading": chunk.heading,
+                    "error": e.to_string(),
+                }));
+                continue;
+            }
+        };
+
+        let point_id = Uuid::new_v5(
+            &Uuid::NAMESPACE_URL,
+            format!("{}:{}:{}", args.standard_id, meta.section_id, chunk_index).as_bytes(),
+        )
+        .to_string();
+
+        let version = args.version.as_deref().unwrap_or("");
+        let tech_stack = args.tech_stack.as_deref().unwrap_or("");
+        let lang = args.lang.as_deref().unwrap_or("en");
+        let url = args.url.as_deref().unwrap_or("");
+
+        let mut payload = serde_json::Map::new();
+        payload.insert("data".into(), serde_json::Value::String(chunk_text));
+        payload.insert(
+            "standard_id".into(),
+            serde_json::Value::String(args.standard_id.clone()),
+        );
+        payload.insert(
+            "standard_type".into(),
+            serde_json::Value::String(standard_type.to_string()),
+        );
+        payload.insert(
+            "version".into(),
+            serde_json::Value::String(version.to_string()),
+        );
+        payload.insert(
+            "ref_ids".into(),
+            serde_json::Value::Array(
+                meta.ref_ids
+                    .iter()
+                    .map(|r| serde_json::Value::String(r.clone()))
+                    .collect(),
+            ),
+        );
+        payload.insert(
+            "section_id".into(),
+            serde_json::Value::String(meta.section_id),
+        );
+        payload.insert(
+            "section_title".into(),
+            serde_json::Value::String(meta.section_title.clone()),
+        );
+        payload.insert("chapter".into(), serde_json::Value::String(meta.chapter));
+        payload.insert(
+            "tech_stack".into(),
+            serde_json::Value::String(tech_stack.to_string()),
+        );
+        payload.insert("lang".into(), serde_json::Value::String(lang.to_string()));
+        payload.insert("url".into(), serde_json::Value::String(url.to_string()));
+        payload.insert(
+            "source_path".into(),
+            serde_json::Value::String(file.display().to_string()),
+        );
+        payload.insert(
+            "code_patterns".into(),
+            serde_json::Value::String(meta.code_patterns),
+        );
+        payload.insert("indexed_at".into(), serde_json::Value::String(now.clone()));
+
+        let point = VectorPoint {
+            id: point_id,
+            vector: vectors[0].clone(),
+            payload: serde_json::Value::Object(payload),
+        };
+
+        if let Err(e) = ctx.store.upsert(STANDARDS_TABLE, &[point]).await {
+            tracing::error!(chunk_index, error = %e, "Upsert failed");
+            errors.push(serde_json::json!({
+                "chunk_index": chunk_index,
+                "heading": chunk.heading,
+                "error": e.to_string(),
+            }));
+            continue;
+        }
+
+        indexed += 1;
+        info!(
+            chunk_index,
+            total = chunks.len(),
+            title = if meta.section_title.is_empty() {
+                "(untitled)"
+            } else {
+                &meta.section_title
+            },
+            "Indexed chunk"
+        );
+    }
+
+    info!(indexed, errors = errors.len(), "Indexing complete");
+
+    if !errors.is_empty() {
+        let error_json = serde_json::to_string_pretty(&errors)?;
+        let error_path = std::env::temp_dir().join("index-standards-errors.json");
+        std::fs::write(&error_path, error_json)?;
+        warn!(path = %error_path.display(), "Errors written");
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(MemcanError::Other(format!(
+            "{} chunks failed",
+            errors.len()
+        )))
+    }
+}

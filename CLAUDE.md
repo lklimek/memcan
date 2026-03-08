@@ -2,52 +2,52 @@
 
 ## Project Overview
 
-**MindOJO** — Claude Code plugin for persistent memory via LanceDB + fastembed + genai. Stores and recalls learnings, decisions, preferences across sessions. MIT license.
+**MemCan** — Claude Code plugin for persistent memory via LanceDB + fastembed + genai. Stores and recalls learnings, decisions, preferences across sessions. MIT license.
 
 Stack: Rust MCP server (rmcp), LanceDB (embedded vectors), genai+Ollama (LLM), fastembed (embeddings).
 
-Architecture: Long-lived HTTP MCP server (`mindojo serve`) with thin CLI client (`mindojo-cli`). Server handles all heavy operations (embedding, LLM, storage). CLI is a lightweight HTTP client with no fastembed/LanceDB deps.
+Architecture: Long-lived HTTP MCP server (`memcan serve`) with thin CLI client (`memcan-cli`). Server handles all heavy operations (embedding, LLM, storage). CLI is a lightweight HTTP client with no fastembed/LanceDB deps.
 
 ## Structure
 
 ```
 rs/                              # All Rust source code
-  mindojo-core/                  # Shared library (traits, LanceDB, genai, fastembed, pipeline, config)
-  mindojo-server/                # Fat server binary (MCP HTTP/stdio server + admin subcommands)
-  mindojo-cli/                   # Thin HTTP client binary
+  memcan-core/                  # Shared library (traits, LanceDB, genai, fastembed, pipeline, config)
+  memcan-server/                # Fat server binary (MCP HTTP/stdio server + admin subcommands)
+  memcan-cli/                   # Thin HTTP client binary
 Cargo.toml                       # Workspace root
-Dockerfile                       # Multi-stage build for mindojo server
+Dockerfile                       # Multi-stage build for memcan server
 claude-plugin/                   # Claude Code plugin
   .claude-plugin/                # Manifest
   hooks/                         # Event hooks (SubagentStop, PreCompact)
   skills/                        # Plugin skills
-  setup.sh                       # Downloads mindojo-cli binary
+  setup.sh                       # Downloads memcan-cli binary
   bin/                           # Downloaded binaries (gitignored)
 .github/workflows/               # CI + Release workflows
-docker-compose.yml               # Traefik + mindojo + optional Ollama
+docker-compose.yml               # Traefik + memcan + optional Ollama
 ```
 
 ## Server Subcommands
 
 ```
-mindojo serve [--stdio] [--listen ADDR]   # MCP server (default subcommand)
-mindojo index-code <dir> --project <name> [--tech-stack <s>] [--drop]
-mindojo index-standards <file> --standard-id <id> --standard-type <t> [--drop]
-mindojo migrate <file> [--dry-run]
-mindojo import-triaged <file> [--dry-run]
-mindojo test-classification --prompt <f> --model <m>
-mindojo download-model [--model <name>]
-mindojo completions <shell>
+memcan serve [--stdio] [--listen ADDR]   # MCP server (default subcommand)
+memcan index-code <dir> --project <name> [--tech-stack <s>] [--drop]
+memcan index-standards <file> --standard-id <id> --standard-type <t> [--drop]
+memcan migrate <file> [--dry-run]
+memcan import-triaged <file> [--dry-run]
+memcan test-classification --prompt <f> --model <m>
+memcan download-model [--model <name>]
+memcan completions <shell>
 ```
 
 ## CLI Subcommands
 
 ```
-mindojo-cli add <memory> [--project <p>]
-mindojo-cli search <query> [--project <p>] [--limit <n>]
-mindojo-cli extract                        # Hook handler: reads stdin, POSTs to server
-mindojo-cli status [operation_id]
-mindojo-cli count [--project <p>]
+memcan-cli add <memory> [--project <p>]
+memcan-cli search <query> [--project <p>] [--limit <n>]
+memcan-cli extract                        # Hook handler: reads stdin, POSTs to server
+memcan-cli status [operation_id]
+memcan-cli count [--project <p>]
 ```
 
 ## Versioning
@@ -71,7 +71,7 @@ cargo build --release --workspace # release build
 
 ```bash
 cargo test --workspace           # all unit tests (uses mock Ollama + tempdir LanceDB)
-cargo test -p mindojo-core       # core library tests only
+cargo test -p memcan-core       # core library tests only
 ```
 
 Tests use `mockito` for HTTP mocking and `tempfile` for ephemeral LanceDB directories. No live Ollama or external services required.
@@ -85,15 +85,15 @@ cargo fmt --all -- --check
 
 ## Configuration
 
-Environment variables (loaded from `~/.config/mindojo/.env` or `.env`):
+Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 
 | Variable | Default | Description |
 |---|---|---|
-| `MINDOJO_LISTEN` | `127.0.0.1:8191` | Server bind address (Docker overrides to `0.0.0.0:8191`) |
-| `MINDOJO_API_KEY` | *(none)* | Bearer token auth for MCP API |
-| `MINDOJO_URL` | `http://localhost:8190` | Server URL for thin clients (`mindojo-cli`) |
-| `MINDOJO_LOG_FILE` | *(none = stdout)* | Log file path (renamed from `LOG_FILE`) |
-| `LANCEDB_PATH` | `~/.local/share/mindojo/lancedb` | LanceDB storage directory |
+| `MEMCAN_LISTEN` | `127.0.0.1:8191` | Server bind address (Docker overrides to `0.0.0.0:8191`) |
+| `MEMCAN_API_KEY` | *(none)* | Bearer token auth for MCP API |
+| `MEMCAN_URL` | `http://localhost:8190` | Server URL for thin clients (`memcan-cli`) |
+| `MEMCAN_LOG_FILE` | *(none = stdout)* | Log file path (renamed from `LOG_FILE`) |
+| `LANCEDB_PATH` | `~/.local/share/memcan/lancedb` | LanceDB storage directory |
 | `DEFAULT_USER_ID` | `global` | Default memory scope |
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction |
 | `LLM_MODEL` | `ollama::qwen3.5:4b` | LLM model (genai format with provider prefix) |
@@ -101,4 +101,4 @@ Environment variables (loaded from `~/.config/mindojo/.env` or `.env`):
 | `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`). Passed to genai client explicitly. |
 | `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth (sent as `Authorization: Bearer $key`) |
 
-> **Note:** The genai crate does **not** read `OLLAMA_HOST` or `OLLAMA_API_KEY` from environment — MindOJO reads them via `Settings` and passes them to the genai client via `ServiceTargetResolver`.
+> **Note:** The genai crate does **not** read `OLLAMA_HOST` or `OLLAMA_API_KEY` from environment — MemCan reads them via `Settings` and passes them to the genai client via `ServiceTargetResolver`.

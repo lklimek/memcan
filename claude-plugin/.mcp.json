@@ -1,9 +1,9 @@
 {
   "brain": {
     "type": "http",
-    "url": "${MINDOJO_URL:-http://localhost:8190}/mcp",
+    "url": "${MEMCAN_URL:-http://localhost:8190}/mcp",
     "headers": {
-      "Authorization": "Bearer ${MINDOJO_API_KEY}"
+      "Authorization": "Bearer ${MEMCAN_API_KEY}"
     }
   }
 }

@@ -17,8 +17,8 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
 # These must match config.py constants
-OLD_COLLECTION = "mindojo"
-NEW_COLLECTION = "mindojo-memories"
+OLD_COLLECTION = "memcan"
+NEW_COLLECTION = "memcan-memories"
 EMBED_MODEL = "qwen3-embedding:4b"
 EMBED_DIMS = 2560
 
@@ -37,7 +37,7 @@ def main():
     # Resolve Ollama URL from .env if not provided
     ollama_url = args.ollama_url
     if not ollama_url:
-        from mindojo_mcp.config import settings
+        from memcan_mcp.config import settings
 
         ollama_url = settings.ollama_url
 

@@ -1,4 +1,4 @@
-# MindOJO — Persistent Memory for Claude Code
+# MemCan — Persistent Memory for Claude Code
 
 Rust MCP server providing persistent memory via embedded LanceDB + fastembed + genai. Store and recall learnings, decisions, and preferences across Claude Code sessions.
 
@@ -8,30 +8,30 @@ Rust MCP server providing persistent memory via embedded LanceDB + fastembed + g
 # 1. Install Ollama (https://ollama.com/download) — needed for LLM only
 ollama pull qwen3.5:4b
 
-# 2. Start the MindOJO server (choose one):
+# 2. Start the MemCan server (choose one):
 #    a) Docker (recommended):
 docker compose up -d
 #    b) From source:
-cargo build --release -p mindojo-server
-./target/release/mindojo serve
+cargo build --release -p memcan-server
+./target/release/memcan serve
 
 # 3. Install plugin in Claude Code
-#    Settings → Plugins → enable mindojo@lklimek
+#    Settings → Plugins → enable memcan@lklimek
 #    Or add to ~/.claude/settings.json:
-#      "enabledPlugins": { "mindojo@lklimek": true }
+#      "enabledPlugins": { "memcan@lklimek": true }
 
 # 4. Configure environment (in a Claude Code session)
-/setup-mindojo
+/setup-memcan
 ```
 
-No external database required — LanceDB runs embedded on the server, storing data at `~/.local/share/mindojo/lancedb`.
+No external database required — LanceDB runs embedded on the server, storing data at `~/.local/share/memcan/lancedb`.
 
 ## Architecture
 
-MindOJO uses a two-component architecture:
+MemCan uses a two-component architecture:
 
-- **Server** (`mindojo serve`) — long-lived HTTP MCP server handling embeddings, LLM, and storage. Runs as a Docker container or system service on port 8191 (internal), fronted by Traefik on port 8190.
-- **CLI** (`mindojo-cli`) — thin HTTP client for hooks. No fastembed/LanceDB deps (~5 MB vs ~180 MB server).
+- **Server** (`memcan serve`) — long-lived HTTP MCP server handling embeddings, LLM, and storage. Runs as a Docker container or system service on port 8191 (internal), fronted by Traefik on port 8190.
+- **CLI** (`memcan-cli`) — thin HTTP client for hooks. No fastembed/LanceDB deps (~5 MB vs ~180 MB server).
 
 The Claude Code plugin connects to the server via HTTP MCP transport (Streamable HTTP).
 
@@ -39,7 +39,7 @@ The Claude Code plugin connects to the server via HTTP MCP transport (Streamable
 
 - **LanceDB** — embedded vector database (no server needed, data stored locally)
 - **fastembed** — in-process ONNX embeddings (`MultilingualE5Large`, 1024 dimensions, ~1.3 GB model downloaded on first use)
-- **genai + Ollama** — LLM inference (`ollama::qwen3.5:4b`); MindOJO reads `OLLAMA_HOST` and passes it to the genai client
+- **genai + Ollama** — LLM inference (`ollama::qwen3.5:4b`); MemCan reads `OLLAMA_HOST` and passes it to the genai client
 - **rmcp 1.1** — Rust MCP SDK with Streamable HTTP transport
 - **axum** — HTTP framework mounting MCP service + health endpoint + auth middleware
 - **DISTILL_MEMORIES** — when enabled (default: `true`), the LLM extracts structured facts from raw text before storing
@@ -53,19 +53,19 @@ The Claude Code plugin connects to the server via HTTP MCP transport (Streamable
 
 ### Plugin Install
 
-Enable `mindojo@lklimek` in `~/.claude/settings.json`:
+Enable `memcan@lklimek` in `~/.claude/settings.json`:
 
 ```json
 {
   "enabledPlugins": {
-    "mindojo@lklimek": true
+    "memcan@lklimek": true
   }
 }
 ```
 
-The plugin's `setup.sh` downloads the `mindojo-cli` binary for your platform. The MCP server connection is registered automatically via `.mcp.json` — no manual `claude mcp add` needed.
+The plugin's `setup.sh` downloads the `memcan-cli` binary for your platform. The MCP server connection is registered automatically via `.mcp.json` — no manual `claude mcp add` needed.
 
-> **Disk space:** The embedding model (`MultilingualE5Large`) requires ~1.3 GB of disk space, downloaded on the server's first startup. LanceDB data is stored at `~/.local/share/mindojo/lancedb` (or `/data/lancedb` in Docker). Plan for ~2 GB total.
+> **Disk space:** The embedding model (`MultilingualE5Large`) requires ~1.3 GB of disk space, downloaded on the server's first startup. LanceDB data is stored at `~/.local/share/memcan/lancedb` (or `/data/lancedb` in Docker). Plan for ~2 GB total.
 
 ### Building from Source
 
@@ -74,16 +74,16 @@ cargo build --release --workspace
 ```
 
 Binaries are placed in `target/release/`:
-- `mindojo` — fat server (MCP HTTP/stdio server + all admin subcommands)
-- `mindojo-cli` — thin HTTP client for hooks and manual operations
+- `memcan` — fat server (MCP HTTP/stdio server + all admin subcommands)
+- `memcan-cli` — thin HTTP client for hooks and manual operations
 
 ### Environment Setup
 
-After enabling the plugin, run `/setup-mindojo` in a Claude Code session. It will:
+After enabling the plugin, run `/setup-memcan` in a Claude Code session. It will:
 
-1. **Check prerequisites** — MindOJO CLI binary, server reachability, Ollama reachability
+1. **Check prerequisites** — MemCan CLI binary, server reachability, Ollama reachability
 2. **Configure `.env`** — copy `.env.example`, set server URL, API key, Ollama host
-3. **Create user rule** — writes `~/.claude/rules/mindojo.md` so agents know to use memory
+3. **Create user rule** — writes `~/.claude/rules/memcan.md` so agents know to use memory
 
 Restart Claude Code after setup to connect the MCP server.
 
@@ -105,24 +105,24 @@ Restart Claude Code after setup to connect the MCP server.
 ## Server Subcommands
 
 ```
-mindojo serve [--stdio] [--listen ADDR]   # MCP server (default subcommand)
-mindojo index-code <dir> --project <name> [--tech-stack <s>] [--drop]
-mindojo index-standards <file> --standard-id <id> --standard-type <t> [--drop]
-mindojo migrate <file> [--dry-run]
-mindojo import-triaged <file> [--dry-run]
-mindojo test-classification --prompt <f> --model <m>
-mindojo download-model [--model <name>]
-mindojo completions <shell>
+memcan serve [--stdio] [--listen ADDR]   # MCP server (default subcommand)
+memcan index-code <dir> --project <name> [--tech-stack <s>] [--drop]
+memcan index-standards <file> --standard-id <id> --standard-type <t> [--drop]
+memcan migrate <file> [--dry-run]
+memcan import-triaged <file> [--dry-run]
+memcan test-classification --prompt <f> --model <m>
+memcan download-model [--model <name>]
+memcan completions <shell>
 ```
 
 ## CLI Subcommands
 
 ```
-mindojo-cli add <memory> [--project <p>]
-mindojo-cli search <query> [--project <p>] [--limit <n>]
-mindojo-cli extract                        # Hook handler: reads stdin, POSTs to server
-mindojo-cli status [operation_id]
-mindojo-cli count [--project <p>]
+memcan-cli add <memory> [--project <p>]
+memcan-cli search <query> [--project <p>] [--limit <n>]
+memcan-cli extract                        # Hook handler: reads stdin, POSTs to server
+memcan-cli status [operation_id]
+memcan-cli count [--project <p>]
 ```
 
 ## Memory Scoping
@@ -132,7 +132,7 @@ mindojo-cli count [--project <p>]
 
 ## Claude Code Context Persistence
 
-Claude Code loads context into the attention window via several mechanisms. MindOJO leverages them to ensure agents always know to use memory:
+Claude Code loads context into the attention window via several mechanisms. MemCan leverages them to ensure agents always know to use memory:
 
 | Mechanism | Location | When Loaded | Shared? |
 |-----------|----------|-------------|---------|
@@ -144,7 +144,7 @@ Claude Code loads context into the attention window via several mechanisms. Mind
 | **Path-scoped rules** | `.claude/rules/*.md` with `paths:` frontmatter | On-demand, when matching files are touched | Team (via git) |
 | **Auto memory** | `~/.claude/projects/<project>/memory/` | First 200 lines at session start | Just you |
 
-The user rule created by `/setup-mindojo` lives in `~/.claude/rules/mindojo.md` — loaded into every session so agents always know to search and save memories.
+The user rule created by `/setup-memcan` lives in `~/.claude/rules/memcan.md` — loaded into every session so agents always know to search and save memories.
 
 ## Configuration
 
@@ -152,26 +152,26 @@ The `.env` file configures both the server and CLI. Search order:
 
 | Priority | Location | Use case |
 |----------|----------|----------|
-| 1 | `~/.config/mindojo/.env` (Linux) / `~/Library/Application Support/mindojo/.env` (macOS) | Production — survives plugin updates |
+| 1 | `~/.config/memcan/.env` (Linux) / `~/Library/Application Support/memcan/.env` (macOS) | Production — survives plugin updates |
 | 2 | `./.env` in CWD | Development — running from source checkout |
 | 3 | Defaults | Fallback (localhost, default LanceDB path) |
 
-Environment variables always override `.env` values. Run `/setup-mindojo` to create the config file, or copy `.env.example` manually:
+Environment variables always override `.env` values. Run `/setup-memcan` to create the config file, or copy `.env.example` manually:
 
 ```bash
-mkdir -p ~/.config/mindojo
-cp .env.example ~/.config/mindojo/.env
+mkdir -p ~/.config/memcan
+cp .env.example ~/.config/memcan/.env
 ```
 
 **Settings reference** (see `.env.example`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MINDOJO_LISTEN` | `127.0.0.1:8191` | Server bind address (Docker overrides to `0.0.0.0:8191`) |
-| `MINDOJO_API_KEY` | *(none)* | Bearer token auth for MCP API |
-| `MINDOJO_URL` | `http://localhost:8190` | Server URL for thin clients (`mindojo-cli`) |
-| `MINDOJO_LOG_FILE` | `~/.claude/logs/mindojo-mcp.log` | Log file path (set empty for stdout) |
-| `LANCEDB_PATH` | `~/.local/share/mindojo/lancedb` | LanceDB storage directory |
+| `MEMCAN_LISTEN` | `127.0.0.1:8191` | Server bind address (Docker overrides to `0.0.0.0:8191`) |
+| `MEMCAN_API_KEY` | *(none)* | Bearer token auth for MCP API |
+| `MEMCAN_URL` | `http://localhost:8190` | Server URL for thin clients (`memcan-cli`) |
+| `MEMCAN_LOG_FILE` | `~/.claude/logs/memcan-mcp.log` | Log file path (set empty for stdout) |
+| `LANCEDB_PATH` | `~/.local/share/memcan/lancedb` | LanceDB storage directory |
 | `DEFAULT_USER_ID` | `global` | Default memory scope |
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction |
 | `LLM_MODEL` | `ollama::qwen3.5:4b` | LLM model (genai format with provider prefix) |
@@ -179,7 +179,7 @@ cp .env.example ~/.config/mindojo/.env
 | `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`) |
 | `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth |
 
-> **Note:** The genai crate does **not** read `OLLAMA_HOST` or `OLLAMA_API_KEY` from environment — MindOJO reads them via `Settings` and passes them to the genai client via `ServiceTargetResolver`.
+> **Note:** The genai crate does **not** read `OLLAMA_HOST` or `OLLAMA_API_KEY` from environment — MemCan reads them via `Settings` and passes them to the genai client via `ServiceTargetResolver`.
 
 ## Remote Ollama
 
@@ -200,7 +200,7 @@ For production deployments, protect the Ollama endpoint with a reverse proxy pro
 ## Docker Deployment
 
 ```bash
-# Start Traefik + MindOJO (uses remote Ollama via OLLAMA_HOST)
+# Start Traefik + MemCan (uses remote Ollama via OLLAMA_HOST)
 docker compose up -d
 
 # Start with local GPU Ollama + Open WebUI
@@ -208,12 +208,12 @@ docker compose --profile gpu up -d
 ```
 
 The `docker-compose.yml` provides:
-- **Traefik** reverse proxy on ports 8190 (MindOJO), 11434 (Ollama), 11400 (Open WebUI)
-- **MindOJO** server with Bearer token auth, health check, named volumes for data/models
+- **Traefik** reverse proxy on ports 8190 (MemCan), 11434 (Ollama), 11400 (Open WebUI)
+- **MemCan** server with Bearer token auth, health check, named volumes for data/models
 - **Ollama** (optional, `gpu` profile) with NVIDIA runtime
 - **Open WebUI** (optional, `gpu` profile) for Ollama web interface
 
-Set `MINDOJO_API_KEY` in `.env` before deploying — it's used for both MindOJO server auth and Traefik middleware auth.
+Set `MEMCAN_API_KEY` in `.env` before deploying — it's used for both MemCan server auth and Traefik middleware auth.
 
 ## License
 

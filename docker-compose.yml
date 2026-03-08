@@ -1,8 +1,8 @@
-# MindOJO Docker Compose
+# MemCan Docker Compose
 #
 # Usage:
-#   docker compose up                     — traefik + mindojo (Ollama on remote host via OLLAMA_HOST)
-#   docker compose --profile gpu up       — traefik + mindojo + ollama + open-webui
+#   docker compose up                     — traefik + memcan (Ollama on remote host via OLLAMA_HOST)
+#   docker compose --profile gpu up       — traefik + memcan + ollama + open-webui
 #   Set COMPOSE_PROFILES=gpu in .env to enable Ollama by default.
 
 services:
@@ -15,7 +15,7 @@ services:
       - "--providers.docker.constraints=Label(`traefik.instance`,`ollama`)"
       - "--entrypoints.ollama.address=:11434"
       - "--entrypoints.webui.address=:11400"
-      - "--entrypoints.mindojo.address=:8190"
+      - "--entrypoints.memcan.address=:8190"
       - "--experimental.plugins.traefik-api-token-middleware.modulename=github.com/Aetherinox/traefik-api-token-middleware"
       - "--experimental.plugins.traefik-api-token-middleware.version=v0.1.4"
     network_mode: host
@@ -25,7 +25,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     restart: unless-stopped
 
-  mindojo:
+  memcan:
     build: .
     environment:
       LANCEDB_PATH: /data/lancedb
@@ -33,32 +33,32 @@ services:
       OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-ollama::qwen3.5:9b}
-      MINDOJO_API_KEY: ${MINDOJO_API_KEY}
-      MINDOJO_LOG_FILE: ""
-      MINDOJO_LISTEN: 0.0.0.0:8191
+      MEMCAN_API_KEY: ${MEMCAN_API_KEY}
+      MEMCAN_LOG_FILE: ""
+      MEMCAN_LISTEN: 0.0.0.0:8191
       DISTILL_MEMORIES: ${DISTILL_MEMORIES:-true}
       EMBED_MODEL: ${EMBED_MODEL:-MultilingualE5Large}
     volumes:
-      - mindojo-data:/data/lancedb
-      - mindojo-models:/data/fastembed
+      - memcan-data:/data/lancedb
+      - memcan-models:/data/fastembed
     networks:
       - traefik
       - backend
-    # No ports: mapping — mindojo is NOT directly accessible from host.
+    # No ports: mapping — memcan is NOT directly accessible from host.
     # External access is only through Traefik (:8190).
     labels:
       - "traefik.instance=ollama"
       - "traefik.enable=true"
-      - "traefik.http.routers.mindojo.rule=PathPrefix(`/`)"
-      - "traefik.http.routers.mindojo.entrypoints=mindojo"
-      - "traefik.http.services.mindojo.loadbalancer.server.port=8191"
-      - "traefik.http.middlewares.mindojo-ipallow.ipallowlist.sourcerange=127.0.0.1/32,::1/128,10.29.0.0/16"
-      - "traefik.http.middlewares.mindojo-auth.plugin.traefik-api-token-middleware.authenticationheader=false"
-      - "traefik.http.middlewares.mindojo-auth.plugin.traefik-api-token-middleware.bearerheader=true"
-      - "traefik.http.middlewares.mindojo-auth.plugin.traefik-api-token-middleware.bearerheadername=Authorization"
-      - "traefik.http.middlewares.mindojo-auth.plugin.traefik-api-token-middleware.tokens=${MINDOJO_API_KEY}"
-      - "traefik.http.middlewares.mindojo-auth.plugin.traefik-api-token-middleware.removeheadersonsuccess=false"
-      - "traefik.http.routers.mindojo.middlewares=mindojo-ipallow@docker,mindojo-auth@docker"
+      - "traefik.http.routers.memcan.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.memcan.entrypoints=memcan"
+      - "traefik.http.services.memcan.loadbalancer.server.port=8191"
+      - "traefik.http.middlewares.memcan-ipallow.ipallowlist.sourcerange=127.0.0.1/32,::1/128,10.29.0.0/16"
+      - "traefik.http.middlewares.memcan-auth.plugin.traefik-api-token-middleware.authenticationheader=false"
+      - "traefik.http.middlewares.memcan-auth.plugin.traefik-api-token-middleware.bearerheader=true"
+      - "traefik.http.middlewares.memcan-auth.plugin.traefik-api-token-middleware.bearerheadername=Authorization"
+      - "traefik.http.middlewares.memcan-auth.plugin.traefik-api-token-middleware.tokens=${MEMCAN_API_KEY}"
+      - "traefik.http.middlewares.memcan-auth.plugin.traefik-api-token-middleware.removeheadersonsuccess=false"
+      - "traefik.http.routers.memcan.middlewares=memcan-ipallow@docker,memcan-auth@docker"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8191/health"]
@@ -139,5 +139,5 @@ networks:
 
 volumes:
   open-webui:
-  mindojo-data:
-  mindojo-models:
+  memcan-data:
+  memcan-models:
