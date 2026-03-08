@@ -56,6 +56,13 @@ pub enum MindojoError {
     Other(String),
 }
 
+impl MindojoError {
+    /// Returns `true` when this error originated from an LLM chat call.
+    pub fn is_llm_error(&self) -> bool {
+        matches!(self, MindojoError::LlmChat { .. })
+    }
+}
+
 // -- Manual From impls with no context --------------------------------------
 
 impl From<std::io::Error> for MindojoError {
@@ -118,3 +125,32 @@ macro_rules! impl_result_ext {
 impl_result_ext!(std::io::Error => Io);
 impl_result_ext!(serde_json::Error => Json);
 impl_result_ext!(lancedb::Error => LanceDb);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_llm_error_true() {
+        let err = MindojoError::LlmChat {
+            context: "test".into(),
+            detail: "fail".into(),
+        };
+        assert!(err.is_llm_error());
+    }
+
+    #[test]
+    fn test_is_llm_error_false_for_other_variants() {
+        let err = MindojoError::Embedding {
+            context: "test".into(),
+            detail: "fail".into(),
+        };
+        assert!(!err.is_llm_error());
+
+        let err = MindojoError::Other("something".into());
+        assert!(!err.is_llm_error());
+
+        let err = MindojoError::Config("bad".into());
+        assert!(!err.is_llm_error());
+    }
+}

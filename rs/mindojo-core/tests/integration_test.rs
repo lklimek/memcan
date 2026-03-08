@@ -101,6 +101,23 @@ impl LlmProvider for FailingLlm {
     }
 }
 
+/// Mock embedding provider that always fails.
+struct FailingEmbedder;
+
+#[async_trait]
+impl EmbeddingProvider for FailingEmbedder {
+    async fn embed(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        Err(MindojoError::Embedding {
+            context: "mock embed failure".into(),
+            detail: "simulated error".into(),
+        })
+    }
+
+    fn dimensions(&self) -> usize {
+        TEST_DIMS
+    }
+}
+
 /// Mock LLM that returns malformed JSON (simulates garbled response).
 struct MalformedJsonLlm;
 
@@ -441,20 +458,111 @@ async fn test_lancedb_crud() {
     assert_eq!(all[0].id, "id-2");
 }
 
-// -- Test 8: LLM error propagation ------------------------------------------
+// -- Test 8: LLM error propagation from extract_facts ----------------------
 
 #[tokio::test]
-async fn test_llm_error_propagates() {
+async fn test_llm_error_propagates_from_extract_facts() {
     let llm = FailingLlm;
     let result = extract_facts("some content", &llm, "test-model", None).await;
+    // extract_facts now propagates LLM errors
     assert!(result.is_err(), "LLM failure should propagate as Err");
+    assert!(
+        result.unwrap_err().is_llm_error(),
+        "error should be an LLM error"
+    );
+}
+
+// -- Test 8b: do_add_memory falls back to raw store on LLM error ----------
+
+#[tokio::test]
+async fn test_do_add_memory_falls_back_on_llm_error() {
+    let embedder = MockEmbedder::new();
+    let llm = FailingLlm;
+
+    let (_tmp, store) = temp_store().await;
+    store
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .await
+        .expect("create table");
+
+    let metadata = serde_json::json!({});
+    let result = do_add_memory(
+        "important lesson learned",
+        "test-user",
+        &metadata,
+        true, // distill
+        MEMORIES_TABLE,
+        &store,
+        &embedder,
+        &llm,
+        "test-llm",
+        None,
+    )
+    .await;
+
+    // Pipeline should succeed (fallback to raw store)
+    assert!(result.is_ok(), "pipeline should fall back, not fail");
+    assert!(
+        result.unwrap().is_none(),
+        "should return None (no extracted facts)"
+    );
+
+    // Verify the memory was stored raw
+    let count = store
+        .count(MEMORIES_TABLE, None)
+        .await
+        .expect("count should work");
+    assert_eq!(count, 1, "memory should be stored raw despite LLM failure");
 }
 
 // -- Test 9: malformed JSON from LLM ----------------------------------------
 
 #[tokio::test]
-async fn test_malformed_llm_json_returns_error() {
+async fn test_malformed_llm_json_handled_gracefully() {
     let llm = MalformedJsonLlm;
     let result = extract_facts("some content", &llm, "test-model", None).await;
-    assert!(result.is_err(), "malformed JSON from LLM should return Err");
+    // Malformed JSON should be caught and return Ok(None).
+    assert!(result.is_ok());
+    assert!(
+        result.unwrap().is_none(),
+        "malformed JSON should yield None (graceful fallback)"
+    );
+}
+
+// -- Test 10: non-LLM errors propagate through do_add_memory ----------------
+
+#[tokio::test]
+async fn test_non_llm_error_propagates() {
+    let embedder = FailingEmbedder;
+    let llm = FailingLlm;
+
+    let (_tmp, store) = temp_store().await;
+    store
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .await
+        .expect("create table");
+
+    let metadata = serde_json::json!({});
+
+    // LLM fails first, pipeline falls back to store_raw, which calls embed
+    // and embed fails with a non-LLM error => should propagate
+    let result = do_add_memory(
+        "some content",
+        "test-user",
+        &metadata,
+        true,
+        MEMORIES_TABLE,
+        &store,
+        &embedder,
+        &llm,
+        "test-llm",
+        None,
+    )
+    .await;
+
+    assert!(result.is_err(), "embedding error should propagate");
+    assert!(
+        !result.unwrap_err().is_llm_error(),
+        "should not be an LLM error"
+    );
 }

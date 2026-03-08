@@ -8,8 +8,17 @@ use crate::traits::{LlmMessage, LlmOptions, LlmProvider, Role};
 use async_trait::async_trait;
 use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat};
-use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
-use genai::{Client, ClientConfig};
+use genai::resolver::{AuthData, Endpoint};
+use genai::{Client, ModelIden};
+
+/// Strip the `"ollama::"` provider prefix from a model name if present.
+///
+/// genai v0.3.5 does not strip the prefix from `ModelIden.model_name`, so
+/// `"ollama::qwen3.5:9b"` is sent as-is in the HTTP body. Ollama rejects any
+/// model name containing `"::"`.
+pub fn strip_ollama_prefix(name: &str) -> &str {
+    name.strip_prefix("ollama::").unwrap_or(name)
+}
 
 /// LLM provider backed by [`genai::Client`].
 ///
@@ -33,40 +42,47 @@ impl GenaiLlmProvider {
 
     /// Build from application settings.
     ///
-    /// Uses `Settings::llm_model` as the default model. When
-    /// `ollama_host` or `ollama_api_key` is set, configures a
-    /// `ServiceTargetResolver` that overrides the endpoint and/or auth
-    /// for Ollama requests (the genai crate reads neither `OLLAMA_HOST`
-    /// nor `OLLAMA_API_KEY` from the environment on its own).
+    /// Always installs a `ServiceTargetResolver` that:
+    /// 1. Strips the `"ollama::"` prefix from model names (genai v0.3.5 bug workaround)
+    /// 2. Applies `OLLAMA_HOST` endpoint override when configured
+    /// 3. Applies `OLLAMA_API_KEY` bearer auth when configured
+    ///
+    /// The genai crate reads neither `OLLAMA_HOST` nor `OLLAMA_API_KEY` from
+    /// the environment on its own.
     pub fn from_settings(settings: &crate::config::Settings) -> Self {
         let ollama_host = settings.ollama_host.clone();
         let ollama_api_key = settings.ollama_api_key.clone();
 
-        let client = if ollama_host.is_some() || ollama_api_key.is_some() {
-            let endpoint = ollama_host.map(|host| {
-                let mut base = host.trim_end_matches('/').to_string();
-                if !base.ends_with("/v1/") {
-                    base.push_str("/v1/");
-                }
-                Endpoint::from_owned(base)
-            });
-            let resolver =
-                ServiceTargetResolver::from_resolver_fn(move |mut st: genai::ServiceTarget| {
-                    if st.model.adapter_kind == AdapterKind::Ollama {
-                        if let Some(ref ep) = endpoint {
-                            st.endpoint = ep.clone();
-                        }
-                        if let Some(ref key) = ollama_api_key {
-                            st.auth = AuthData::Key(key.clone());
-                        }
+        let endpoint = ollama_host.map(|host| {
+            let mut base = host.trim_end_matches('/').to_string();
+            if !base.ends_with("/v1/") {
+                base.push_str("/v1/");
+            }
+            Endpoint::from_owned(base)
+        });
+
+        let client = Client::builder()
+            .with_service_target_resolver_fn(move |mut st: genai::ServiceTarget| {
+                if st.model.adapter_kind == AdapterKind::Ollama {
+                    // genai v0.3.5 keeps the "ollama::" prefix in model_name,
+                    // which Ollama rejects with "model is required".
+                    let raw_name: &str = &st.model.model_name;
+                    let stripped = strip_ollama_prefix(raw_name);
+                    if stripped != raw_name {
+                        st.model = ModelIden::new(AdapterKind::Ollama, stripped);
                     }
-                    Ok(st)
-                });
-            let config = ClientConfig::default().with_service_target_resolver(resolver);
-            Client::builder().with_config(config).build()
-        } else {
-            Client::default()
-        };
+
+                    if let Some(ref ep) = endpoint {
+                        st.endpoint = ep.clone();
+                    }
+                    if let Some(ref key) = ollama_api_key {
+                        st.auth = AuthData::Key(key.clone());
+                    }
+                }
+                Ok(st)
+            })
+            .build();
+
         Self {
             client,
             default_model: settings.llm_model.clone(),
@@ -139,7 +155,6 @@ impl LlmProvider for GenaiLlmProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Settings;
 
     #[test]
     fn test_default_model() {
@@ -148,38 +163,30 @@ mod tests {
     }
 
     #[test]
-    fn test_from_settings_without_ollama_host() {
-        let settings = Settings::default();
-        let provider = GenaiLlmProvider::from_settings(&settings);
-        assert_eq!(provider.default_model(), "ollama::qwen3.5:4b");
+    fn test_strip_ollama_prefix_with_prefix() {
+        assert_eq!(strip_ollama_prefix("ollama::qwen3.5:9b"), "qwen3.5:9b");
     }
 
     #[test]
-    fn test_from_settings_with_ollama_host() {
-        let settings = Settings {
-            ollama_host: Some("http://10.29.188.1:11434".into()),
-            ..Settings::default()
-        };
-        let provider = GenaiLlmProvider::from_settings(&settings);
-        assert_eq!(provider.default_model(), "ollama::qwen3.5:4b");
+    fn test_strip_ollama_prefix_without_prefix() {
+        assert_eq!(strip_ollama_prefix("gpt-4o"), "gpt-4o");
     }
 
     #[test]
-    fn test_from_settings_with_ollama_api_key() {
-        let settings = Settings {
-            ollama_host: Some("http://10.29.188.1:11434".into()),
-            ollama_api_key: Some("test-token".into()),
-            ..Settings::default()
-        };
-        let provider = GenaiLlmProvider::from_settings(&settings);
-        assert_eq!(provider.default_model(), "ollama::qwen3.5:4b");
+    fn test_strip_ollama_prefix_empty() {
+        assert_eq!(strip_ollama_prefix(""), "");
     }
 
     #[test]
-    fn test_from_settings_with_api_key_only() {
-        let settings = Settings {
-            ollama_api_key: Some("test-token".into()),
-            ..Settings::default()
+    fn test_strip_ollama_prefix_partial() {
+        assert_eq!(strip_ollama_prefix("ollama:model"), "ollama:model");
+    }
+
+    #[test]
+    fn test_from_settings_stores_model() {
+        let settings = crate::config::Settings {
+            llm_model: "ollama::qwen3.5:4b".into(),
+            ..crate::config::Settings::default()
         };
         let provider = GenaiLlmProvider::from_settings(&settings);
         assert_eq!(provider.default_model(), "ollama::qwen3.5:4b");
