@@ -40,11 +40,11 @@ Env vars always override `.env` values.
 
 Check if `.env` exists at `~/.config/mindojo/.env` (Linux) or equivalent.
 
-If not, create the config dir and copy from `.env.example`:
+If not, create the config dir and write a new `.env` with the key variables (do NOT copy from a file — the plugin cache may not have `.env.example`):
 ```bash
 mkdir -p ~/.config/mindojo
-cp ${CLAUDE_PLUGIN_ROOT}/../.env.example ~/.config/mindojo/.env
 ```
+Then write `~/.config/mindojo/.env` with the variables listed below, asking the user for values.
 
 Key configuration variables to review with the user:
 
