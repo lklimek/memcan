@@ -2,13 +2,15 @@
 name = "memcan"
 version.workspace = true
 edition.workspace = true
+rust-version = "1.92"
 license.workspace = true
 description = "Persistent memory for Claude Code — CLI client"
 keywords = ["claude-code", "mcp", "memory", "cli"]
 categories = ["command-line-utilities"]
 repository.workspace = true
 homepage = "https://github.com/lklimek/memcan"
-readme = "../../README.md"
+readme = "README.md"
+exclude = [".env*"]
 
 [[bin]]
 name = "memcan"
