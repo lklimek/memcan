@@ -57,7 +57,7 @@ services:
       - "traefik.http.middlewares.mindojo-auth.plugin.traefik-api-token-middleware.bearerheader=true"
       - "traefik.http.middlewares.mindojo-auth.plugin.traefik-api-token-middleware.bearerheadername=Authorization"
       - "traefik.http.middlewares.mindojo-auth.plugin.traefik-api-token-middleware.tokens=${MINDOJO_API_KEY}"
-      - "traefik.http.middlewares.mindojo-auth.plugin.traefik-api-token-middleware.removeheadersonsuccess=true"
+      - "traefik.http.middlewares.mindojo-auth.plugin.traefik-api-token-middleware.removeheadersonsuccess=false"
       - "traefik.http.routers.mindojo.middlewares=mindojo-ipallow@docker,mindojo-auth@docker"
     restart: unless-stopped
     healthcheck:

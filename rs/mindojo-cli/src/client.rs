@@ -23,7 +23,7 @@ impl McpClient {
 
         let mut transport_config = StreamableHttpClientTransportConfig::with_uri(url);
         if let Some(ref key) = config.api_key {
-            transport_config = transport_config.auth_header(format!("Bearer {key}"));
+            transport_config = transport_config.auth_header(key.clone());
         }
 
         let transport =
