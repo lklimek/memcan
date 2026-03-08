@@ -1,11 +1,10 @@
-# Publish the `memcan` crate to crates.io on version tags.
+# Publish the `memcan` crate to crates.io on GitHub release.
 # Runs CI checks first (check, test, clippy, fmt), then publishes if all pass.
 name: Publish to crates.io
 
 on:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types: [published]
 
 env:
   CARGO_TERM_COLOR: always

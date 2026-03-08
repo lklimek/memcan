@@ -61,6 +61,16 @@ Follow [SemVer 2](https://semver.org/).
 - **Minor** (0.x.0): new MCP tools, new skills, significant behavior changes
 - **Patch** (0.0.x): bug fixes, doc corrections, minor tweaks
 
+### Release Process
+
+All release workflows trigger on **GitHub release creation**, not tag pushes.
+
+1. Bump version in `Cargo.toml` (workspace) and `.claude-plugin/plugin.json`
+2. Commit and push to `main`
+3. Create a GitHub release via `gh release create vX.Y.Z --generate-notes`
+4. This triggers: Release (build binaries + attach to release), Publish (crates.io), Docker (build + push image)
+5. Manual test builds: use `workflow_dispatch` on the Release workflow (artifacts only, no release)
+
 ## Building
 
 ```bash
