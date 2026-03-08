@@ -13,20 +13,35 @@ Configures the MemCan environment. The plugin and MCP server are already install
 
 MemCan uses a two-component architecture:
 - **Server** (`memcan-server serve`) — long-lived HTTP MCP server handling embeddings, LLM, and storage. Runs as a Docker container or system service.
-- **CLI** (`memcan`) — thin HTTP client for hooks. Installed via `cargo install memcan`.
+- **CLI** (`memcan`) — thin HTTP client for hooks. Installed via `setup.sh` or `cargo install memcan`.
 
 The Claude Code plugin connects to the server via HTTP MCP transport (configured in `.mcp.json`).
 
 ## Steps
 
-### 1. Check Prerequisites
+### 1. Install CLI and Server
 
-Verify:
-- MemCan CLI is on PATH: `command -v memcan`. If missing, tell the user to run `cargo install memcan`.
+Check `command -v memcan`. If missing, install it using the setup script:
 
-Note: Server connectivity is checked in Step 4. Don't require it here.
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/lklimek/memcan/main/setup.sh)
+```
 
-If any prerequisite fails, tell the user what's missing and how to fix it, then stop.
+The script handles both CLI binary installation and Docker Compose server setup:
+- Downloads and installs the `memcan` CLI binary
+- Downloads `docker-compose.yml` and creates `.env` files with generated API keys
+- Does NOT auto-start the server — prints instructions for `docker compose up -d`
+
+If Docker is not available and the user only needs the CLI, use `--cli-only`:
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/lklimek/memcan/main/setup.sh) --cli-only
+```
+
+Other flags: `--version VERSION`, `--install-dir DIR`, `--server-dir DIR`.
+
+Verify the install succeeded (`command -v memcan`). If it fails, stop and report the error.
+
+Note: The script creates `.env` files (server + CLI) but does NOT start the server. Server connectivity is checked in Step 4.
 
 ### 2. Configure Secrets & Settings
 
