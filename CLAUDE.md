@@ -77,4 +77,4 @@ Environment variables (loaded from `~/.config/mindojo/.env` or `.env`):
 | `EMBED_DIMS` | `1024` | Embedding vector dimensions (must match embed model) |
 | `LOG_FILE` | `~/.claude/logs/mindojo-mcp.log` | Log file path |
 
-> **Note:** genai reads `OLLAMA_HOST` (default `http://localhost:11434`) for the Ollama endpoint. `OLLAMA_URL` and `OLLAMA_API_KEY` are no longer used.
+> **Note:** genai reads `OLLAMA_HOST` (default `http://localhost:11434`) for the Ollama endpoint.

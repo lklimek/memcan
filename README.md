@@ -37,7 +37,9 @@ Enable `mindojo@lklimek` in `~/.claude/settings.json`:
 }
 ```
 
-The plugin's `setup.sh` downloads pre-built binaries for your platform. The MCP server is registered automatically via `.mcp.json` — no manual `claude mcp add` needed.
+The plugin's `setup.sh` downloads pre-built binaries for your platform and pre-downloads the embedding model (~1.3 GB). The MCP server is registered automatically via `.mcp.json` — no manual `claude mcp add` needed.
+
+> **Disk space:** The embedding model (`MultilingualE5Large`) requires ~1.3 GB of disk space, stored in `.fastembed_cache/` (fastembed's default, shared with other fastembed apps; override with `FASTEMBED_CACHE_DIR` or `HF_HOME`). LanceDB data is stored at `~/.local/share/mindojo/lancedb`. Plan for ~2 GB total.
 
 ### Building from Source
 
@@ -60,7 +62,7 @@ Restart Claude Code after setup to connect the MCP server.
 ## Architecture
 
 - **LanceDB** — embedded vector database (no server needed, data stored locally)
-- **fastembed** — in-process ONNX embeddings (`MultilingualE5Large`, 1024 dimensions)
+- **fastembed** — in-process ONNX embeddings (`MultilingualE5Large`, 1024 dimensions, ~1.3 GB model downloaded on first use)
 - **genai + Ollama** — LLM inference (`ollama::qwen3.5:4b`); genai uses `OLLAMA_HOST` env var for endpoint configuration
 - **DISTILL_MEMORIES** — when enabled (default: `true`), the LLM extracts structured facts from raw text before storing
 
