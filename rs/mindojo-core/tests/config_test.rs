@@ -32,6 +32,7 @@ fn test_env_override() {
     let original_dims = env::var("EMBED_DIMS").ok();
     let original_distill = env::var("DISTILL_MEMORIES").ok();
     let original_llm = env::var("LLM_MODEL").ok();
+    let original_embed = env::var("EMBED_MODEL").ok();
 
     // SAFETY: env::set_var is unsafe in edition 2024 because modifying the
     // environment is inherently racy when other threads read it. This is
@@ -41,6 +42,7 @@ fn test_env_override() {
     unsafe {
         env::set_var("DEFAULT_USER_ID", "test-user-42");
         env::set_var("EMBED_DIMS", "768");
+        env::set_var("EMBED_MODEL", "NomicEmbedTextV15");
         env::set_var("DISTILL_MEMORIES", "false");
         env::set_var("LLM_MODEL", "openai::gpt-4o");
     }
@@ -49,6 +51,7 @@ fn test_env_override() {
 
     assert_eq!(settings.default_user_id, "test-user-42");
     assert_eq!(settings.embed_dims, 768);
+    assert_eq!(settings.embed_model, "NomicEmbedTextV15");
     assert!(!settings.distill_memories);
     assert_eq!(settings.llm_model, "openai::gpt-4o");
 
@@ -69,6 +72,10 @@ fn test_env_override() {
         match original_llm {
             Some(v) => env::set_var("LLM_MODEL", v),
             None => env::remove_var("LLM_MODEL"),
+        }
+        match original_embed {
+            Some(v) => env::set_var("EMBED_MODEL", v),
+            None => env::remove_var("EMBED_MODEL"),
         }
     }
 }

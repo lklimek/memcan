@@ -145,6 +145,27 @@ pub fn resolve_model(name: &str) -> Result<EmbeddingModel> {
     Ok(model)
 }
 
+/// Return the expected embedding dimensions for known fastembed models.
+///
+/// Returns `None` for models whose dimensions we haven't catalogued,
+/// in which case callers should skip the dimension-mismatch check.
+pub fn model_dims(model: &EmbeddingModel) -> Option<usize> {
+    match model {
+        EmbeddingModel::AllMiniLML6V2 | EmbeddingModel::AllMiniLML6V2Q => Some(384),
+        EmbeddingModel::AllMiniLML12V2 | EmbeddingModel::AllMiniLML12V2Q => Some(384),
+        EmbeddingModel::BGESmallENV15 | EmbeddingModel::BGESmallENV15Q => Some(384),
+        EmbeddingModel::BGEBaseENV15 | EmbeddingModel::BGEBaseENV15Q => Some(768),
+        EmbeddingModel::BGELargeENV15 | EmbeddingModel::BGELargeENV15Q => Some(1024),
+        EmbeddingModel::MultilingualE5Small => Some(384),
+        EmbeddingModel::MultilingualE5Base => Some(768),
+        EmbeddingModel::MultilingualE5Large => Some(1024),
+        EmbeddingModel::NomicEmbedTextV1
+        | EmbeddingModel::NomicEmbedTextV15
+        | EmbeddingModel::NomicEmbedTextV15Q => Some(768),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +189,44 @@ mod tests {
     #[test]
     fn test_resolve_model_unknown() {
         assert!(resolve_model("nonexistent-model").is_err());
+    }
+
+    #[test]
+    fn test_model_dims_known() {
+        assert_eq!(model_dims(&EmbeddingModel::AllMiniLML6V2), Some(384));
+        assert_eq!(model_dims(&EmbeddingModel::BGEBaseENV15), Some(768));
+        assert_eq!(model_dims(&EmbeddingModel::BGELargeENV15), Some(1024));
+        assert_eq!(model_dims(&EmbeddingModel::MultilingualE5Large), Some(1024));
+        assert_eq!(model_dims(&EmbeddingModel::MultilingualE5Small), Some(384));
+        assert_eq!(model_dims(&EmbeddingModel::NomicEmbedTextV15), Some(768));
+    }
+
+    #[test]
+    fn test_model_dims_returns_some_for_all_resolved() {
+        let known_models = [
+            "AllMiniLML6V2",
+            "AllMiniLML6V2Q",
+            "AllMiniLML12V2",
+            "AllMiniLML12V2Q",
+            "BGESmallENV15",
+            "BGESmallENV15Q",
+            "BGEBaseENV15",
+            "BGEBaseENV15Q",
+            "BGELargeENV15",
+            "BGELargeENV15Q",
+            "MultilingualE5Small",
+            "MultilingualE5Base",
+            "MultilingualE5Large",
+            "NomicEmbedTextV1",
+            "NomicEmbedTextV15",
+            "NomicEmbedTextV15Q",
+        ];
+        for name in &known_models {
+            let model = resolve_model(name).unwrap();
+            assert!(
+                model_dims(&model).is_some(),
+                "model_dims should return Some for {name}"
+            );
+        }
     }
 }

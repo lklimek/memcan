@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use tracing::debug;
+use tracing::{debug, warn};
 
+use crate::embed::{model_dims, resolve_model};
 use crate::error::{MindojoError, Result};
 
 /// Expand a leading `~` to the user's home directory.
@@ -132,6 +133,7 @@ impl Settings {
 
     /// Check invariants on loaded settings.
     fn validate(&self) -> Result<()> {
+        // -- basic checks --
         if self.embed_dims == 0 {
             return Err(MindojoError::Config(
                 "EMBED_DIMS must be greater than 0".into(),
@@ -142,6 +144,48 @@ impl Settings {
                 "LANCEDB_PATH must not be empty".into(),
             ));
         }
+
+        // -- embed_model is a known fastembed model --
+        let resolved = resolve_model(&self.embed_model).map_err(|_| {
+            MindojoError::Config(format!(
+                "EMBED_MODEL '{}' is not a known fastembed model. See embed.rs for supported models.",
+                self.embed_model
+            ))
+        })?;
+
+        // -- embed_dims matches the chosen model --
+        if let Some(expected) = model_dims(&resolved)
+            && expected != self.embed_dims
+        {
+            return Err(MindojoError::Config(format!(
+                "EMBED_DIMS is {} but model '{}' produces {}-dimensional vectors",
+                self.embed_dims, self.embed_model, expected
+            )));
+        }
+
+        // -- llm_model format check (warn only) --
+        if !self.llm_model.contains("::") {
+            warn!(
+                "LLM_MODEL '{}' is missing a provider prefix (e.g. 'ollama::model-name')",
+                self.llm_model
+            );
+        }
+
+        // -- log_file parent directory --
+        let log_path = Path::new(&self.log_file);
+        if let Some(parent) = log_path.parent()
+            && !parent.as_os_str().is_empty()
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent).map_err(|err| {
+                MindojoError::Config(format!(
+                    "LOG_FILE directory '{}' does not exist and could not be created: {}",
+                    parent.display(),
+                    err
+                ))
+            })?;
+        }
+
         Ok(())
     }
 }
@@ -197,5 +241,34 @@ mod tests {
     #[test]
     fn test_validate_defaults_ok() {
         Settings::default().validate().unwrap();
+    }
+
+    #[test]
+    fn test_validate_unknown_embed_model() {
+        let s = Settings {
+            embed_model: "NonexistentModel".into(),
+            ..Settings::default()
+        };
+        let err = s.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not a known fastembed model"),
+            "expected 'not a known fastembed model' in: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_validate_mismatched_embed_dims() {
+        let s = Settings {
+            embed_model: "MultilingualE5Large".into(),
+            embed_dims: 384,
+            ..Settings::default()
+        };
+        let err = s.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("1024"),
+            "expected '1024' in error message: {msg}"
+        );
     }
 }
