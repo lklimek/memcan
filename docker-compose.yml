@@ -1,12 +1,14 @@
 # MemCan Docker Compose
 #
 # Usage:
-#   docker compose up                     — traefik + memcan + ollama (pulls lklimek/memcan:latest)
-#   docker compose up --build             — traefik + memcan + ollama (builds from local Dockerfile)
-#   docker compose --profile gpu up       — traefik + memcan + ollama (GPU) + open-webui
+#   docker compose up                     — traefik + memcan only (no bundled Ollama)
+#   docker compose up --build             — traefik + memcan (builds from local Dockerfile)
+#   COMPOSE_PROFILES=ollama docker compose up  — traefik + memcan + ollama (CPU, default via .env)
+#   COMPOSE_PROFILES=ollama,gpu docker compose up  — traefik + memcan + ollama (GPU) + open-webui
 #
-# Ollama is included by default (CPU mode). For GPU acceleration see the ollama service below.
-# To use an external Ollama instead, set OLLAMA_HOST in .env and comment out the ollama service.
+# The setup skill writes COMPOSE_PROFILES=ollama to the server .env, enabling Ollama by default.
+# To disable the bundled Ollama, set COMPOSE_PROFILES= (empty) or remove it from the server .env.
+# To use an external Ollama instead, also set OLLAMA_HOST to point at it.
 
 services:
   traefik:
@@ -75,6 +77,7 @@ services:
 
   ollama:
     image: ollama/ollama:0.6.2
+    profiles: [ollama]
     # CPU mode by default. For GPU acceleration, add:
     #   runtime: nvidia
     #   deploy:
@@ -84,7 +87,6 @@ services:
     #           - driver: nvidia
     #             count: all
     #             capabilities: [gpu]
-    # To use an external Ollama instead, set OLLAMA_HOST in .env and comment out this service.
     environment:
       OLLAMA_CONTEXT_LENGTH: 196608
       OLLAMA_KEEP_ALIVE: 60m

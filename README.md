@@ -97,13 +97,15 @@ MemCan uses [Ollama](https://ollama.com/) for local LLM inference (fact extracti
 
 ### Using the bundled Ollama (docker compose)
 
-The `docker-compose.yml` starts an Ollama container by default. After `docker compose up -d`, pull the model into it:
+The setup skill writes `COMPOSE_PROFILES=ollama` to the server `.env`, which enables the bundled Ollama container. After `docker compose up -d`, pull the model into it:
 
 ```bash
 docker compose exec ollama ollama pull qwen3.5:9b
 ```
 
-**GPU acceleration:** The bundled Ollama runs in CPU mode by default. To enable GPU, uncomment the `runtime: nvidia` and `deploy.resources` lines in `docker-compose.yml` (requires NVIDIA drivers and `nvidia-container-runtime`):
+**Disable bundled Ollama:** In the server `.env` (`~/.config/memcan/server/.env`), set `COMPOSE_PROFILES=` (empty) or remove the line entirely, then restart with `docker compose up -d`. Point MemCan at an external Ollama via `OLLAMA_HOST` if needed.
+
+**GPU acceleration:** The bundled Ollama runs in CPU mode by default. To enable GPU, uncomment the `runtime: nvidia` and `deploy.resources` blocks in `docker-compose.yml` (requires NVIDIA drivers and `nvidia-container-runtime`):
 
 ```yaml
   ollama:
@@ -117,7 +119,7 @@ docker compose exec ollama ollama pull qwen3.5:9b
               capabilities: [gpu]
 ```
 
-**Disable bundled Ollama:** Set `OLLAMA_HOST` in `~/.config/memcan/.env` to point at a remote or local Ollama instance, then comment out the `ollama:` service in `docker-compose.yml`.
+**Open WebUI:** Add `gpu` to the profiles (`COMPOSE_PROFILES=ollama,gpu`) to also start Open WebUI.
 
 ### Using a standalone Ollama
 

@@ -246,7 +246,7 @@ setup_server() {
         "LLM_MODEL=ollama::qwen3.5:9b" \
         "EMBED_MODEL=MultilingualE5Large" \
         "DISTILL_MEMORIES=true" \
-        "COMPOSE_PROFILES=gpu"
+        "COMPOSE_PROFILES=ollama"
 
     # Merge CLI .env
     mkdir -p "${CLI_ENV_DIR}"

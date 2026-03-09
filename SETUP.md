@@ -12,7 +12,8 @@ Detailed setup instructions for MemCan. For a quick introduction, see the [READM
 ### Docker (recommended)
 
 ```bash
-# Pull and start (lklimek/memcan:latest + Ollama from Docker Hub)
+# The setup skill writes COMPOSE_PROFILES=ollama to the server .env.
+# Start all configured services (Ollama included when COMPOSE_PROFILES=ollama):
 docker compose up -d
 
 # Pull the default LLM model into the bundled Ollama
@@ -21,15 +22,15 @@ docker compose exec ollama ollama pull qwen3.5:9b
 # Or build from the local Dockerfile
 docker compose up -d --build
 
-# Start with GPU-accelerated Ollama + Open WebUI
-docker compose --profile gpu up -d
+# Enable Open WebUI alongside Ollama
+COMPOSE_PROFILES=ollama,gpu docker compose up -d
 ```
 
 The `docker-compose.yml` provides:
 - **Traefik** reverse proxy on ports 8190 (MemCan), 11434 (Ollama), 11400 (Open WebUI)
 - **MemCan** server with Bearer token auth, health check, named volumes for data/models
-- **Ollama** (default, CPU mode) — GPU acceleration requires uncommenting `runtime: nvidia` and `deploy.resources` in `docker-compose.yml`
-- **Open WebUI** (optional, `gpu` profile) for Ollama web interface
+- **Ollama** (`ollama` profile) — CPU mode by default; GPU requires uncommenting `runtime: nvidia` in `docker-compose.yml`; disable by setting `COMPOSE_PROFILES=` in the server `.env`
+- **Open WebUI** (`gpu` profile) for Ollama web interface
 
 Set `MEMCAN_API_KEY` in `.env` before deploying — it's used for both MemCan server auth and Traefik middleware auth.
 
