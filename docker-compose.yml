@@ -27,7 +27,7 @@ services:
     restart: unless-stopped
 
   memcan:
-    image: lklimek/memcan:nightly
+    image: lklimek/memcan:latest
     build: .
     environment:
       LANCEDB_PATH: /data/lancedb
