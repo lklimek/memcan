@@ -3,12 +3,12 @@
 //! These tests use simple in-memory trait implementations instead of
 //! HTTP mocking, since we no longer have an HTTP-based Ollama client.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use memcan_core::error::{MemcanError, Result};
 use memcan_core::lancedb_store::LanceDbStore;
-use memcan_core::pipeline::{MEMORIES_TABLE, do_add_memory, extract_facts};
+use memcan_core::pipeline::{MEMORIES_TABLE, Pipeline, PipelineStep};
 use memcan_core::traits::{
     EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, VectorPoint, VectorStore,
 };
@@ -153,6 +153,16 @@ async fn temp_store() -> (tempfile::TempDir, LanceDbStore) {
     (tmp, store)
 }
 
+/// Helper: create a Pipeline with the given mocks.
+fn make_pipeline(
+    store: Arc<dyn VectorStore>,
+    embedder: Arc<dyn EmbeddingProvider>,
+    llm: Arc<dyn LlmProvider>,
+    distill: bool,
+) -> Pipeline {
+    Pipeline::new(store, embedder, llm, "test-llm", MEMORIES_TABLE, distill)
+}
+
 // -- Test 1: mock embed -------------------------------------------------------
 
 #[tokio::test]
@@ -193,9 +203,7 @@ async fn test_chat_mock() {
 async fn test_memory_pipeline_mock() {
     let embedder = MockEmbedder::new();
     let llm = MockLlm::new(vec![
-        // Fact extraction response
         r#"{"facts": ["Rust is great for systems programming"]}"#.to_string(),
-        // Dedup response
         r#"{"events": [{"type": "ADD", "data": "Rust is great for systems programming"}]}"#
             .to_string(),
     ]);
@@ -206,33 +214,32 @@ async fn test_memory_pipeline_mock() {
         .await
         .expect("create table");
 
-    let metadata = serde_json::json!({});
-    let result = do_add_memory(
-        "Rust is great for systems programming",
-        "test-user",
-        &metadata,
-        true, // distill
-        MEMORIES_TABLE,
-        &store,
-        &embedder,
-        &llm,
-        "test-llm",
-        None,
-    )
-    .await
-    .expect("do_add_memory should succeed");
+    let pipeline = make_pipeline(
+        Arc::new(store) as Arc<dyn VectorStore>,
+        Arc::new(embedder),
+        Arc::new(llm),
+        true,
+    );
+    let progress = pipeline.progress();
 
-    // Should return extracted facts.
-    let facts = result.expect("should have facts when distilling");
+    let metadata = serde_json::json!({});
+    let result = pipeline
+        .add_memory(
+            "Rust is great for systems programming",
+            "test-user",
+            &metadata,
+        )
+        .await
+        .expect("add_memory should succeed");
+    pipeline.complete();
+
+    let facts = result.facts.expect("should have facts when distilling");
     assert_eq!(facts.len(), 1);
     assert_eq!(facts[0], "Rust is great for systems programming");
 
-    // Verify data was stored in LanceDB.
-    let count = store
-        .count(MEMORIES_TABLE, None)
-        .await
-        .expect("count should work");
-    assert!(count >= 1, "Expected at least 1 stored memory, got {count}");
+    let p = progress.lock().unwrap();
+    assert_eq!(p.step, PipelineStep::Completed);
+    assert!(p.warnings.is_empty());
 }
 
 // -- Test 4: store and search ------------------------------------------------
@@ -265,7 +272,6 @@ async fn test_store_and_search() {
         .await
         .expect("upsert");
 
-    // Search with the same vector should find the memory.
     let results = store
         .search(MEMORIES_TABLE, &test_vector(), None, 10, 0)
         .await
@@ -286,10 +292,8 @@ async fn test_store_and_search() {
 async fn test_dedup() {
     let embedder = MockEmbedder::new();
     let llm = MockLlm::new(vec![
-        // First memory: extraction + dedup
         r#"{"facts": ["Test fact"], "events": [{"type": "ADD", "data": "Test fact"}]}"#.to_string(),
         r#"{"events": [{"type": "ADD", "data": "Test fact"}]}"#.to_string(),
-        // Second memory: extraction + dedup
         r#"{"facts": ["Test fact 2"], "events": [{"type": "ADD", "data": "Test fact 2"}]}"#
             .to_string(),
         r#"{"events": [{"type": "ADD", "data": "Test fact 2"}]}"#.to_string(),
@@ -301,41 +305,39 @@ async fn test_dedup() {
         .await
         .expect("create table");
 
+    let store: Arc<dyn VectorStore> = Arc::new(store);
+    let embedder: Arc<dyn EmbeddingProvider> = Arc::new(embedder);
+    let llm: Arc<dyn LlmProvider> = Arc::new(llm);
     let metadata = serde_json::json!({});
 
-    // First memory.
-    do_add_memory(
-        "Rust has zero-cost abstractions",
-        "test-user",
-        &metadata,
+    let pipeline1 = make_pipeline(
+        Arc::clone(&store),
+        Arc::clone(&embedder),
+        Arc::clone(&llm),
         true,
-        MEMORIES_TABLE,
-        &store,
-        &embedder,
-        &llm,
-        "test-llm",
-        None,
-    )
-    .await
-    .expect("first add");
+    );
+    pipeline1
+        .add_memory("Rust has zero-cost abstractions", "test-user", &metadata)
+        .await
+        .expect("first add");
+    pipeline1.complete();
 
-    // Second memory (similar content).
-    do_add_memory(
-        "Rust provides zero-cost abstractions for safe systems programming",
-        "test-user",
-        &metadata,
+    let pipeline2 = make_pipeline(
+        Arc::clone(&store),
+        Arc::clone(&embedder),
+        Arc::clone(&llm),
         true,
-        MEMORIES_TABLE,
-        &store,
-        &embedder,
-        &llm,
-        "test-llm",
-        None,
-    )
-    .await
-    .expect("second add");
+    );
+    pipeline2
+        .add_memory(
+            "Rust provides zero-cost abstractions for safe systems programming",
+            "test-user",
+            &metadata,
+        )
+        .await
+        .expect("second add");
+    pipeline2.complete();
 
-    // Both were added (since our mock always returns ADD).
     let count = store.count(MEMORIES_TABLE, None).await.expect("count");
     assert!(
         count >= 2,
@@ -347,7 +349,6 @@ async fn test_dedup() {
 
 #[test]
 fn test_config_load() {
-    // Verify settings can be loaded and have sane defaults.
     let settings = memcan_core::config::Settings::default();
     assert_eq!(settings.default_user_id, "global");
     assert!(settings.distill_memories);
@@ -355,7 +356,6 @@ fn test_config_load() {
     assert_eq!(settings.llm_model, "ollama::qwen3.5:4b");
     assert_eq!(settings.embed_model, "MultilingualE5Large");
 
-    // Test that Settings::load() doesn't panic.
     let loaded = memcan_core::config::Settings::load().expect("load should succeed");
     assert!(!loaded.llm_model.is_empty());
 }
@@ -368,23 +368,19 @@ async fn test_lancedb_crud() {
 
     let table_name = "test-crud";
 
-    // Create table.
     store
         .ensure_table(table_name, TEST_DIMS)
         .await
         .expect("create table");
 
-    // Creating the same table again should be idempotent.
     store
         .ensure_table(table_name, TEST_DIMS)
         .await
         .expect("create table again");
 
-    // Count should be 0 initially.
     let count = store.count(table_name, None).await.expect("count");
     assert_eq!(count, 0, "Table should be empty initially");
 
-    // Upsert two points.
     let points = vec![
         VectorPoint {
             id: "id-1".into(),
@@ -399,20 +395,16 @@ async fn test_lancedb_crud() {
     ];
     store.upsert(table_name, &points).await.expect("upsert");
 
-    // Count should be 2.
     let count = store.count(table_name, None).await.expect("count");
     assert_eq!(count, 2, "Should have 2 records");
 
-    // Search should return results.
     let results = store
         .search(table_name, &test_vector(), None, 10, 0)
         .await
         .expect("search");
     assert!(!results.is_empty(), "Search should return results");
-    // The closest result should be id-1 (same vector).
     assert_eq!(results[0].id, "id-1");
 
-    // Get by ID.
     let got = store
         .get(table_name, &["id-2".to_string()])
         .await
@@ -420,7 +412,6 @@ async fn test_lancedb_crud() {
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].id, "id-2");
 
-    // Upsert same ID with updated payload (idempotent update).
     let updated_point = VectorPoint {
         id: "id-1".into(),
         vector: test_vector(),
@@ -431,11 +422,9 @@ async fn test_lancedb_crud() {
         .await
         .expect("upsert update");
 
-    // Count should still be 2 (upsert replaced, not appended).
     let count = store.count(table_name, None).await.expect("count");
     assert_eq!(count, 2, "Upsert should replace, not duplicate");
 
-    // Verify the update took effect.
     let got = store
         .get(table_name, &["id-1".to_string()])
         .await
@@ -446,7 +435,6 @@ async fn test_lancedb_crud() {
         "updated first record"
     );
 
-    // Delete by ID.
     store
         .delete(table_name, &["id-1".to_string()])
         .await
@@ -454,14 +442,12 @@ async fn test_lancedb_crud() {
     let count = store.count(table_name, None).await.expect("count");
     assert_eq!(count, 1, "Should have 1 record after delete");
 
-    // Get deleted ID should return empty.
     let got = store
         .get(table_name, &["id-1".to_string()])
         .await
         .expect("get deleted");
     assert!(got.is_empty(), "Deleted record should not be found");
 
-    // Scroll (list all).
     let all = store
         .scroll(table_name, None, 100, 0)
         .await
@@ -470,24 +456,10 @@ async fn test_lancedb_crud() {
     assert_eq!(all[0].id, "id-2");
 }
 
-// -- Test 8: LLM error propagation from extract_facts ----------------------
+// -- Test 8: LLM error falls back to raw store via Pipeline ------------------
 
 #[tokio::test]
-async fn test_llm_error_propagates_from_extract_facts() {
-    let llm = FailingLlm;
-    let result = extract_facts("some content", &llm, "test-model", None).await;
-    // extract_facts now propagates LLM errors
-    assert!(result.is_err(), "LLM failure should propagate as Err");
-    assert!(
-        result.unwrap_err().is_llm_error(),
-        "error should be an LLM error"
-    );
-}
-
-// -- Test 8b: do_add_memory falls back to raw store on LLM error ----------
-
-#[tokio::test]
-async fn test_do_add_memory_falls_back_on_llm_error() {
+async fn test_pipeline_falls_back_on_llm_error() {
     let embedder = MockEmbedder::new();
     let llm = FailingLlm;
 
@@ -497,34 +469,38 @@ async fn test_do_add_memory_falls_back_on_llm_error() {
         .await
         .expect("create table");
 
-    let metadata = serde_json::json!({});
-    let result = do_add_memory(
-        "important lesson learned",
-        "test-user",
-        &metadata,
-        true, // distill
-        MEMORIES_TABLE,
-        &store,
-        &embedder,
-        &llm,
-        "test-llm",
-        None,
-    )
-    .await;
+    let pipeline = make_pipeline(
+        Arc::new(store) as _,
+        Arc::new(embedder),
+        Arc::new(llm),
+        true,
+    );
+    let progress = pipeline.progress();
 
-    // Pipeline should succeed (fallback to raw store)
+    let metadata = serde_json::json!({});
+    let result = pipeline
+        .add_memory("important lesson learned", "test-user", &metadata)
+        .await;
+
     assert!(result.is_ok(), "pipeline should fall back, not fail");
+    let add_result = result.unwrap();
     assert!(
-        result.unwrap().is_none(),
+        add_result.facts.is_none(),
         "should return None (no extracted facts)"
     );
 
-    // Verify the memory was stored raw
-    let count = store
-        .count(MEMORIES_TABLE, None)
-        .await
-        .expect("count should work");
-    assert_eq!(count, 1, "memory should be stored raw despite LLM failure");
+    pipeline.complete();
+    let p = progress.lock().unwrap();
+    assert_eq!(p.step, PipelineStep::CompletedDegraded);
+    assert!(
+        !p.warnings.is_empty(),
+        "LLM failure should produce a warning"
+    );
+    assert!(
+        p.warnings[0].contains("fact extraction failed"),
+        "warning should mention fact extraction failure, got: {}",
+        p.warnings[0]
+    );
 }
 
 // -- Test 9: malformed JSON from LLM ----------------------------------------
@@ -532,16 +508,44 @@ async fn test_do_add_memory_falls_back_on_llm_error() {
 #[tokio::test]
 async fn test_malformed_llm_json_handled_gracefully() {
     let llm = MalformedJsonLlm;
-    let result = extract_facts("some content", &llm, "test-model", None).await;
-    // Malformed JSON should be caught and return Ok(None).
-    assert!(result.is_ok());
+    let embedder = MockEmbedder::new();
+
+    let (_tmp, store) = temp_store().await;
+    store
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .await
+        .expect("create table");
+
+    let pipeline = make_pipeline(
+        Arc::new(store) as _,
+        Arc::new(embedder),
+        Arc::new(llm),
+        true,
+    );
+    let progress = pipeline.progress();
+    let metadata = serde_json::json!({});
+
+    let result = pipeline
+        .add_memory("some memory content", "test-user", &metadata)
+        .await
+        .expect("pipeline should succeed with fallback");
+    pipeline.complete();
+
+    assert!(result.facts.is_none(), "no facts when JSON is unparseable");
+    let p = progress.lock().unwrap();
+    assert_eq!(p.step, PipelineStep::CompletedDegraded);
     assert!(
-        result.unwrap().is_none(),
-        "malformed JSON should yield None (graceful fallback)"
+        !p.warnings.is_empty(),
+        "unparseable JSON should produce a warning"
+    );
+    assert!(
+        p.warnings[0].contains("unparseable"),
+        "warning should mention unparseable, got: {}",
+        p.warnings[0]
     );
 }
 
-// -- Test 10: non-LLM errors propagate through do_add_memory ----------------
+// -- Test 10: non-LLM errors propagate through Pipeline ----------------------
 
 #[tokio::test]
 async fn test_non_llm_error_propagates() {
@@ -554,27 +558,308 @@ async fn test_non_llm_error_propagates() {
         .await
         .expect("create table");
 
+    let pipeline = make_pipeline(
+        Arc::new(store) as _,
+        Arc::new(embedder),
+        Arc::new(llm),
+        true,
+    );
     let metadata = serde_json::json!({});
 
-    // LLM fails first, pipeline falls back to store_raw, which calls embed
-    // and embed fails with a non-LLM error => should propagate
-    let result = do_add_memory(
-        "some content",
-        "test-user",
-        &metadata,
-        true,
-        MEMORIES_TABLE,
-        &store,
-        &embedder,
-        &llm,
-        "test-llm",
-        None,
-    )
-    .await;
+    let result = pipeline
+        .add_memory("some content", "test-user", &metadata)
+        .await;
 
     assert!(result.is_err(), "embedding error should propagate");
     assert!(
         !result.unwrap_err().is_llm_error(),
         "should not be an LLM error"
     );
+}
+
+// -- Test 11: distill=false has no warnings ----------------------------------
+
+#[tokio::test]
+async fn test_pipeline_no_distill_no_warnings() {
+    let embedder = MockEmbedder::new();
+    let llm = FailingLlm; // should not be called
+
+    let (_tmp, store) = temp_store().await;
+    store
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .await
+        .expect("create table");
+
+    let pipeline = make_pipeline(
+        Arc::new(store) as _,
+        Arc::new(embedder),
+        Arc::new(llm),
+        false,
+    );
+    let progress = pipeline.progress();
+    let metadata = serde_json::json!({});
+
+    let result = pipeline
+        .add_memory("raw memory content", "test-user", &metadata)
+        .await
+        .expect("pipeline should succeed");
+    pipeline.complete();
+
+    assert!(result.facts.is_none(), "no facts when distill=false");
+    let p = progress.lock().unwrap();
+    assert_eq!(p.step, PipelineStep::Completed);
+    assert!(
+        p.warnings.is_empty(),
+        "distill=false should have no warnings"
+    );
+}
+
+// -- Test 12: dedup LLM failure produces warning -----------------------------
+
+/// Mock LLM where first call (extraction) succeeds but second call (dedup) fails.
+struct ExtractOkDedupFailLlm;
+
+#[async_trait]
+impl LlmProvider for ExtractOkDedupFailLlm {
+    async fn chat(
+        &self,
+        _model: &str,
+        messages: &[LlmMessage],
+        _options: Option<LlmOptions>,
+    ) -> Result<String> {
+        let has_system = messages.iter().any(|m| m.role == Role::System);
+        if has_system {
+            Ok(r#"{"facts": ["extracted fact"]}"#.to_string())
+        } else {
+            Err(MemcanError::LlmChat {
+                context: "dedup".into(),
+                detail: "simulated dedup failure".into(),
+            })
+        }
+    }
+
+    async fn context_window(&self, _model: &str) -> Option<usize> {
+        None
+    }
+}
+
+#[tokio::test]
+async fn test_pipeline_dedup_failure_warning() {
+    let embedder = MockEmbedder::new();
+    let llm = ExtractOkDedupFailLlm;
+
+    let (_tmp, store) = temp_store().await;
+    store
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .await
+        .expect("create table");
+
+    let pipeline = make_pipeline(
+        Arc::new(store) as _,
+        Arc::new(embedder),
+        Arc::new(llm),
+        true,
+    );
+    let progress = pipeline.progress();
+    let metadata = serde_json::json!({});
+
+    let result = pipeline
+        .add_memory("some memory content", "test-user", &metadata)
+        .await
+        .expect("pipeline should succeed with dedup fallback");
+    pipeline.complete();
+
+    assert!(result.facts.is_some(), "facts should be present");
+    let p = progress.lock().unwrap();
+    assert_eq!(p.step, PipelineStep::CompletedDegraded);
+    assert!(
+        !p.warnings.is_empty(),
+        "dedup failure should produce a warning"
+    );
+    assert!(
+        p.warnings[0].contains("Dedup LLM failed"),
+        "warning should mention dedup failure, got: {}",
+        p.warnings[0]
+    );
+}
+
+// -- Test 13: clean pipeline path has no warnings ----------------------------
+
+#[tokio::test]
+async fn test_pipeline_clean_path_no_warnings() {
+    let embedder = MockEmbedder::new();
+    let llm = MockLlm::new(vec![
+        r#"{"facts": ["clean fact"]}"#.to_string(),
+        r#"{"events": [{"type": "ADD", "data": "clean fact"}]}"#.to_string(),
+    ]);
+
+    let (_tmp, store) = temp_store().await;
+    store
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .await
+        .expect("create table");
+
+    let pipeline = make_pipeline(
+        Arc::new(store) as _,
+        Arc::new(embedder),
+        Arc::new(llm),
+        true,
+    );
+    let progress = pipeline.progress();
+    let metadata = serde_json::json!({});
+
+    let result = pipeline
+        .add_memory("clean memory content", "test-user", &metadata)
+        .await
+        .expect("pipeline should succeed");
+    pipeline.complete();
+
+    let facts = result.facts.expect("should have facts");
+    assert_eq!(facts, vec!["clean fact"]);
+    let p = progress.lock().unwrap();
+    assert_eq!(p.step, PipelineStep::Completed);
+    assert!(
+        p.warnings.is_empty(),
+        "clean path should produce no warnings"
+    );
+}
+
+// -- Test 14: progress shows final state after successful distill path --------
+
+#[tokio::test]
+async fn test_progress_final_state_distill() {
+    let embedder = MockEmbedder::new();
+    let llm = MockLlm::new(vec![
+        r#"{"facts": ["tracked fact"]}"#.to_string(),
+        r#"{"events": [{"type": "ADD", "data": "tracked fact"}]}"#.to_string(),
+    ]);
+
+    let (_tmp, store) = temp_store().await;
+    store
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .await
+        .expect("create table");
+
+    let pipeline = make_pipeline(
+        Arc::new(store) as _,
+        Arc::new(embedder),
+        Arc::new(llm),
+        true,
+    );
+    let progress = pipeline.progress();
+    let metadata = serde_json::json!({});
+
+    pipeline
+        .add_memory("tracked memory content", "test-user", &metadata)
+        .await
+        .expect("pipeline should succeed");
+    pipeline.complete();
+
+    let p = progress.lock().unwrap();
+    assert_eq!(p.step, PipelineStep::Completed);
+    assert!(p.warnings.is_empty());
+    assert!(p.completed_at.is_some());
+    assert!(p.error.is_none());
+}
+
+// -- Test 15: progress shows failed state on error ---------------------------
+
+#[tokio::test]
+async fn test_progress_failed_state() {
+    let embedder = FailingEmbedder;
+    let llm = FailingLlm;
+
+    let (_tmp, store) = temp_store().await;
+    store
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .await
+        .expect("create table");
+
+    let pipeline = make_pipeline(
+        Arc::new(store) as _,
+        Arc::new(embedder),
+        Arc::new(llm),
+        true,
+    );
+    let progress = pipeline.progress();
+    let metadata = serde_json::json!({});
+
+    let result = pipeline
+        .add_memory("will fail", "test-user", &metadata)
+        .await;
+    assert!(result.is_err());
+    pipeline.fail(result.unwrap_err());
+
+    let p = progress.lock().unwrap();
+    assert_eq!(p.step, PipelineStep::Failed);
+    assert!(p.error.is_some());
+    assert!(p.completed_at.is_some());
+}
+
+// -- Test 16: progress shows degraded state on LLM fallback ------------------
+
+#[tokio::test]
+async fn test_progress_degraded_on_llm_fallback() {
+    let embedder = MockEmbedder::new();
+    let llm = FailingLlm;
+
+    let (_tmp, store) = temp_store().await;
+    store
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .await
+        .expect("create table");
+
+    let pipeline = make_pipeline(
+        Arc::new(store) as _,
+        Arc::new(embedder),
+        Arc::new(llm),
+        true,
+    );
+    let progress = pipeline.progress();
+    let metadata = serde_json::json!({});
+
+    pipeline
+        .add_memory("fallback memory content", "test-user", &metadata)
+        .await
+        .expect("pipeline should fall back");
+    pipeline.complete();
+
+    let p = progress.lock().unwrap();
+    assert_eq!(p.step, PipelineStep::CompletedDegraded);
+    assert!(!p.warnings.is_empty());
+    assert!(p.completed_at.is_some());
+}
+
+// -- Test 17: no-distill path progress shows completed -----------------------
+
+#[tokio::test]
+async fn test_progress_no_distill() {
+    let embedder = MockEmbedder::new();
+    let llm = FailingLlm; // should not be called
+
+    let (_tmp, store) = temp_store().await;
+    store
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .await
+        .expect("create table");
+
+    let pipeline = make_pipeline(
+        Arc::new(store) as _,
+        Arc::new(embedder),
+        Arc::new(llm),
+        false,
+    );
+    let progress = pipeline.progress();
+    let metadata = serde_json::json!({});
+
+    pipeline
+        .add_memory("raw content", "test-user", &metadata)
+        .await
+        .expect("pipeline should succeed");
+    pipeline.complete();
+
+    let p = progress.lock().unwrap();
+    assert_eq!(p.step, PipelineStep::Completed);
+    assert!(p.warnings.is_empty());
+    assert!(p.completed_at.is_some());
 }

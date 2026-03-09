@@ -9,7 +9,7 @@
 //! - [`traits::VectorStore`] / [`lancedb_store::LanceDbStore`] -- vector DB
 //! - [`traits::EmbeddingProvider`] / [`embed`] -- text embeddings
 //! - [`traits::LlmProvider`] / [`llm`] -- LLM chat
-//! - [`pipeline::do_add_memory`] -- end-to-end memory storage
+//! - [`pipeline::Pipeline`] -- end-to-end memory storage pipeline
 //! - [`config::Settings`] -- runtime configuration
 
 pub mod config;

@@ -36,26 +36,37 @@ use memcan_core::{
     init::MemcanContext,
     llm::GenaiLlmProvider,
     ollama::ensure_nothink_model,
-    pipeline::{self, CODE_TABLE, MEMORIES_TABLE, STANDARDS_TABLE},
+    pipeline::{CODE_TABLE, MEMORIES_TABLE, Pipeline, PipelineProgress, STANDARDS_TABLE},
     traits::{EmbeddingProvider, LlmProvider, VectorStore},
 };
 
 use crate::ServeArgs;
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone)]
 struct QueueEntry {
     operation: String,
     user_id: String,
-    status: String,
-    error: Option<String>,
+    progress: Arc<StdMutex<PipelineProgress>>,
     queued_at: String,
-    completed_at: Option<String>,
+}
+
+fn queue_entry_to_json(entry: &QueueEntry) -> serde_json::Value {
+    let p = entry.progress.lock().unwrap_or_else(|e| e.into_inner());
+    serde_json::json!({
+        "operation": entry.operation,
+        "user_id": entry.user_id,
+        "status": p.step.as_str(),
+        "warnings": p.warnings,
+        "error": p.error,
+        "queued_at": entry.queued_at,
+        "completed_at": p.completed_at,
+    })
 }
 
 struct SharedState {
-    store: Box<dyn VectorStore>,
-    embedder: Box<dyn EmbeddingProvider>,
-    llm: Box<dyn LlmProvider>,
+    store: Arc<dyn VectorStore>,
+    embedder: Arc<dyn EmbeddingProvider>,
+    llm: Arc<dyn LlmProvider>,
     config: Settings,
     llm_model: String,
     queue_status: Arc<StdMutex<LruCache<String, QueueEntry>>>,
@@ -289,11 +300,19 @@ impl MemcanService {
             .map(|m| serde_json::to_value(m).unwrap_or_default())
             .unwrap_or(serde_json::Value::Object(Default::default()));
         let memory = params.memory;
-        let state = Arc::clone(&self.state);
-        let llm_model = self.state.llm_model.clone();
 
         let op_id = Uuid::new_v4().to_string();
         info!(user_id = %uid, len = memory.len(), operation_id = %op_id, "add_memory: queued");
+
+        let pipeline = Pipeline::new(
+            Arc::clone(&self.state.store),
+            Arc::clone(&self.state.embedder),
+            Arc::clone(&self.state.llm),
+            self.state.llm_model.clone(),
+            MEMORIES_TABLE,
+            self.state.config.distill_memories,
+        );
+        let progress = pipeline.progress();
 
         {
             let mut cache = self
@@ -306,17 +325,13 @@ impl MemcanService {
                 QueueEntry {
                     operation: "add_memory".into(),
                     user_id: uid.clone(),
-                    status: "queued".into(),
-                    error: None,
+                    progress,
                     queued_at: chrono::Utc::now().to_rfc3339(),
-                    completed_at: None,
                 },
             );
         }
 
-        let queue_status = Arc::clone(&self.state.queue_status);
         let sem = Arc::clone(&self.state.llm_semaphore);
-        let op_id_spawn = op_id.clone();
         let uid_clone = uid.clone();
         tokio::spawn(async move {
             let _permit = match sem.acquire().await {
@@ -327,36 +342,10 @@ impl MemcanService {
                 }
             };
 
-            {
-                let mut cache = queue_status.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(entry) = cache.get_mut(&op_id_spawn) {
-                    entry.status = "processing".into();
-                }
-            }
-
-            let result = pipeline::do_add_memory(
-                &memory,
-                &uid_clone,
-                &metadata,
-                state.config.distill_memories,
-                MEMORIES_TABLE,
-                state.store.as_ref(),
-                state.embedder.as_ref(),
-                state.llm.as_ref(),
-                &llm_model,
-                None,
-            )
-            .await;
-
-            let mut cache = queue_status.lock().unwrap_or_else(|e| e.into_inner());
-            let now = chrono::Utc::now().to_rfc3339();
-            match result {
+            match pipeline.add_memory(&memory, &uid_clone, &metadata).await {
                 Ok(_) => {
                     info!(user_id = %uid_clone, "add_memory: persisted");
-                    if let Some(entry) = cache.get_mut(&op_id_spawn) {
-                        entry.status = "completed".into();
-                        entry.completed_at = Some(now);
-                    }
+                    pipeline.complete();
                 }
                 Err(e) => {
                     let preview: String = memory.chars().take(120).collect();
@@ -366,11 +355,7 @@ impl MemcanService {
                         memory_preview = %preview,
                         "add_memory: pipeline failed to store memory"
                     );
-                    if let Some(entry) = cache.get_mut(&op_id_spawn) {
-                        entry.status = "failed".into();
-                        entry.error = Some(e.to_string());
-                        entry.completed_at = Some(now);
-                    }
+                    pipeline.fail(&e);
                 }
             }
         });
@@ -524,6 +509,16 @@ impl MemcanService {
 
         let op_id = Uuid::new_v4().to_string();
 
+        let pipeline = Pipeline::new(
+            Arc::clone(&self.state.store),
+            Arc::clone(&self.state.embedder),
+            Arc::clone(&self.state.llm),
+            self.state.llm_model.clone(),
+            MEMORIES_TABLE,
+            false,
+        );
+        let progress = pipeline.progress();
+
         {
             let mut cache = self
                 .state
@@ -535,20 +530,15 @@ impl MemcanService {
                 QueueEntry {
                     operation: "update_memory".into(),
                     user_id: old_user_id.clone(),
-                    status: "queued".into(),
-                    error: None,
+                    progress,
                     queued_at: chrono::Utc::now().to_rfc3339(),
-                    completed_at: None,
                 },
             );
         }
 
-        let state = Arc::clone(&self.state);
-        let queue_status = Arc::clone(&self.state.queue_status);
         let sem = Arc::clone(&self.state.llm_semaphore);
         let memory_id = params.memory_id.clone();
         let memory = params.memory;
-        let op_id_spawn = op_id.clone();
         tokio::spawn(async move {
             let _permit = match sem.acquire().await {
                 Ok(p) => p,
@@ -558,67 +548,23 @@ impl MemcanService {
                 }
             };
 
+            match pipeline
+                .update_memory(
+                    &memory_id,
+                    &memory,
+                    &old_user_id,
+                    old_created_at,
+                    Some(&old_payload),
+                )
+                .await
             {
-                let mut cache = queue_status.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(entry) = cache.get_mut(&op_id_spawn) {
-                    entry.status = "processing".into();
-                }
-            }
-
-            let result: Result<(), MemcanError> = async {
-                let vectors = state.embedder.embed(std::slice::from_ref(&memory)).await?;
-
-                let hash = pipeline::md5_hex(&memory);
-                let now = chrono::Utc::now().to_rfc3339();
-
-                let mut payload = serde_json::json!({
-                    "data": memory,
-                    "hash": hash,
-                    "user_id": old_user_id,
-                    "created_at": old_created_at,
-                    "updated_at": now,
-                });
-
-                if let (Some(old_obj), Some(new_obj)) =
-                    (old_payload.as_object(), payload.as_object_mut())
-                {
-                    for (k, v) in old_obj {
-                        if !matches!(
-                            k.as_str(),
-                            "data" | "hash" | "user_id" | "created_at" | "updated_at"
-                        ) {
-                            new_obj.insert(k.clone(), v.clone());
-                        }
-                    }
-                }
-
-                let point = memcan_core::traits::VectorPoint {
-                    id: memory_id.clone(),
-                    vector: vectors[0].clone(),
-                    payload,
-                };
-                state.store.upsert(MEMORIES_TABLE, &[point]).await?;
-                Ok(())
-            }
-            .await;
-
-            let mut cache = queue_status.lock().unwrap_or_else(|e| e.into_inner());
-            let now = chrono::Utc::now().to_rfc3339();
-            match result {
                 Ok(()) => {
                     info!(memory_id = %memory_id, "update_memory: persisted");
-                    if let Some(entry) = cache.get_mut(&op_id_spawn) {
-                        entry.status = "completed".into();
-                        entry.completed_at = Some(now);
-                    }
+                    pipeline.complete();
                 }
                 Err(e) => {
                     tracing::error!(memory_id = %memory_id, error = %e, "update_memory: failed");
-                    if let Some(entry) = cache.get_mut(&op_id_spawn) {
-                        entry.status = "failed".into();
-                        entry.error = Some(e.to_string());
-                        entry.completed_at = Some(now);
-                    }
+                    pipeline.fail(&e);
                 }
             }
         });
@@ -808,7 +754,8 @@ impl MemcanService {
         if let Some(ref op_id) = params.operation_id {
             match cache.get(op_id) {
                 Some(entry) => {
-                    let json = serde_json::to_string(entry).unwrap_or_default();
+                    let json =
+                        serde_json::to_string(&queue_entry_to_json(entry)).unwrap_or_default();
                     Ok(CallToolResult::success(vec![Content::text(json)]))
                 }
                 None => Ok(CallToolResult::success(vec![Content::text(
@@ -816,7 +763,11 @@ impl MemcanService {
                 )])),
             }
         } else {
-            let entries: Vec<&QueueEntry> = cache.iter().take(limit).map(|(_, v)| v).collect();
+            let entries: Vec<serde_json::Value> = cache
+                .iter()
+                .take(limit)
+                .map(|(_, v)| queue_entry_to_json(v))
+                .collect();
             let json = serde_json::to_string(&entries).unwrap_or_default();
             Ok(CallToolResult::success(vec![Content::text(json)]))
         }
@@ -859,8 +810,7 @@ fn setup_logging(log_file: &str) {
             .with_writer(std::io::stderr)
             .with_ansi(false)
             .with_env_filter(
-                EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| EnvFilter::new("info")),
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
             )
             .init();
         return;
@@ -947,9 +897,9 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
         .unwrap_or_else(|| ctx.settings.listen.clone());
 
     let shared = Arc::new(SharedState {
-        store: Box::new(ctx.store),
-        embedder: Box::new(ctx.embedder),
-        llm: Box::new(llm),
+        store: Arc::new(ctx.store),
+        embedder: Arc::new(ctx.embedder),
+        llm: Arc::new(llm),
         config: ctx.settings.clone(),
         llm_model,
         queue_status: Arc::new(StdMutex::new(LruCache::new(
