@@ -168,10 +168,10 @@ install_cli() {
     trap "rm -rf '${tmpdir}'" EXIT
 
     info "Downloading ${archive}..."
-    curl -fSL -o "${tmpdir}/${archive}" "${download_url}"
+    curl -fsSL -o "${tmpdir}/${archive}" "${download_url}"
 
     info "Downloading checksums..."
-    curl -fSL -o "${tmpdir}/SHA256SUMS" "${sums_url}"
+    curl -fsSL -o "${tmpdir}/SHA256SUMS" "${sums_url}"
 
     expected_sum="$(grep "${archive}" "${tmpdir}/SHA256SUMS" | cut -d' ' -f1)"
     [ -n "${expected_sum}" ] || die "Checksum for ${archive} not found in SHA256SUMS"
@@ -220,7 +220,7 @@ setup_server() {
     # Download docker-compose.yml
     compose_url="https://raw.githubusercontent.com/${REPO}/${tag}/docker-compose.yml"
     info "Downloading docker-compose.yml..."
-    curl -fSL -o "${SERVER_DIR}/docker-compose.yml" "${compose_url}"
+    curl -fsSL -o "${SERVER_DIR}/docker-compose.yml" "${compose_url}"
     ok "docker-compose.yml saved to ${SERVER_DIR}/docker-compose.yml"
 
     # Generate API keys if needed
