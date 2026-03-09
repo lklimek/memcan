@@ -12,7 +12,7 @@ Detailed setup instructions for MemCan. For a quick introduction, see the [READM
 ### Docker (recommended)
 
 ```bash
-# Pull and start (lklimek/memcan:nightly from Docker Hub)
+# Pull and start (lklimek/memcan:latest from Docker Hub)
 docker compose up -d
 
 # Or build from the local Dockerfile

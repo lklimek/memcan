@@ -1,7 +1,7 @@
 # MemCan Docker Compose
 #
 # Usage:
-#   docker compose up                     — traefik + memcan (pulls lklimek/memcan:nightly)
+#   docker compose up                     — traefik + memcan (pulls lklimek/memcan:latest)
 #   docker compose up --build             — traefik + memcan (builds from local Dockerfile)
 #   docker compose --profile gpu up       — traefik + memcan + ollama + open-webui
 #   Set COMPOSE_PROFILES=gpu in .env to enable Ollama by default.

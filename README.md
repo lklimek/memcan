@@ -1,26 +1,28 @@
-# MemCan — Persistent Memory for Claude Code
+# MemCan — Persistent Memory MCP Server
 
-Claude Code agents forget everything when a session ends. Every new session starts blank — you re-explain your preferences, the agent repeats mistakes you've already corrected, and hard-won project context evaporates.
+AI agents forget everything when a session ends. Every new session starts blank — you re-explain your preferences, the agent repeats mistakes you've already corrected, and hard-won project context evaporates.
 
 MemCan fixes this. It gives agents a persistent, searchable memory store that survives across sessions. Agents automatically save learnings, decisions, and preferences as they work, and recall them at the start of the next session. Over time your agents get smarter: they remember your coding style, know which approaches failed before, and understand the quirks of your project without being told again.
+
+Works with any MCP-compatible agent. Tested and optimized for [Claude Code](https://claude.ai/code).
 
 Built on embedded [LanceDB](https://lancedb.com/) + [fastembed](https://github.com/Anush008/fastembed-rs) (in-process ONNX embeddings) + [Ollama](https://ollama.com/) (local LLM for fact extraction and deduplication). No cloud, no external database, no data leaving your machine.
 
 ## Quick Start
 
 ```bash
-# 1. Start the server (Docker — pulls lklimek/memcan:nightly from Docker Hub)
-docker compose up -d
-
-# 2. Install the plugin (run inside a Claude Code session)
+# 1. Install the plugin (run inside a Claude Code session)
 /plugin marketplace add lklimek/agents
 /plugin install memcan@lklimek
 
-# 3. Configure (run inside a Claude Code session)
+# 2. Run setup — installs CLI, downloads server config, generates API keys
 /setup-memcan
+
+# 3. Start the server (command printed by setup, typically:)
+cd ~/.config/memcan/server && docker compose up -d
 ```
 
-No external database required — LanceDB runs embedded in the server. For Docker setup, building from source, or configuration options, see the [Setup Guide](SETUP.md).
+`/setup-memcan` guides you through everything: CLI install, Docker Compose server config, `.env` generation, and user rule creation. Restart Claude Code after setup. For all configuration options, see the [Setup Guide](SETUP.md).
 
 ## Architecture
 
@@ -49,7 +51,7 @@ The Claude Code plugin connects to the server via HTTP MCP transport (Streamable
 /setup-memcan
 ```
 
-`/setup-memcan` checks prerequisites, creates `~/.config/memcan/.env`, and writes a user rule so agents always know to use memory. Restart Claude Code after setup.
+`/setup-memcan` installs the CLI, downloads the Docker Compose server config, generates API keys, creates `~/.config/memcan/.env`, and writes a user rule so agents always know to use memory. It prints the command to start the server (`docker compose up -d`) — run that, then restart Claude Code.
 
 For Docker setup, building from source, environment variables, and remote Ollama, see the [Setup Guide](SETUP.md).
 
