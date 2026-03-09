@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = ["ollama-rs-llm"]
+ollama-rs-llm = ["dep:ollama-rs"]
+genai-llm = ["dep:genai"]
+
 [dependencies]
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -19,7 +24,8 @@ dirs = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 fastembed = { workspace = true }
-genai = { workspace = true }
+genai = { workspace = true, optional = true }
+ollama-rs = { workspace = true, optional = true }
 lancedb = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }

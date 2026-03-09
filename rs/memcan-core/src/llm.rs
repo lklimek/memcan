@@ -11,14 +11,7 @@ use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat};
 use genai::resolver::{AuthData, Endpoint};
 use genai::{Client, ModelIden};
 
-/// Strip the `"ollama::"` provider prefix from a model name if present.
-///
-/// genai v0.3.5 does not strip the prefix from `ModelIden.model_name`, so
-/// `"ollama::qwen3.5:9b"` is sent as-is in the HTTP body. Ollama rejects any
-/// model name containing `"::"`.
-pub fn strip_ollama_prefix(name: &str) -> &str {
-    name.strip_prefix("ollama::").unwrap_or(name)
-}
+pub use crate::ollama::strip_ollama_prefix;
 
 /// LLM provider backed by [`genai::Client`].
 ///
@@ -212,48 +205,6 @@ mod tests {
     fn test_default_model() {
         let provider = GenaiLlmProvider::new(Client::default(), "test-model".into());
         assert_eq!(provider.default_model(), "test-model");
-    }
-
-    #[test]
-    fn test_strip_ollama_prefix_with_prefix() {
-        assert_eq!(strip_ollama_prefix("ollama::qwen3.5:9b"), "qwen3.5:9b");
-    }
-
-    #[test]
-    fn test_strip_ollama_prefix_without_prefix() {
-        assert_eq!(strip_ollama_prefix("gpt-4o"), "gpt-4o");
-    }
-
-    #[test]
-    fn test_strip_ollama_prefix_empty() {
-        assert_eq!(strip_ollama_prefix(""), "");
-    }
-
-    #[test]
-    fn test_strip_ollama_prefix_partial() {
-        assert_eq!(strip_ollama_prefix("ollama:model"), "ollama:model");
-    }
-
-    #[test]
-    fn test_no_think_not_applied_to_non_ollama() {
-        let model = "gpt-4o";
-        let think = Some(false);
-        let disable = think == Some(false) && model.to_lowercase().contains("ollama");
-        assert!(!disable);
-    }
-
-    #[test]
-    fn test_no_think_applied_to_ollama() {
-        let model = "ollama::qwen3.5:9b";
-        let think = Some(false);
-        let disable = think == Some(false) && model.to_lowercase().contains("ollama");
-        assert!(disable);
-    }
-
-    #[test]
-    fn test_context_window_non_ollama_returns_none() {
-        let model = "gpt-4o";
-        assert!(!model.to_lowercase().contains("ollama"));
     }
 
     #[test]

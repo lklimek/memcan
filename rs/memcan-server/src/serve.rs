@@ -33,9 +33,7 @@ use uuid::Uuid;
 use memcan_core::{
     config::Settings,
     error::MemcanError,
-    init::MemcanContext,
-    llm::GenaiLlmProvider,
-    ollama::ensure_nothink_model,
+    init::{MemcanContext, create_llm_provider},
     pipeline::{
         CODE_TABLE, MEMORIES_TABLE, Pipeline, PipelineGuard, PipelineProgress, STANDARDS_TABLE,
     },
@@ -895,8 +893,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
 
     info!("Loading config: lancedb_path={}", ctx.settings.lancedb_path);
 
-    let llm_model = ensure_nothink_model(&ctx.settings).await;
-    let llm = GenaiLlmProvider::from_settings(&ctx.settings);
+    let (llm, llm_model) = create_llm_provider(&ctx.settings);
 
     let dims = ctx.settings.embed_dims;
     ctx.store.ensure_table(MEMORIES_TABLE, dims).await?;
@@ -913,7 +910,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
     let shared = Arc::new(SharedState {
         store: Arc::new(ctx.store),
         embedder: Arc::new(ctx.embedder),
-        llm: Arc::new(llm),
+        llm,
         config: ctx.settings.clone(),
         llm_model,
         queue_status: Arc::new(StdMutex::new(LruCache::new(

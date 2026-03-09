@@ -159,7 +159,7 @@ pub struct TestClassificationArgs {
     #[arg(long)]
     pub prompt: PathBuf,
 
-    /// LLM model name (genai format).
+    /// LLM model name.
     #[arg(long)]
     pub model: String,
 

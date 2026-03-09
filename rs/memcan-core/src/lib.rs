@@ -8,7 +8,7 @@
 //! Key types:
 //! - [`traits::VectorStore`] / [`lancedb_store::LanceDbStore`] -- vector DB
 //! - [`traits::EmbeddingProvider`] / [`embed`] -- text embeddings
-//! - [`traits::LlmProvider`] / [`llm`] -- LLM chat
+//! - [`traits::LlmProvider`] -- LLM chat (see `llm_ollama_rs` or `llm` modules)
 //! - [`pipeline::Pipeline`] -- end-to-end memory storage pipeline
 //! - [`config::Settings`] -- runtime configuration
 
@@ -17,8 +17,14 @@ pub mod embed;
 pub mod error;
 pub mod init;
 pub mod lancedb_store;
+#[cfg(feature = "genai-llm")]
 pub mod llm;
+#[cfg(feature = "ollama-rs-llm")]
+pub mod llm_ollama_rs;
 pub mod ollama;
 pub mod pipeline;
 pub mod prompts;
 pub mod traits;
+
+#[cfg(not(any(feature = "ollama-rs-llm", feature = "genai-llm")))]
+compile_error!("At least one LLM feature must be enabled: ollama-rs-llm or genai-llm");

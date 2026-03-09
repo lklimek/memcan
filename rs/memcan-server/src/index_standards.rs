@@ -9,8 +9,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use memcan_core::error::{MemcanError, Result as MemcanResult, ResultExt};
-use memcan_core::init::MemcanContext;
-use memcan_core::llm::GenaiLlmProvider;
+use memcan_core::init::{MemcanContext, create_llm_provider};
 use memcan_core::pipeline::STANDARDS_TABLE;
 use memcan_core::prompts::{METADATA_EXTRACTION_PROMPT, render_prompt};
 use memcan_core::traits::{
@@ -171,8 +170,8 @@ fn build_chunk_text(chunk: &MdChunk) -> String {
 
 pub async fn run(args: &IndexStandardsArgs) -> MemcanResult<()> {
     let ctx = MemcanContext::init().await?;
-    let model = args.model.as_deref().unwrap_or(&ctx.settings.llm_model);
-    let llm = GenaiLlmProvider::from_settings(&ctx.settings);
+    let (llm, default_model) = create_llm_provider(&ctx.settings);
+    let model = args.model.as_deref().unwrap_or(&default_model);
 
     if args.drop {
         ctx.store
@@ -242,7 +241,7 @@ pub async fn run(args: &IndexStandardsArgs) -> MemcanResult<()> {
         let meta = {
             let mut result = None;
             for attempt in 0..2 {
-                match extract_metadata(&chunk_text, model, &llm).await {
+                match extract_metadata(&chunk_text, model, llm.as_ref()).await {
                     Ok(m) => {
                         result = Some(m);
                         break;

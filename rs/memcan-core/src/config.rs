@@ -27,16 +27,16 @@ pub struct Settings {
     pub tech_stack: String,
     pub distill_memories: bool,
     pub log_file: String,
-    /// LLM model name for the genai crate. Prefix with provider, e.g.
-    /// `"ollama::qwen3.5:4b"`, `"gpt-4o"`, `"claude-sonnet-4-20250514"`.
+    /// LLM model name. With the default `ollama-rs-llm` feature, this is a
+    /// bare Ollama model name like `"qwen3.5:9b"`. With `genai-llm`, prefix
+    /// with provider, e.g. `"ollama::qwen3.5:9b"`, `"gpt-4o"`.
     pub llm_model: String,
     /// Fastembed model name, e.g. `"AllMiniLML6V2"`, `"BGESmallENV15"`.
     pub embed_model: String,
     /// Embedding vector dimensions (derived automatically from embed_model).
     pub embed_dims: usize,
     /// Ollama server URL, e.g. `"http://10.29.188.1:11434"`.
-    /// Passed explicitly to the genai client since it does not read
-    /// `OLLAMA_HOST` from the environment.
+    /// Passed explicitly to the LLM client.
     pub ollama_host: Option<String>,
     /// Bearer token for Ollama endpoint auth. When set, every Ollama
     /// request sends `Authorization: Bearer <key>`.
@@ -80,7 +80,7 @@ impl Default for Settings {
             tech_stack: String::new(),
             distill_memories: true,
             log_file: "~/.claude/logs/memcan-mcp.log".into(),
-            llm_model: "ollama::qwen3.5:4b".into(),
+            llm_model: "qwen3.5:9b".into(),
             embed_model: "MultilingualE5Large".into(),
             embed_dims: 1024,
             ollama_host: None,
@@ -189,7 +189,8 @@ impl Settings {
             return Err(MemcanError::Config("LANCEDB_PATH must not be empty".into()));
         }
 
-        // -- llm_model format check (warn only) --
+        // -- llm_model format check (warn only, genai-llm needs provider prefix) --
+        #[cfg(all(feature = "genai-llm", not(feature = "ollama-rs-llm")))]
         if !self.llm_model.contains("::") {
             warn!(
                 "LLM_MODEL '{}' is missing a provider prefix (e.g. 'ollama::model-name')",
@@ -256,7 +257,7 @@ mod tests {
     #[test]
     fn test_defaults() {
         let d = Settings::default();
-        assert_eq!(d.llm_model, "ollama::qwen3.5:4b");
+        assert_eq!(d.llm_model, "qwen3.5:9b");
         assert_eq!(d.embed_model, "MultilingualE5Large");
         assert_eq!(d.embed_dims, 1024);
         assert!(d.distill_memories);

@@ -145,7 +145,7 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 | `LANCEDB_PATH` | `~/.local/share/memcan/lancedb` | LanceDB storage directory |
 | `DEFAULT_USER_ID` | `global` | Default memory scope |
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction |
-| `LLM_MODEL` | `ollama::qwen3.5:4b` | LLM model (genai format with provider prefix) |
+| `LLM_MODEL` | `qwen3.5:9b` | LLM model name (`ollama::` prefix accepted for backward compat) |
 | `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings (dimensions derived automatically) |
 | `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`). Passed to genai client explicitly. |
 | `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth (sent as `Authorization: Bearer $key`) |

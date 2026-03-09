@@ -1,14 +1,21 @@
-//! Ollama model management — auto-create nothink model variant on startup.
+//! Ollama model management utilities.
 
 use tracing::{info, warn};
 
 use crate::config::Settings;
-use crate::llm::strip_ollama_prefix;
+
+/// Strip the `"ollama::"` provider prefix from a model name if present.
+///
+/// The Ollama API rejects any model name containing `"::"`.
+pub fn strip_ollama_prefix(name: &str) -> &str {
+    name.strip_prefix("ollama::").unwrap_or(name)
+}
 
 const NOTHINK_SUFFIX: &str = "-memcan-nothink";
 const NOTHINK_SYSTEM: &str =
     "/no_think\nAlways respond with valid JSON only. No markdown, no commentary.";
 
+#[deprecated(since = "0.32.0", note = "ollama-rs handles think:false natively")]
 /// Ensure a nothink model variant exists on the Ollama server.
 ///
 /// Derives `{base_model}-memcan-nothink`, checks if it exists via
@@ -93,6 +100,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_strip_ollama_prefix_with_prefix() {
+        assert_eq!(strip_ollama_prefix("ollama::qwen3.5:9b"), "qwen3.5:9b");
+    }
+
+    #[test]
+    fn test_strip_ollama_prefix_without_prefix() {
+        assert_eq!(strip_ollama_prefix("gpt-4o"), "gpt-4o");
+    }
+
+    #[test]
+    fn test_strip_ollama_prefix_empty() {
+        assert_eq!(strip_ollama_prefix(""), "");
+    }
+
+    #[test]
+    fn test_strip_ollama_prefix_partial() {
+        assert_eq!(strip_ollama_prefix("ollama:model"), "ollama:model");
+    }
+
+    #[test]
     fn test_nothink_suffix() {
         assert_eq!(NOTHINK_SUFFIX, "-memcan-nothink");
     }
@@ -105,6 +132,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(deprecated)]
     async fn test_non_ollama_model_passthrough() {
         let settings = Settings {
             llm_model: "gpt-4o".into(),

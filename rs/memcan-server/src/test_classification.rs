@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use memcan_core::config::Settings;
 use memcan_core::error::{MemcanError, Result as MemcanResult, ResultExt};
-use memcan_core::llm::GenaiLlmProvider;
+use memcan_core::init::create_llm_provider;
 use memcan_core::traits::{LlmMessage, LlmOptions, LlmProvider, Role};
 
 use crate::TestClassificationArgs;
@@ -86,7 +86,7 @@ async fn call_llm(
 pub async fn run(args: &TestClassificationArgs) -> MemcanResult<()> {
     let settings = Settings::load()?;
     settings.ensure_log_dir()?;
-    let llm = GenaiLlmProvider::from_settings(&settings);
+    let (llm, _default_model) = create_llm_provider(&settings);
 
     if !args.prompt.is_file() {
         return Err(MemcanError::Other(format!(
@@ -150,7 +150,8 @@ pub async fn run(args: &TestClassificationArgs) -> MemcanResult<()> {
 
     for (i, entry) in entries.iter().enumerate() {
         let expect_facts = entry.decision == "kept";
-        let new_facts = call_llm(&llm, &args.model, &system_prompt, &entry.content, 3).await;
+        let new_facts =
+            call_llm(llm.as_ref(), &args.model, &system_prompt, &entry.content, 3).await;
 
         let (status, label) = match &new_facts {
             None => ("ERROR", "---"),
