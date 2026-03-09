@@ -378,7 +378,7 @@ pub async fn run(args: &IndexCodeArgs) -> MemcanResult<()> {
             .ensure_table(table, ctx.settings.embed_dims)
             .await?;
         let filter = format!(
-            "JSON_EXTRACT(payload, '$.project') = '{}'",
+            "project = '{}'",
             args.project.replace('\'', "''")
         );
         let deleted = ctx.store.delete_by_filter(table, &filter).await?;
@@ -412,7 +412,7 @@ pub async fn run(args: &IndexCodeArgs) -> MemcanResult<()> {
     let now = Utc::now().to_rfc3339();
 
     let project_filter = format!(
-        "JSON_EXTRACT(payload, '$.project') = '{}'",
+        "project = '{}'",
         args.project.replace('\'', "''")
     );
     let existing_records = ctx
@@ -585,7 +585,7 @@ pub async fn run(args: &IndexCodeArgs) -> MemcanResult<()> {
     let mut total_deleted = 0usize;
     for fp in &removed_files {
         let filter = format!(
-            "JSON_EXTRACT(payload, '$.project') = '{}' AND JSON_EXTRACT(payload, '$.file_path') = '{}'",
+            "project = '{}' AND file_path = '{}'",
             args.project.replace('\'', "''"),
             fp.replace('\'', "''")
         );

@@ -178,7 +178,7 @@ pub async fn run(args: &IndexStandardsArgs) -> MemcanResult<()> {
             .ensure_table(STANDARDS_TABLE, ctx.settings.embed_dims)
             .await?;
         let filter = format!(
-            "JSON_EXTRACT(payload, '$.standard_id') = '{}'",
+            "standard_id = '{}'",
             args.standard_id.replace('\'', "''")
         );
         let count = ctx.store.count(STANDARDS_TABLE, Some(&filter)).await?;
