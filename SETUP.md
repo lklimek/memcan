@@ -84,7 +84,7 @@ cp .env.example ~/.config/memcan/.env
 | `LANCEDB_PATH` | `~/.local/share/memcan/lancedb` | LanceDB storage directory |
 | `DEFAULT_USER_ID` | `global` | Default memory scope |
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction |
-| `LLM_MODEL` | `qwen3.5:9b` | LLM model name. Default build uses Ollama (bare model name). When built with the `genai-llm` feature, a provider prefix is required (e.g. `ollama::qwen3.5:9b`). |
+| `LLM_MODEL` | `ollama::qwen3.5:9b` | Ollama model name. Use the `ollama::` prefix (e.g. `ollama::qwen3.5:9b`). The prefix is stripped when calling the Ollama API. |
 | `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings (dimensions derived automatically) |
 | `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`). Read by MemCan via `Settings` and passed to the Ollama client. |
 | `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth. Read by MemCan via `Settings` and sent with every request to Ollama. |

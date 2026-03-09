@@ -134,7 +134,7 @@ OLLAMA_HOST=http://192.168.1.10:11434
 OLLAMA_API_KEY=your-token-here
 ```
 
-> **Cloud LLM (OpenAI, Anthropic, etc.):** Prebuilt releases support only Ollama. The codebase has an optional `genai-llm` feature that can support other providers, but it's not enabled by default. If you need a cloud provider, [open an issue](https://github.com/lklimek/memcan/issues).
+> **Cloud LLM:** Only Ollama is currently supported. If you need a different LLM provider, [open an issue](https://github.com/lklimek/memcan/issues).
 
 ## License
 
