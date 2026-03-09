@@ -29,7 +29,7 @@ cd ~/.config/memcan/server && docker compose up -d
 MemCan uses a two-component architecture:
 
 - **Server** (`memcan-server`) — long-lived HTTP MCP server handling embeddings, LLM, and storage. Runs as a Docker container or system service on port 8191 (internal), fronted by Traefik on port 8190.
-- **CLI** (`memcan`) — thin HTTP client for hooks. Installed by `/setup-memcan` (prebuilt binary) or via `cargo install memcan`. No fastembed/LanceDB deps.
+- **CLI** (`memcan`) — thin HTTP client for hooks. Installed by `/setup-memcan`. No fastembed/LanceDB deps.
 
 The Claude Code plugin connects to the server via HTTP MCP transport (Streamable HTTP).
 
@@ -95,12 +95,38 @@ The user rule created by `/setup-memcan` lives in `~/.claude/rules/memcan.md` �
 
 MemCan uses [Ollama](https://ollama.com/) for local LLM inference (fact extraction and deduplication). **A GPU is strongly recommended** — the default model (`qwen3.5:9b`) runs too slowly on CPU for interactive use.
 
+### Using the bundled Ollama (docker compose)
+
+The `docker-compose.yml` starts an Ollama container by default. After `docker compose up -d`, pull the model into it:
+
+```bash
+docker compose exec ollama ollama pull qwen3.5:9b
+```
+
+**GPU acceleration:** The bundled Ollama runs in CPU mode by default. To enable GPU, uncomment the `runtime: nvidia` and `deploy.resources` lines in `docker-compose.yml` (requires NVIDIA drivers and `nvidia-container-runtime`):
+
+```yaml
+  ollama:
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+```
+
+**Disable bundled Ollama:** Set `OLLAMA_HOST` in `~/.config/memcan/.env` to point at a remote or local Ollama instance, then comment out the `ollama:` service in `docker-compose.yml`.
+
+### Using a standalone Ollama
+
 ```bash
 # Install Ollama, then pull the default model
 ollama pull qwen3.5:9b
 ```
 
-If Ollama runs on a different machine, point MemCan at it via `.env`:
+If Ollama runs on a different machine, point MemCan at it:
 
 ```bash
 OLLAMA_HOST=http://192.168.1.10:11434
