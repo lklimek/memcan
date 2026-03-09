@@ -164,7 +164,8 @@ install_cli() {
     sums_url="https://github.com/${REPO}/releases/download/${tag}/SHA256SUMS"
 
     tmpdir="$(mktemp -d)"
-    trap 'rm -rf "${tmpdir}"' EXIT
+    # shellcheck disable=SC2064
+    trap "rm -rf '${tmpdir}'" EXIT
 
     info "Downloading ${archive}..."
     curl -fSL -o "${tmpdir}/${archive}" "${download_url}"
