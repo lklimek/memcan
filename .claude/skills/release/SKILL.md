@@ -2,7 +2,6 @@
 name: release
 description: Bump version (SemVer 2.0), update Cargo.lock, generate changelog (Keep a Changelog), commit, push, and create GitHub release. Args: major|minor|patch or auto-detect from commits.
 user-invocable: true
-allowed-tools: Read, Edit, Bash(cargo *), Bash(git *), Bash(gh *), Bash(grep *), Bash(cat *), Bash(mktemp *), Glob, Grep
 ---
 
 # Release
