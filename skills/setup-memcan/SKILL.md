@@ -170,7 +170,9 @@ PreCompact:
 
 Merge into existing hooks — do not overwrite other hook entries. Use `python3` or `jq` for JSON manipulation. Create `.claude/` directory if needed.
 
-If the user selects "None", skip this step entirely.
+**Cleanup unselected hooks:** After installing selected hooks, scan all hook events (`SubagentStop`, `PreCompact`) for entries whose `command` contains `memcan`. Remove any that were NOT selected by the user. This ensures switching from "Both" to "lessons-learned" removes the stale `PreCompact` memcan hook. Do not remove non-memcan hooks.
+
+If the user selects "None", remove all existing hooks whose `command` contains `memcan` across all events. Do not remove non-memcan hooks.
 
 ### 5. Verify
 
