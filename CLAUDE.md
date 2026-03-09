@@ -22,6 +22,7 @@ hooks/                           # Event hooks (SubagentStop, PreCompact)
 skills/                          # Plugin skills
 .github/workflows/               # CI + Release workflows
 docker-compose.yml               # Traefik + memcan + optional Ollama
+scripts/                         # Admin scripts (OWASP indexing, etc.)
 ```
 
 ## Crate Responsibilities
@@ -83,7 +84,28 @@ memcan search <query> [--project <p>] [--limit <n>]
 memcan extract                        # Hook handler: reads stdin, POSTs to server
 memcan status [operation_id]
 memcan count [--project <p>]
+memcan index-standards <file> --standard-id <id> --standard-type <t> [--version <v>] [--lang <l>] [--url <u>] [--wait]
+memcan index-standards --drop --standard-id <id>
 ```
+
+## MCP Tools
+
+Server exposes these MCP tools (via HTTP at `/mcp`):
+
+| Tool | Description |
+|---|---|
+| `add_memory` | Store a memory (async, returns operation_id) |
+| `search_memories` | Semantic search across memories |
+| `get_memories` | List memories for a given scope |
+| `count_memories` | Count memories |
+| `delete_memory` | Delete a memory by ID |
+| `update_memory` | Update an existing memory's content |
+| `list_collections` | List available collections with point counts |
+| `search_standards` | Search indexed standards (CWE, OWASP, etc.) |
+| `search_code` | Search indexed code snippets |
+| `index_standards` | Index a standards document (async, returns operation_id) |
+| `drop_indexed_standards` | Drop all indexed data for a standard_id |
+| `get_queue_status` | Poll async operation progress |
 
 ## Versioning
 
