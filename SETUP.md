@@ -23,14 +23,14 @@ docker compose exec ollama ollama pull qwen3.5:9b
 docker compose up -d --build
 
 # Enable Open WebUI alongside Ollama
-COMPOSE_PROFILES=ollama,gpu docker compose up -d
+COMPOSE_PROFILES=ollama,webui docker compose up -d
 ```
 
 The `docker-compose.yml` provides:
 - **Traefik** reverse proxy on ports 8190 (MemCan), 11434 (Ollama), 11400 (Open WebUI)
 - **MemCan** server with Bearer token auth, health check, named volumes for data/models
 - **Ollama** (`ollama` profile) — CPU mode by default; GPU requires uncommenting `runtime: nvidia` in `docker-compose.yml`; disable by setting `COMPOSE_PROFILES=` in the server `.env`
-- **Open WebUI** (`gpu` profile) for Ollama web interface
+- **Open WebUI** (`webui` profile) for Ollama web interface
 
 Set `MEMCAN_API_KEY` in `.env` before deploying — it's used for both MemCan server auth and Traefik middleware auth.
 

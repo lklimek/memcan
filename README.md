@@ -42,19 +42,6 @@ The Claude Code plugin connects to the server via HTTP MCP transport (Streamable
 - **axum** — HTTP framework mounting MCP service + health endpoint + auth middleware
 - **DISTILL_MEMORIES** — when enabled (default: `true`), the LLM extracts structured facts from raw text before storing
 
-## Install
-
-```bash
-# In a Claude Code session:
-/plugin marketplace add lklimek/agents
-/plugin install memcan@lklimek
-/setup-memcan
-```
-
-`/setup-memcan` installs the CLI, downloads the Docker Compose server config, generates API keys, creates `~/.config/memcan/.env`, and writes a user rule so agents always know to use memory. It prints the command to start the server (`docker compose up -d`) — run that, then restart Claude Code.
-
-For Docker setup, building from source, environment variables, and remote Ollama, see the [Setup Guide](SETUP.md).
-
 ## MCP Tools
 
 | Tool | Description |
@@ -119,7 +106,7 @@ docker compose exec ollama ollama pull qwen3.5:9b
               capabilities: [gpu]
 ```
 
-**Open WebUI:** Add `gpu` to the profiles (`COMPOSE_PROFILES=ollama,gpu`) to also start Open WebUI.
+**Open WebUI:** Add `webui` to the profiles (`COMPOSE_PROFILES=ollama,webui`) to also start Open WebUI.
 
 ### Using a standalone Ollama
 

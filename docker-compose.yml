@@ -4,7 +4,7 @@
 #   docker compose up                     — traefik + memcan only (no bundled Ollama)
 #   docker compose up --build             — traefik + memcan (builds from local Dockerfile)
 #   COMPOSE_PROFILES=ollama docker compose up  — traefik + memcan + ollama (CPU, default via .env)
-#   COMPOSE_PROFILES=ollama,gpu docker compose up  — traefik + memcan + ollama (GPU) + open-webui
+#   COMPOSE_PROFILES=ollama,webui docker compose up  — traefik + memcan + ollama + open-webui
 #
 # The setup skill writes COMPOSE_PROFILES=ollama to the server .env, enabling Ollama by default.
 # To disable the bundled Ollama, set COMPOSE_PROFILES= (empty) or remove it from the server .env.
@@ -118,7 +118,7 @@ services:
 
   open-webui:
     image: ghcr.io/open-webui/open-webui:latest
-    profiles: ["gpu"]
+    profiles: ["webui"]
     volumes:
       - open-webui:/app/backend/data
     environment:
