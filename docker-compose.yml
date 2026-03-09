@@ -36,6 +36,7 @@ services:
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-ollama::qwen3.5:9b}
       MEMCAN_API_KEY: ${MEMCAN_API_KEY}
+      RUST_LOG: ${RUST_LOG:-info,memcan_core=debug,memcan_server=debug}
       MEMCAN_LOG_FILE: ""
       MEMCAN_LISTEN: 0.0.0.0:8191
       DISTILL_MEMORIES: ${DISTILL_MEMORIES:-true}
