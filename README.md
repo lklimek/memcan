@@ -15,7 +15,7 @@ cargo build --release -p memcan-server
 ./target/release/memcan-server serve
 
 # If running from source (option c), install Ollama and pull the model:
-# ollama pull qwen3.5:4b
+# ollama pull qwen3.5:9b
 
 # 2. Install plugin in Claude Code
 #    Settings → Plugins → enable memcan@lklimek
@@ -33,7 +33,7 @@ No external database required — LanceDB runs embedded on the server, storing d
 MemCan uses a two-component architecture:
 
 - **Server** (`memcan-server`) — long-lived HTTP MCP server handling embeddings, LLM, and storage. Runs as a Docker container or system service on port 8191 (internal), fronted by Traefik on port 8190.
-- **CLI** (`memcan`) — thin HTTP client for hooks. Installed via `cargo install memcan`. No fastembed/LanceDB deps (~5 MB vs ~180 MB server).
+- **CLI** (`memcan`) — thin HTTP client for hooks. Installed via `cargo install memcan`. No fastembed/LanceDB deps.
 
 The Claude Code plugin connects to the server via HTTP MCP transport (Streamable HTTP).
 
@@ -41,7 +41,7 @@ The Claude Code plugin connects to the server via HTTP MCP transport (Streamable
 
 - **LanceDB** — embedded vector database (no server needed, data stored locally)
 - **fastembed** — in-process ONNX embeddings (`MultilingualE5Large`, 1024 dimensions, ~1.3 GB model downloaded on first use)
-- **genai + Ollama** — LLM inference (`ollama::qwen3.5:4b`); MemCan reads `OLLAMA_HOST` and passes it to the genai client
+- **genai + Ollama** — LLM inference (`qwen3.5:9b` by default); MemCan reads `OLLAMA_HOST` and passes it to the genai client. A GPU is recommended for Ollama for best performance.
 - **rmcp 1.1** — Rust MCP SDK with Streamable HTTP transport
 - **axum** — HTTP framework mounting MCP service + health endpoint + auth middleware
 - **DISTILL_MEMORIES** — when enabled (default: `true`), the LLM extracts structured facts from raw text before storing
@@ -50,7 +50,7 @@ The Claude Code plugin connects to the server via HTTP MCP transport (Streamable
 
 ### Prerequisites
 
-- [Ollama](https://ollama.com/) — LLM inference (embeddings are handled in-process by fastembed on the server)
+- [Ollama](https://ollama.com/) — LLM inference (embeddings are handled in-process by fastembed on the server). A GPU is strongly recommended for acceptable performance with the default model (`qwen3.5:9b`).
 - Docker + Docker Compose (for containerized deployment) or Rust toolchain (for building from source)
 
 ### Plugin Install
@@ -176,7 +176,7 @@ cp .env.example ~/.config/memcan/.env
 | `LANCEDB_PATH` | `~/.local/share/memcan/lancedb` | LanceDB storage directory |
 | `DEFAULT_USER_ID` | `global` | Default memory scope |
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction |
-| `LLM_MODEL` | `ollama::qwen3.5:4b` | LLM model (genai format with provider prefix) |
+| `LLM_MODEL` | `qwen3.5:9b` | LLM model (genai format with provider prefix) |
 | `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings (dimensions derived automatically) |
 | `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`) |
 | `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth |
@@ -219,8 +219,6 @@ The `docker-compose.yml` provides:
 - **Open WebUI** (optional, `gpu` profile) for Ollama web interface
 
 Set `MEMCAN_API_KEY` in `.env` before deploying — it's used for both MemCan server auth and Traefik middleware auth.
-
-> **Note:** Docker Compose defaults `LLM_MODEL` to `ollama::qwen3.5:9b` (a larger model than the server's built-in default of `ollama::qwen3.5:4b`). Override via the `LLM_MODEL` variable in `.env` if needed.
 
 ## License
 
