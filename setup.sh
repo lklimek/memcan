@@ -157,12 +157,11 @@ install_cli() {
 
     target="$(detect_target)"
     archive="${BIN_NAME}-${target}.tar.gz"
-    checksum_file="${archive}.sha256"
 
     info "Detected target: ${target}"
 
     download_url="https://github.com/${REPO}/releases/download/${tag}/${archive}"
-    checksum_url="https://github.com/${REPO}/releases/download/${tag}/${checksum_file}"
+    sums_url="https://github.com/${REPO}/releases/download/${tag}/SHA256SUMS"
 
     tmpdir="$(mktemp -d)"
     trap 'rm -rf "${tmpdir}"' EXIT
@@ -170,10 +169,11 @@ install_cli() {
     info "Downloading ${archive}..."
     curl -fSL -o "${tmpdir}/${archive}" "${download_url}"
 
-    info "Downloading checksum..."
-    curl -fSL -o "${tmpdir}/${checksum_file}" "${checksum_url}"
+    info "Downloading checksums..."
+    curl -fSL -o "${tmpdir}/SHA256SUMS" "${sums_url}"
 
-    expected_sum="$(cut -d' ' -f1 < "${tmpdir}/${checksum_file}")"
+    expected_sum="$(grep "${archive}" "${tmpdir}/SHA256SUMS" | cut -d' ' -f1)"
+    [ -n "${expected_sum}" ] || die "Checksum for ${archive} not found in SHA256SUMS"
     info "Verifying checksum..."
     verify_checksum "${tmpdir}/${archive}" "${expected_sum}"
     ok "Checksum verified"
