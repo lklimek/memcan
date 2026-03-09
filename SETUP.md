@@ -49,6 +49,8 @@ ollama pull qwen3.5:9b
 ./target/release/memcan-server serve
 ```
 
+> **URL note:** Without Docker/Traefik, the server binds to `127.0.0.1:8191` directly (no proxy in front). The CLI/plugin defaults to `MEMCAN_URL=http://localhost:8190` (the Traefik port). When running from source, set `MEMCAN_URL=http://localhost:8191` in `~/.config/memcan/.env`, or start the server on port 8190 with `--listen 127.0.0.1:8190`.
+
 > **Disk space:** The embedding model (`MultilingualE5Large`) requires ~1.3 GB of disk space, downloaded on the server's first startup. LanceDB data is stored at `~/.local/share/memcan/lancedb` (or `/data/lancedb` in Docker). Plan for ~2 GB total.
 
 ## Configuration
@@ -57,8 +59,8 @@ The `.env` file configures both the server and CLI. Search order:
 
 | Priority | Location | Use case |
 |----------|----------|----------|
-| 1 | `~/.config/memcan/.env` (Linux) / `~/Library/Application Support/memcan/.env` (macOS) | Production — survives plugin updates |
-| 2 | `./.env` in CWD | Development — running from source checkout |
+| 1 | `./.env` in CWD | Development — running from source checkout |
+| 2 | `~/.config/memcan/.env` (Linux) / `~/Library/Application Support/memcan/.env` (macOS) | Production — survives plugin updates |
 | 3 | Defaults | Fallback (localhost, default LanceDB path) |
 
 Environment variables always override `.env` values. Run `/setup-memcan` to create the config file, or copy `.env.example` manually:
@@ -79,12 +81,10 @@ cp .env.example ~/.config/memcan/.env
 | `LANCEDB_PATH` | `~/.local/share/memcan/lancedb` | LanceDB storage directory |
 | `DEFAULT_USER_ID` | `global` | Default memory scope |
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction |
-| `LLM_MODEL` | `qwen3.5:9b` | LLM model (genai format with provider prefix) |
+| `LLM_MODEL` | `qwen3.5:9b` | LLM model name. Default build uses Ollama (bare model name). When built with the `genai-llm` feature, a provider prefix is required (e.g. `ollama::qwen3.5:9b`). |
 | `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings (dimensions derived automatically) |
-| `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`) |
-| `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth |
-
-> **Note:** The genai crate does **not** read `OLLAMA_HOST` or `OLLAMA_API_KEY` from environment — MemCan reads them via `Settings` and passes them to the genai client via `ServiceTargetResolver`.
+| `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`). Read by MemCan via `Settings` and passed to the Ollama client. |
+| `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth. Read by MemCan via `Settings` and sent with every request to Ollama. |
 
 ## Remote Ollama
 

@@ -6,7 +6,7 @@ MemCan fixes this. It gives agents a persistent, searchable memory store that su
 
 Works with any MCP-compatible agent. Tested and optimized for [Claude Code](https://claude.ai/code).
 
-Built on embedded [LanceDB](https://lancedb.com/) + [fastembed](https://github.com/Anush008/fastembed-rs) (in-process ONNX embeddings) + [Ollama](https://ollama.com/) (local LLM for fact extraction and deduplication). No cloud, no external database, no data leaving your machine.
+Built on embedded [LanceDB](https://lancedb.com/) + [fastembed](https://github.com/Anush008/fastembed-rs) (in-process ONNX embeddings) + [Ollama](https://ollama.com/) (local LLM for fact extraction and deduplication). No cloud, no external database — by default everything runs locally on your machine.
 
 ## Quick Start
 
@@ -29,7 +29,7 @@ cd ~/.config/memcan/server && docker compose up -d
 MemCan uses a two-component architecture:
 
 - **Server** (`memcan-server`) — long-lived HTTP MCP server handling embeddings, LLM, and storage. Runs as a Docker container or system service on port 8191 (internal), fronted by Traefik on port 8190.
-- **CLI** (`memcan`) — thin HTTP client for hooks. Installed via `cargo install memcan`. No fastembed/LanceDB deps.
+- **CLI** (`memcan`) — thin HTTP client for hooks. Installed by `/setup-memcan` (prebuilt binary) or via `cargo install memcan`. No fastembed/LanceDB deps.
 
 The Claude Code plugin connects to the server via HTTP MCP transport (Streamable HTTP).
 
@@ -37,7 +37,7 @@ The Claude Code plugin connects to the server via HTTP MCP transport (Streamable
 
 - **LanceDB** — embedded vector database (no server needed, data stored locally)
 - **fastembed** — in-process ONNX embeddings (`MultilingualE5Large`, 1024 dimensions, ~1.3 GB model downloaded on first use)
-- **genai + Ollama** — LLM inference (`qwen3.5:9b` by default); MemCan reads `OLLAMA_HOST` and passes it to the genai client. A GPU is recommended for Ollama for best performance.
+- **Ollama** — LLM inference (`qwen3.5:9b` by default, via [ollama-rs](https://github.com/pepperoni21/ollama-rs)); MemCan reads `OLLAMA_HOST` and `OLLAMA_API_KEY` from settings and passes them to the Ollama client. A GPU is recommended for best performance.
 - **rmcp 1.1** — Rust MCP SDK with Streamable HTTP transport
 - **axum** — HTTP framework mounting MCP service + health endpoint + auth middleware
 - **DISTILL_MEMORIES** — when enabled (default: `true`), the LLM extracts structured facts from raw text before storing
@@ -108,7 +108,7 @@ OLLAMA_HOST=http://192.168.1.10:11434
 OLLAMA_API_KEY=your-token-here
 ```
 
-> **Cloud LLM (OpenAI, Anthropic, etc.):** Currently only Ollama is supported. If you need a cloud provider, [open an issue](https://github.com/lklimek/memcan/issues).
+> **Cloud LLM (OpenAI, Anthropic, etc.):** Prebuilt releases support only Ollama. The codebase has an optional `genai-llm` feature that can support other providers, but it's not enabled by default. If you need a cloud provider, [open an issue](https://github.com/lklimek/memcan/issues).
 
 ## License
 
