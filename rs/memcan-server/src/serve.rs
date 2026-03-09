@@ -2,6 +2,7 @@
 //!
 //! Dual transport: `--stdio` for backward compat, default is HTTP via axum.
 
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex as StdMutex};
 
@@ -68,7 +69,7 @@ pub struct AddMemoryParams {
     pub memory: String,
     pub project: Option<String>,
     pub user_id: Option<String>,
-    pub metadata: Option<serde_json::Value>,
+    pub metadata: Option<HashMap<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -273,7 +274,7 @@ impl MemcanService {
         }
     }
 
-    #[tool(description = "Store a memory — lesson learned, decision, preference, or pattern.")]
+    #[tool(description = "Store a memory - lesson learned, decision, preference, or pattern.")]
     async fn add_memory(
         &self,
         Parameters(params): Parameters<AddMemoryParams>,
@@ -285,6 +286,7 @@ impl MemcanService {
         );
         let metadata = params
             .metadata
+            .map(|m| serde_json::to_value(m).unwrap_or_default())
             .unwrap_or(serde_json::Value::Object(Default::default()));
         let memory = params.memory;
         let state = Arc::clone(&self.state);
@@ -827,7 +829,7 @@ impl MemcanService {
 impl ServerHandler for MemcanService {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
-        info.protocol_version = ProtocolVersion::V_2024_11_05;
+        info.protocol_version = ProtocolVersion::LATEST;
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info.server_info = {
             let mut imp = Implementation::default();
