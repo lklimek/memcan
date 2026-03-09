@@ -95,34 +95,30 @@ impl Default for Settings {
 impl Settings {
     /// Load settings from .env files and environment variables.
     ///
-    /// Search order for .env files:
-    /// 1. Platform config dir: `~/.config/memcan/.env`
-    /// 2. Current working directory: `./.env`
+    /// Precedence (highest to lowest):
+    /// 1. Explicit environment variables (already set before load)
+    /// 2. CWD `./.env`
+    /// 3. Platform config dir `~/.config/memcan/.env`
     ///
-    /// Environment variables override .env values.
-    /// Load and validate settings. Returns an error if values are invalid.
+    /// Returns an error if values are invalid.
     pub fn load() -> Result<Self> {
-        // Load .env files (later loads do NOT override earlier ones in dotenvy,
-        // but env vars always win). We load platform config first, then CWD.
+        // Load .env files. dotenvy::from_path sets vars only if not already present,
+        // so load order determines priority: CWD > config dir > explicit env vars win over both.
         let mut loaded_files: Vec<PathBuf> = Vec::new();
 
-        // 1. Platform config dir
+        // 1. CWD/.env (higher priority)
+        let cwd_env = Path::new(".env");
+        if cwd_env.exists() && dotenvy::from_path(cwd_env).is_ok() {
+            debug!("Loaded .env from CWD");
+            loaded_files.push(cwd_env.to_path_buf());
+        }
+
+        // 2. Platform config dir (fallback)
         if let Some(config_dir) = dirs::config_dir() {
             let platform_env = config_dir.join("memcan").join(".env");
             if platform_env.exists() && dotenvy::from_path(&platform_env).is_ok() {
                 debug!("Loaded .env from {}", platform_env.display());
                 loaded_files.push(platform_env);
-            }
-        }
-
-        // 2. CWD/.env
-        let cwd_env = Path::new(".env");
-        if cwd_env.exists() {
-            // dotenvy::from_path won't override already-set env vars by default,
-            // but we want CWD to override platform config. Use from_path_override.
-            if dotenvy::from_path_override(cwd_env).is_ok() {
-                debug!("Loaded .env from CWD");
-                loaded_files.push(cwd_env.to_path_buf());
             }
         }
 

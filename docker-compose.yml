@@ -144,3 +144,4 @@ volumes:
   open-webui:
   memcan-data:
   memcan-models:
+  ollama-data:

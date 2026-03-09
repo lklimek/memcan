@@ -68,13 +68,13 @@ pub fn load_config() -> CliConfig {
         .map(|d| d.join("memcan").join(".env"))
         .unwrap_or_default();
 
-    if config_path.exists() {
-        let _ = dotenvy::from_path(&config_path);
-    }
-
     let cwd_env = Path::new(".env");
     if cwd_env.exists() {
-        let _ = dotenvy::from_path_override(cwd_env);
+        let _ = dotenvy::from_path(cwd_env);
+    }
+
+    if config_path.exists() {
+        let _ = dotenvy::from_path(&config_path);
     }
 
     CliConfig {
