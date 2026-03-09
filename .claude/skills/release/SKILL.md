@@ -16,22 +16,36 @@ Optional first argument: `major`, `minor`, or `patch`. If omitted, auto-detect f
 
 ### 1. Determine New Version
 
-1. Read current version from `Cargo.toml` workspace `[workspace.package] version` field.
-2. Parse as SemVer 2.0 (MAJOR.MINOR.PATCH).
-3. Get commits since last tag:
+1. Read current version from `Cargo.toml` workspace `[workspace.package] version` field. Parse as SemVer 2.0.
+
+2. Get commits since last tag:
    ```bash
    git log $(git describe --tags --abbrev=0 2>/dev/null || git rev-list --max-parents=0 HEAD)..HEAD --oneline --no-decorate
    ```
-4. If no bump type argument provided, auto-detect from commit prefixes:
-   - **major**: any commit contains `BREAKING CHANGE` in body, or type ends with `!` (e.g., `feat!:`, `fix!:`)
-   - **minor**: any `feat:` or `feat(scope):` commit
-   - **patch**: only `fix:`, `perf:`, `refactor:`, `chore:`, `docs:`, `test:`, `build:`, `ci:`, `style:`
-   - If no conventional commits found, default to `patch`
-5. Apply bump:
-   - `major` → MAJOR+1.0.0
-   - `minor` → MAJOR.MINOR+1.0
-   - `patch` → MAJOR.MINOR.PATCH+1
-6. Print: `Bumping version: {old} → {new} ({bump_type}, {reason})`
+
+3. **Investigate changes in detail.** For each commit, examine the actual diff to understand the real impact — commit prefixes alone can be misleading. Run:
+   ```bash
+   git diff $(git describe --tags --abbrev=0 2>/dev/null || git rev-list --max-parents=0 HEAD)..HEAD --stat
+   ```
+   Then read the full diff for any commits that touch public APIs, MCP tool signatures, config formats, or data schemas. Look for:
+   - **Breaking**: removed/renamed MCP tools, changed tool parameter names/types, removed config vars, changed data formats, removed public API functions
+   - **Minor**: new MCP tools, new config vars, new CLI subcommands, new skills/agents, significant new behavior
+   - **Patch**: bug fixes, doc changes, internal refactors, CI/build changes, typos
+
+4. If bump type was provided as argument, use it. Otherwise auto-detect using both commit prefixes AND the diff investigation:
+   - **major**: breaking changes found in diffs, OR any commit contains `BREAKING CHANGE` in body, OR type ends with `!`
+   - **minor**: new features/capabilities found in diffs, OR any `feat:` commit
+   - **patch**: only fixes, refactors, docs, CI, or trivial changes
+   - If no conventional commits found, decide from diff analysis; default to `patch` if unclear
+
+5. Apply bump: `major` → X+1.0.0, `minor` → X.Y+1.0, `patch` → X.Y.Z+1
+
+6. **Present analysis and ask for confirmation.** Use `AskUserQuestion` to show:
+   - Current version → proposed version (bump type)
+   - Commit list with short descriptions
+   - Key changes found in diff investigation (files changed, what was added/removed/modified)
+   - Justification for the chosen bump type
+   - Options: proposed bump type (recommended), alternative bump types, or abort
 
 ### 2. Update Version
 
