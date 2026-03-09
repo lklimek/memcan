@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use axum::Router;
@@ -68,6 +69,40 @@ fn queue_entry_to_json(entry: &QueueEntry) -> serde_json::Value {
     })
 }
 
+/// Maximum number of pending async operations (queued + running).
+const MAX_PENDING_TASKS: usize = 20;
+
+/// RAII guard that decrements the pending-task counter on drop.
+struct PendingTaskGuard {
+    counter: Arc<AtomicUsize>,
+}
+
+impl Drop for PendingTaskGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Try to claim a slot in the pending queue. Returns a guard that auto-decrements on drop.
+fn try_enqueue(counter: &Arc<AtomicUsize>) -> Result<PendingTaskGuard, ErrorData> {
+    let prev = counter.fetch_add(1, Ordering::SeqCst);
+    if prev >= MAX_PENDING_TASKS {
+        counter.fetch_sub(1, Ordering::SeqCst);
+        Err(ErrorData::new(
+            rmcp::model::ErrorCode::INTERNAL_ERROR,
+            format!(
+                "Server busy: {} operations pending (max {}). Try again later.",
+                prev, MAX_PENDING_TASKS
+            ),
+            None,
+        ))
+    } else {
+        Ok(PendingTaskGuard {
+            counter: Arc::clone(counter),
+        })
+    }
+}
+
 struct SharedState {
     store: Arc<dyn VectorStore>,
     embedder: Arc<dyn EmbeddingProvider>,
@@ -76,6 +111,7 @@ struct SharedState {
     llm_model: String,
     queue_status: Arc<StdMutex<LruCache<String, QueueEntry>>>,
     llm_semaphore: Arc<tokio::sync::Semaphore>,
+    pending_tasks: Arc<AtomicUsize>,
 }
 
 // --- Tool parameter structs ---
@@ -366,9 +402,11 @@ impl MemcanService {
             );
         }
 
+        let task_guard = try_enqueue(&self.state.pending_tasks)?;
         let sem = Arc::clone(&self.state.llm_semaphore);
         let uid_clone = uid.clone();
         tokio::spawn(async move {
+            let _task_guard = task_guard;
             let _permit = match sem.acquire().await {
                 Ok(p) => p,
                 Err(_) => {
@@ -572,10 +610,12 @@ impl MemcanService {
             );
         }
 
+        let task_guard = try_enqueue(&self.state.pending_tasks)?;
         let sem = Arc::clone(&self.state.llm_semaphore);
         let memory_id = params.memory_id.clone();
         let memory = params.memory;
         tokio::spawn(async move {
+            let _task_guard = task_guard;
             let _permit = match sem.acquire().await {
                 Ok(p) => p,
                 Err(_) => {
@@ -838,6 +878,7 @@ impl MemcanService {
             );
         }
 
+        let task_guard = try_enqueue(&self.state.pending_tasks)?;
         let store = Arc::clone(&self.state.store);
         let embedder = Arc::clone(&self.state.embedder);
         let llm = Arc::clone(&self.state.llm);
@@ -855,6 +896,7 @@ impl MemcanService {
         };
 
         tokio::spawn(async move {
+            let _task_guard = task_guard;
             let _permit = match sem.acquire().await {
                 Ok(p) => p,
                 Err(_) => {
@@ -990,7 +1032,12 @@ impl MemcanService {
             };
             let json_entries: Vec<serde_json::Value> =
                 entries.iter().map(queue_entry_to_json).collect();
-            let json = serde_json::to_string(&json_entries).unwrap_or_default();
+            let pending = self.state.pending_tasks.load(Ordering::SeqCst);
+            let response = serde_json::json!({
+                "pending_tasks": pending,
+                "operations": json_entries,
+            });
+            let json = serde_json::to_string(&response).unwrap_or_default();
             Ok(CallToolResult::success(vec![Content::text(json)]))
         }
     }
@@ -1127,6 +1174,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
             NonZeroUsize::new(1000).unwrap(),
         ))),
         llm_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
+        pending_tasks: Arc::new(AtomicUsize::new(0)),
     });
 
     if args.stdio {
@@ -1202,4 +1250,50 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_task_guard_decrements_on_drop() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        {
+            let guard = try_enqueue(&counter).unwrap();
+            assert_eq!(counter.load(Ordering::SeqCst), 1);
+            drop(guard);
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn try_enqueue_rejects_when_at_limit() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let mut guards = Vec::new();
+        for _ in 0..MAX_PENDING_TASKS {
+            guards.push(try_enqueue(&counter).unwrap());
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), MAX_PENDING_TASKS);
+
+        let result = try_enqueue(&counter);
+        assert!(result.is_err());
+        assert_eq!(counter.load(Ordering::SeqCst), MAX_PENDING_TASKS);
+    }
+
+    #[test]
+    fn try_enqueue_succeeds_after_guard_dropped() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let mut guards = Vec::new();
+        for _ in 0..MAX_PENDING_TASKS {
+            guards.push(try_enqueue(&counter).unwrap());
+        }
+
+        guards.pop();
+        assert_eq!(counter.load(Ordering::SeqCst), MAX_PENDING_TASKS - 1);
+
+        let guard = try_enqueue(&counter);
+        assert!(guard.is_ok());
+        assert_eq!(counter.load(Ordering::SeqCst), MAX_PENDING_TASKS);
+    }
 }
