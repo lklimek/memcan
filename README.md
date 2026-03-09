@@ -1,6 +1,10 @@
 # MemCan — Persistent Memory for Claude Code
 
-Rust MCP server providing persistent memory via embedded LanceDB + fastembed + genai. Store and recall learnings, decisions, and preferences across Claude Code sessions.
+Claude Code agents forget everything when a session ends. Every new session starts blank — you re-explain your preferences, the agent repeats mistakes you've already corrected, and hard-won project context evaporates.
+
+MemCan fixes this. It gives agents a persistent, searchable memory store that survives across sessions. Agents automatically save learnings, decisions, and preferences as they work, and recall them at the start of the next session. Over time your agents get smarter: they remember your coding style, know which approaches failed before, and understand the quirks of your project without being told again.
+
+Built on embedded [LanceDB](https://lancedb.com/) + [fastembed](https://github.com/Anush008/fastembed-rs) (in-process ONNX embeddings) + [Ollama](https://ollama.com/) (local LLM for fact extraction and deduplication). No cloud, no external database, no data leaving your machine.
 
 ## Quick Start
 
@@ -55,7 +59,17 @@ The Claude Code plugin connects to the server via HTTP MCP transport (Streamable
 
 ### Plugin Install
 
-Enable `memcan@lklimek` in `~/.claude/settings.json`:
+The easiest way to install is via the [lklimek/agents](https://github.com/lklimek/agents) plugin marketplace:
+
+```bash
+# Add the marketplace (one-time)
+/plugin marketplace add lklimek/agents
+
+# Install MemCan
+/plugin install memcan@lklimek
+```
+
+Or enable `memcan@lklimek` manually in `~/.claude/settings.json`:
 
 ```json
 {
