@@ -3,6 +3,8 @@
 //! No dependency on memcan-core (no fastembed, LanceDB, or genai).
 //! Communicates with the MemCan server over HTTP via MCP protocol.
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 
 mod client;
@@ -35,6 +37,9 @@ enum Command {
 
     /// Count memories on the server.
     Count(CountArgs),
+
+    /// Index a markdown standards document on the server.
+    IndexStandards(IndexStandardsArgs),
 }
 
 #[derive(Parser)]
@@ -72,6 +77,40 @@ struct CountArgs {
     /// Project scope.
     #[arg(long)]
     project: Option<String>,
+}
+
+#[derive(Parser)]
+struct IndexStandardsArgs {
+    /// Markdown file to index (required unless --drop).
+    file: Option<PathBuf>,
+
+    /// Standard identifier.
+    #[arg(long)]
+    standard_id: String,
+
+    /// Type of standard (security, coding, cve, guideline). Required unless --drop.
+    #[arg(long)]
+    standard_type: Option<String>,
+
+    /// Standard version.
+    #[arg(long)]
+    version: Option<String>,
+
+    /// Language code.
+    #[arg(long)]
+    lang: Option<String>,
+
+    /// Source URL.
+    #[arg(long)]
+    url: Option<String>,
+
+    /// Drop all indexed data for --standard-id instead of indexing.
+    #[arg(long)]
+    drop: bool,
+
+    /// Wait for indexing to complete (poll get_queue_status).
+    #[arg(long)]
+    wait: bool,
 }
 
 pub struct CliConfig {
@@ -173,6 +212,137 @@ async fn main() {
                     }
                     match c.call_tool("count_memories", tool_args).await {
                         Ok(result) => println!("{result}"),
+                        Err(e) => eprintln!("Error: {e}"),
+                    }
+                    c.close().await;
+                }
+                Err(e) => eprintln!("Connection failed: {e}"),
+            }
+        }
+        Command::IndexStandards(args) => {
+            let config = client::load_config();
+            match client::McpClient::connect(&config).await {
+                Ok(c) => {
+                    if args.drop {
+                        match c
+                            .call_tool(
+                                "drop_indexed_standards",
+                                serde_json::json!({ "standard_id": args.standard_id }),
+                            )
+                            .await
+                        {
+                            Ok(result) => println!("{result}"),
+                            Err(e) => eprintln!("Error: {e}"),
+                        }
+                        c.close().await;
+                        return;
+                    }
+
+                    let file = match args.file.as_ref() {
+                        Some(f) => f,
+                        None => {
+                            eprintln!("Error: file is required unless --drop");
+                            std::process::exit(1);
+                        }
+                    };
+                    let content = match std::fs::read_to_string(file) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!("Error reading file: {e}");
+                            std::process::exit(1);
+                        }
+                    };
+                    let standard_type = match args.standard_type.as_deref() {
+                        Some(t) => t,
+                        None => {
+                            eprintln!("Error: --standard-type is required for indexing");
+                            std::process::exit(1);
+                        }
+                    };
+
+                    let mut tool_args = serde_json::json!({
+                        "content": content,
+                        "standard_id": args.standard_id,
+                        "standard_type": standard_type,
+                    });
+                    if let Some(ref v) = args.version {
+                        tool_args["version"] = serde_json::json!(v);
+                    }
+                    if let Some(ref l) = args.lang {
+                        tool_args["lang"] = serde_json::json!(l);
+                    }
+                    if let Some(ref u) = args.url {
+                        tool_args["url"] = serde_json::json!(u);
+                    }
+
+                    match c.call_tool("index_standards", tool_args).await {
+                        Ok(result) => {
+                            if args.wait {
+                                if let Ok(parsed) =
+                                    serde_json::from_str::<serde_json::Value>(&result)
+                                {
+                                    if let Some(op_id) =
+                                        parsed.get("operation_id").and_then(|v| v.as_str())
+                                    {
+                                        loop {
+                                            tokio::time::sleep(std::time::Duration::from_secs(2))
+                                                .await;
+                                            match c
+                                                .call_tool(
+                                                    "get_queue_status",
+                                                    serde_json::json!({
+                                                        "operation_id": op_id,
+                                                    }),
+                                                )
+                                                .await
+                                            {
+                                                Ok(status_result) => {
+                                                    if let Ok(status) =
+                                                        serde_json::from_str::<serde_json::Value>(
+                                                            &status_result,
+                                                        )
+                                                    {
+                                                        let step = status
+                                                            .get("step")
+                                                            .or_else(|| status.get("status"))
+                                                            .and_then(|v| v.as_str())
+                                                            .unwrap_or("");
+                                                        if step == "completed"
+                                                            || step == "completed_degraded"
+                                                            || step == "failed"
+                                                        {
+                                                            println!(
+                                                                "{}",
+                                                                serde_json::to_string_pretty(
+                                                                    &status
+                                                                )
+                                                                .unwrap_or(status_result)
+                                                            );
+                                                            if step == "failed" {
+                                                                c.close().await;
+                                                                std::process::exit(1);
+                                                            }
+                                                            break;
+                                                        }
+                                                        eprint!("\r{step}");
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("Error polling status: {e}");
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        println!("{result}");
+                                    }
+                                } else {
+                                    println!("{result}");
+                                }
+                            } else {
+                                println!("{result}");
+                            }
+                        }
                         Err(e) => eprintln!("Error: {e}"),
                     }
                     c.close().await;

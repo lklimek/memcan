@@ -33,6 +33,7 @@ use uuid::Uuid;
 use memcan_core::{
     config::Settings,
     error::MemcanError,
+    indexing::standards::{self as standards_indexing, VALID_TYPES},
     init::{MemcanContext, create_llm_provider},
     pipeline::{
         CODE_TABLE, MEMORIES_TABLE, Pipeline, PipelineGuard, PipelineProgress, STANDARDS_TABLE,
@@ -42,6 +43,9 @@ use memcan_core::{
 };
 
 use crate::ServeArgs;
+
+/// Maximum content size for standards indexing (500 KB).
+const MAX_STANDARDS_CONTENT_SIZE: usize = 500 * 1024;
 
 #[derive(Clone)]
 struct QueueEntry {
@@ -140,6 +144,28 @@ pub struct SearchCodeParams {
     pub tech_stack: Option<String>,
     pub file_path: Option<String>,
     pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct IndexStandardsToolParams {
+    /// Markdown content of the standards document to index.
+    pub content: String,
+    /// Standard identifier (e.g., "owasp-cheatsheets", "owasp-asvs").
+    pub standard_id: String,
+    /// Type of standard: security, coding, cve, or guideline.
+    pub standard_type: String,
+    /// Standard version (e.g., "5.0", "2024").
+    pub version: Option<String>,
+    /// Language code (e.g., "en").
+    pub lang: Option<String>,
+    /// Source URL.
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DropIndexedStandardsParams {
+    /// Standard identifier to drop all indexed data for.
+    pub standard_id: String,
 }
 
 // --- Helpers ---
@@ -744,6 +770,182 @@ impl MemcanService {
 
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string(&output).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(
+        description = "Index a markdown standards document into the vector store. Returns an operation_id for progress tracking via get_queue_status."
+    )]
+    async fn index_standards(
+        &self,
+        Parameters(params): Parameters<IndexStandardsToolParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if params.standard_id.is_empty() {
+            return Err(ErrorData::internal_error(
+                "standard_id must not be empty",
+                None,
+            ));
+        }
+        if params.content.is_empty() {
+            return Err(ErrorData::internal_error("content must not be empty", None));
+        }
+        if params.content.len() > MAX_STANDARDS_CONTENT_SIZE {
+            return Err(ErrorData::internal_error(
+                format!(
+                    "content too large ({} bytes, max {})",
+                    params.content.len(),
+                    MAX_STANDARDS_CONTENT_SIZE
+                ),
+                None,
+            ));
+        }
+        if !VALID_TYPES.contains(&params.standard_type.as_str()) {
+            return Err(ErrorData::internal_error(
+                format!(
+                    "Invalid standard_type '{}'. Must be one of: {}",
+                    params.standard_type,
+                    VALID_TYPES.join(", ")
+                ),
+                None,
+            ));
+        }
+
+        let op_id = Uuid::new_v4().to_string();
+        info!(
+            standard_id = %params.standard_id,
+            standard_type = %params.standard_type,
+            content_len = params.content.len(),
+            operation_id = %op_id,
+            "index_standards: queued"
+        );
+
+        let progress = Arc::new(StdMutex::new(PipelineProgress::default()));
+
+        {
+            let mut cache = self
+                .state
+                .queue_status
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            cache.put(
+                op_id.clone(),
+                QueueEntry {
+                    operation: "index_standards".into(),
+                    user_id: format!("standard:{}", params.standard_id),
+                    progress: Arc::clone(&progress),
+                    queued_at: chrono::Utc::now().to_rfc3339(),
+                },
+            );
+        }
+
+        let store = Arc::clone(&self.state.store);
+        let embedder = Arc::clone(&self.state.embedder);
+        let llm = Arc::clone(&self.state.llm);
+        let llm_model = self.state.llm_model.clone();
+        let embed_dims = self.state.config.embed_dims;
+        let sem = Arc::clone(&self.state.llm_semaphore);
+
+        let core_params = standards_indexing::IndexStandardsParams {
+            content: params.content,
+            standard_id: params.standard_id.clone(),
+            standard_type: params.standard_type,
+            version: params.version.unwrap_or_default(),
+            lang: params.lang.unwrap_or_default(),
+            url: params.url.unwrap_or_default(),
+        };
+
+        tokio::spawn(async move {
+            let _permit = match sem.acquire().await {
+                Ok(p) => p,
+                Err(_) => {
+                    tracing::warn!("semaphore closed, aborting index_standards task");
+                    return;
+                }
+            };
+
+            {
+                let mut p = progress.lock().unwrap_or_else(|e| e.into_inner());
+                p.step = memcan_core::pipeline::PipelineStep::Storing;
+            }
+
+            match standards_indexing::index_standards(
+                &core_params,
+                store.as_ref(),
+                embedder.as_ref(),
+                llm.as_ref(),
+                &llm_model,
+                embed_dims,
+            )
+            .await
+            {
+                Ok(result) => {
+                    let mut p = progress.lock().unwrap_or_else(|e| e.into_inner());
+                    for err in &result.errors {
+                        p.warnings.push(format!(
+                            "chunk {}: {} - {}",
+                            err.chunk_index, err.heading, err.error
+                        ));
+                    }
+                    if result.errors.is_empty() {
+                        p.step = memcan_core::pipeline::PipelineStep::Completed;
+                    } else {
+                        p.step = memcan_core::pipeline::PipelineStep::CompletedDegraded;
+                    }
+                    p.completed_at = Some(chrono::Utc::now().to_rfc3339());
+                    info!(
+                        indexed = result.indexed,
+                        errors = result.errors.len(),
+                        "index_standards: finished"
+                    );
+                }
+                Err(e) => {
+                    let mut p = progress.lock().unwrap_or_else(|e| e.into_inner());
+                    p.step = memcan_core::pipeline::PipelineStep::Failed;
+                    p.error = Some(e.to_string());
+                    p.completed_at = Some(chrono::Utc::now().to_rfc3339());
+                    tracing::error!(error = %e, "index_standards: failed");
+                }
+            }
+        });
+
+        let response = serde_json::json!({
+            "status": "queued",
+            "operation_id": op_id,
+            "message": format!("Indexing standard '{}'", params.standard_id),
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&response).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(description = "Drop all indexed standards data for a given standard_id.")]
+    async fn drop_indexed_standards(
+        &self,
+        Parameters(params): Parameters<DropIndexedStandardsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if params.standard_id.is_empty() {
+            return Err(ErrorData::internal_error(
+                "standard_id must not be empty",
+                None,
+            ));
+        }
+
+        info!(standard_id = %params.standard_id, "drop_indexed_standards");
+
+        let deleted = standards_indexing::drop_standards(
+            &params.standard_id,
+            self.state.store.as_ref(),
+            self.state.config.embed_dims,
+        )
+        .await
+        .map_err(|e| ErrorData::internal_error(format!("drop failed: {e}"), None))?;
+
+        let response = serde_json::json!({
+            "deleted": deleted,
+            "standard_id": params.standard_id,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&response).unwrap_or_default(),
         )]))
     }
 
