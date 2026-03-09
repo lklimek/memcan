@@ -30,7 +30,14 @@ pub const STANDARDS_TABLE: &str = "memcan_standards";
 pub const CODE_TABLE: &str = "memcan_code";
 
 /// Reserved payload keys that user metadata must not overwrite.
-const RESERVED_KEYS: &[&str] = &["data", "hash", "user_id", "created_at", "updated_at"];
+const RESERVED_KEYS: &[&str] = &[
+    "data",
+    "hash",
+    "content_hash",
+    "user_id",
+    "created_at",
+    "updated_at",
+];
 
 /// Max length of a single extracted fact (chars). Longer facts are truncated.
 const MAX_FACT_LENGTH: usize = 2000;
@@ -360,7 +367,7 @@ impl Pipeline {
             for (k, v) in old_obj {
                 if !matches!(
                     k.as_str(),
-                    "data" | "hash" | "user_id" | "created_at" | "updated_at"
+                    "data" | "hash" | "content_hash" | "user_id" | "created_at" | "updated_at"
                 ) {
                     new_obj.insert(k.clone(), v.clone());
                 }
@@ -700,6 +707,57 @@ impl Pipeline {
     }
 }
 
+/// RAII guard that auto-fails the pipeline on drop if not finalized.
+///
+/// Wraps a `Pipeline` and tracks whether `complete()` or `fail()` was called.
+/// If the guard is dropped without finalization, it calls
+/// `pipeline.fail("pipeline dropped without finalization")` to prevent
+/// progress from staying stuck in an intermediate state.
+pub struct PipelineGuard {
+    pipeline: Pipeline,
+    finalized: bool,
+}
+
+impl PipelineGuard {
+    pub fn new(pipeline: Pipeline) -> Self {
+        Self {
+            pipeline,
+            finalized: false,
+        }
+    }
+
+    pub fn complete(&mut self) {
+        self.pipeline.complete();
+        self.finalized = true;
+    }
+
+    pub fn fail(&mut self, error: impl std::fmt::Display) {
+        self.pipeline.fail(error);
+        self.finalized = true;
+    }
+}
+
+impl std::ops::Deref for PipelineGuard {
+    type Target = Pipeline;
+    fn deref(&self) -> &Self::Target {
+        &self.pipeline
+    }
+}
+
+impl std::ops::DerefMut for PipelineGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.pipeline
+    }
+}
+
+impl Drop for PipelineGuard {
+    fn drop(&mut self) {
+        if !self.finalized {
+            self.pipeline.fail("pipeline dropped without finalization");
+        }
+    }
+}
+
 async fn run_dedup_llm(
     existing_memories: &[serde_json::Value],
     fact: &str,
@@ -745,6 +803,7 @@ mod tests {
         let meta = json!({
             "data": "should be removed",
             "hash": "should be removed",
+            "content_hash": "should be removed",
             "user_id": "should be removed",
             "created_at": "should be removed",
             "updated_at": "should be removed",
@@ -754,6 +813,7 @@ mod tests {
         let cleaned = clean_metadata(&meta);
         assert!(!cleaned.contains_key("data"));
         assert!(!cleaned.contains_key("hash"));
+        assert!(!cleaned.contains_key("content_hash"));
         assert!(!cleaned.contains_key("user_id"));
         assert!(cleaned.contains_key("project"));
         assert!(cleaned.contains_key("custom_key"));
@@ -763,6 +823,7 @@ mod tests {
     fn test_reserved_keys() {
         assert!(RESERVED_KEYS.contains(&"data"));
         assert!(RESERVED_KEYS.contains(&"hash"));
+        assert!(RESERVED_KEYS.contains(&"content_hash"));
         assert!(RESERVED_KEYS.contains(&"user_id"));
         assert!(!RESERVED_KEYS.contains(&"source"));
     }

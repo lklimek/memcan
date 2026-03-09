@@ -36,7 +36,9 @@ use memcan_core::{
     init::MemcanContext,
     llm::GenaiLlmProvider,
     ollama::ensure_nothink_model,
-    pipeline::{CODE_TABLE, MEMORIES_TABLE, Pipeline, PipelineProgress, STANDARDS_TABLE},
+    pipeline::{
+        CODE_TABLE, MEMORIES_TABLE, Pipeline, PipelineGuard, PipelineProgress, STANDARDS_TABLE,
+    },
     traits::{EmbeddingProvider, LlmProvider, VectorStore},
 };
 
@@ -313,6 +315,7 @@ impl MemcanService {
             self.state.config.distill_memories,
         );
         let progress = pipeline.progress();
+        let mut guard = PipelineGuard::new(pipeline);
 
         {
             let mut cache = self
@@ -342,10 +345,10 @@ impl MemcanService {
                 }
             };
 
-            match pipeline.add_memory(&memory, &uid_clone, &metadata).await {
+            match guard.add_memory(&memory, &uid_clone, &metadata).await {
                 Ok(_) => {
                     info!(user_id = %uid_clone, "add_memory: persisted");
-                    pipeline.complete();
+                    guard.complete();
                 }
                 Err(e) => {
                     let preview: String = memory.chars().take(120).collect();
@@ -355,7 +358,7 @@ impl MemcanService {
                         memory_preview = %preview,
                         "add_memory: pipeline failed to store memory"
                     );
-                    pipeline.fail(&e);
+                    guard.fail(&e);
                 }
             }
         });
@@ -518,6 +521,7 @@ impl MemcanService {
             false,
         );
         let progress = pipeline.progress();
+        let mut guard = PipelineGuard::new(pipeline);
 
         {
             let mut cache = self
@@ -548,7 +552,7 @@ impl MemcanService {
                 }
             };
 
-            match pipeline
+            match guard
                 .update_memory(
                     &memory_id,
                     &memory,
@@ -560,11 +564,11 @@ impl MemcanService {
             {
                 Ok(()) => {
                     info!(memory_id = %memory_id, "update_memory: persisted");
-                    pipeline.complete();
+                    guard.complete();
                 }
                 Err(e) => {
                     tracing::error!(memory_id = %memory_id, error = %e, "update_memory: failed");
-                    pipeline.fail(&e);
+                    guard.fail(&e);
                 }
             }
         });
@@ -745,17 +749,22 @@ impl MemcanService {
         Parameters(params): Parameters<GetQueueStatusParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let limit = params.limit.unwrap_or(10).clamp(1, 100) as usize;
-        let mut cache = self
-            .state
-            .queue_status
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
 
+        // Collect entries while holding the LRU lock, then drop it before
+        // serializing (which acquires each entry's progress mutex).
         if let Some(ref op_id) = params.operation_id {
-            match cache.get(op_id) {
+            let entry = {
+                let mut cache = self
+                    .state
+                    .queue_status
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                cache.get(op_id).cloned()
+            };
+            match entry {
                 Some(entry) => {
                     let json =
-                        serde_json::to_string(&queue_entry_to_json(entry)).unwrap_or_default();
+                        serde_json::to_string(&queue_entry_to_json(&entry)).unwrap_or_default();
                     Ok(CallToolResult::success(vec![Content::text(json)]))
                 }
                 None => Ok(CallToolResult::success(vec![Content::text(
@@ -763,12 +772,17 @@ impl MemcanService {
                 )])),
             }
         } else {
-            let entries: Vec<serde_json::Value> = cache
-                .iter()
-                .take(limit)
-                .map(|(_, v)| queue_entry_to_json(v))
-                .collect();
-            let json = serde_json::to_string(&entries).unwrap_or_default();
+            let entries: Vec<QueueEntry> = {
+                let cache = self
+                    .state
+                    .queue_status
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                cache.iter().take(limit).map(|(_, v)| v.clone()).collect()
+            };
+            let json_entries: Vec<serde_json::Value> =
+                entries.iter().map(queue_entry_to_json).collect();
+            let json = serde_json::to_string(&json_entries).unwrap_or_default();
             Ok(CallToolResult::success(vec![Content::text(json)]))
         }
     }

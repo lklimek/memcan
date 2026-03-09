@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use memcan_core::error::{MemcanError, Result};
 use memcan_core::lancedb_store::LanceDbStore;
-use memcan_core::pipeline::{MEMORIES_TABLE, Pipeline, PipelineStep};
+use memcan_core::pipeline::{MEMORIES_TABLE, Pipeline, PipelineGuard, PipelineStep};
 use memcan_core::traits::{
     EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, VectorPoint, VectorStore,
 };
@@ -862,4 +862,156 @@ async fn test_progress_no_distill() {
     assert_eq!(p.step, PipelineStep::Completed);
     assert!(p.warnings.is_empty());
     assert!(p.completed_at.is_some());
+}
+
+// -- Test 18: PipelineGuard auto-fails on drop without finalization ----------
+
+#[tokio::test]
+async fn test_pipeline_guard_auto_fails_on_drop() {
+    let embedder = MockEmbedder::new();
+    let llm = FailingLlm;
+
+    let (_tmp, store) = temp_store().await;
+    store
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .await
+        .expect("create table");
+
+    let pipeline = make_pipeline(
+        Arc::new(store) as _,
+        Arc::new(embedder),
+        Arc::new(llm),
+        false,
+    );
+    let progress = pipeline.progress();
+
+    {
+        let _guard = PipelineGuard::new(pipeline);
+        // drop without calling complete() or fail()
+    }
+
+    let p = progress.lock().unwrap();
+    assert_eq!(p.step, PipelineStep::Failed);
+    assert!(p.error.is_some());
+    assert!(
+        p.error
+            .as_ref()
+            .unwrap()
+            .contains("pipeline dropped without finalization"),
+        "error should mention drop without finalization, got: {}",
+        p.error.as_ref().unwrap()
+    );
+    assert!(p.completed_at.is_some());
+}
+
+// -- Test 19: PipelineGuard does NOT auto-fail after complete() --------------
+
+#[tokio::test]
+async fn test_pipeline_guard_no_auto_fail_after_complete() {
+    let embedder = MockEmbedder::new();
+    let llm = FailingLlm;
+
+    let (_tmp, store) = temp_store().await;
+    store
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .await
+        .expect("create table");
+
+    let pipeline = make_pipeline(
+        Arc::new(store) as _,
+        Arc::new(embedder),
+        Arc::new(llm),
+        false,
+    );
+    let progress = pipeline.progress();
+    let metadata = serde_json::json!({});
+
+    {
+        let mut guard = PipelineGuard::new(pipeline);
+        guard
+            .add_memory("guarded content", "test-user", &metadata)
+            .await
+            .expect("pipeline should succeed");
+        guard.complete();
+    }
+
+    let p = progress.lock().unwrap();
+    assert_eq!(p.step, PipelineStep::Completed);
+    assert!(p.error.is_none());
+}
+
+// -- Test 20: PipelineGuard does NOT auto-fail after fail() ------------------
+
+#[tokio::test]
+async fn test_pipeline_guard_no_auto_fail_after_explicit_fail() {
+    let embedder = MockEmbedder::new();
+    let llm = FailingLlm;
+
+    let (_tmp, store) = temp_store().await;
+    store
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .await
+        .expect("create table");
+
+    let pipeline = make_pipeline(
+        Arc::new(store) as _,
+        Arc::new(embedder),
+        Arc::new(llm),
+        false,
+    );
+    let progress = pipeline.progress();
+
+    {
+        let mut guard = PipelineGuard::new(pipeline);
+        guard.fail("intentional test failure");
+    }
+
+    let p = progress.lock().unwrap();
+    assert_eq!(p.step, PipelineStep::Failed);
+    assert!(
+        p.error
+            .as_ref()
+            .unwrap()
+            .contains("intentional test failure"),
+        "error should contain explicit failure message, got: {}",
+        p.error.as_ref().unwrap()
+    );
+}
+
+// -- Test 21: PipelineGuard Deref allows transparent pipeline access ---------
+
+#[tokio::test]
+async fn test_pipeline_guard_deref_access() {
+    let embedder = MockEmbedder::new();
+    let llm = MockLlm::new(vec![
+        r#"{"facts": ["guard fact"]}"#.to_string(),
+        r#"{"events": [{"type": "ADD", "data": "guard fact"}]}"#.to_string(),
+    ]);
+
+    let (_tmp, store) = temp_store().await;
+    store
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .await
+        .expect("create table");
+
+    let pipeline = make_pipeline(
+        Arc::new(store) as _,
+        Arc::new(embedder),
+        Arc::new(llm),
+        true,
+    );
+    let progress = pipeline.progress();
+    let metadata = serde_json::json!({});
+
+    let mut guard = PipelineGuard::new(pipeline);
+    let result = guard
+        .add_memory("guard test content", "test-user", &metadata)
+        .await
+        .expect("pipeline should succeed via guard deref");
+    guard.complete();
+
+    let facts = result.facts.expect("should have facts");
+    assert_eq!(facts, vec!["guard fact"]);
+    let p = progress.lock().unwrap();
+    assert_eq!(p.step, PipelineStep::Completed);
 }
