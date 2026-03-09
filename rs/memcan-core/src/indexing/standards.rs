@@ -19,7 +19,7 @@ use crate::traits::{
 };
 
 /// Accepted standard types for validation.
-pub const VALID_TYPES: &[&str] = &["security", "coding", "cve", "guideline"];
+pub const VALID_TYPES: &[&str] = &["security", "coding", "cve", "guideline", "accessibility"];
 
 /// Compiled regex for safe identifier validation (cached via `OnceLock`).
 fn safe_id_re() -> &'static Regex {
@@ -50,34 +50,56 @@ pub struct MdChunk {
     pub body: String,
 }
 
+/// Extract the document title (first `# ` heading) from markdown content.
+pub fn extract_document_title(text: &str) -> String {
+    text.lines()
+        .find(|line| line.starts_with("# ") && !line.starts_with("## "))
+        .map(|line| line.trim_start_matches("# ").trim().to_string())
+        .unwrap_or_default()
+}
+
 /// Split a markdown document into chunks on `##` / `###` headings.
 ///
-/// Any text before the first heading becomes a preamble chunk with an empty
-/// heading. Parent-child relationships are tracked so `###` sections know
+/// Returns `(document_title, chunks)`. The document title is extracted from
+/// the first `# ` heading. If the preamble (text before the first `##`)
+/// contains only H1 headings and whitespace, it is dropped (the title is
+/// provided separately via [`build_chunk_text`]). If the preamble contains
+/// any other content, it is merged into the first chunk's body.
+/// Parent-child relationships are tracked so `###` sections know
 /// which `##` they belong to.
-pub fn chunk_markdown(text: &str) -> Vec<MdChunk> {
+pub fn chunk_markdown(text: &str) -> (String, Vec<MdChunk>) {
+    let doc_title = extract_document_title(text);
+
     let heading_re = Regex::new(r"(?m)^(#{2,3})\s+(.+)").unwrap();
     let matches: Vec<_> = heading_re.find_iter(text).collect();
 
     if matches.is_empty() {
-        return vec![MdChunk {
-            heading: String::new(),
-            parent_heading: String::new(),
-            level: 0,
-            body: text.trim().to_string(),
-        }];
+        return (
+            doc_title,
+            vec![MdChunk {
+                heading: String::new(),
+                parent_heading: String::new(),
+                level: 0,
+                body: text.trim().to_string(),
+            }],
+        );
     }
 
     let mut chunks = Vec::new();
     let preamble = text[..matches[0].start()].trim();
-    if !preamble.is_empty() {
-        chunks.push(MdChunk {
-            heading: String::new(),
-            parent_heading: String::new(),
-            level: 0,
-            body: preamble.to_string(),
-        });
-    }
+    let preamble_is_title_only = !preamble.is_empty()
+        && preamble
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .all(|l| l.starts_with("# "));
+
+    // Non-empty preamble that isn't just H1 headings gets merged into the
+    // first chunk body so the content is not lost.
+    let mut preamble_carry = if !preamble.is_empty() && !preamble_is_title_only {
+        Some(preamble)
+    } else {
+        None
+    };
 
     let captures: Vec<_> = heading_re.captures_iter(text).collect();
     let match_positions: Vec<_> = heading_re.find_iter(text).collect();
@@ -92,7 +114,18 @@ pub fn chunk_markdown(text: &str) -> Vec<MdChunk> {
         } else {
             text.len()
         };
-        let body = text[start..end].trim().to_string();
+        let mut body = text[start..end].trim().to_string();
+
+        // Merge preamble content into the first chunk
+        if i == 0
+            && let Some(pre) = preamble_carry.take()
+        {
+            body = if body.is_empty() {
+                pre.to_string()
+            } else {
+                format!("{pre}\n\n{body}")
+            };
+        }
 
         let parent = if level == 2 {
             current_h2 = heading.clone();
@@ -109,7 +142,7 @@ pub fn chunk_markdown(text: &str) -> Vec<MdChunk> {
         });
     }
 
-    chunks
+    (doc_title, chunks)
 }
 
 /// Sanitize LLM-extracted metadata: drop unsafe IDs, truncate long fields.
@@ -141,9 +174,13 @@ pub async fn extract_metadata(
     model: &str,
     llm: &dyn LlmProvider,
     budget_tokens: usize,
+    document_title: &str,
 ) -> Result<ChunkMetadata> {
     let text_for_extraction = {
-        let probe_prompt = render_prompt(METADATA_EXTRACTION_PROMPT, &[("chunk_text", "")]);
+        let probe_prompt = render_prompt(
+            METADATA_EXTRACTION_PROMPT,
+            &[("chunk_text", ""), ("document_title", "")],
+        );
         let sub_chunks = chunk_content(chunk_text, &probe_prompt, budget_tokens);
         if sub_chunks.len() > 1 {
             debug!(
@@ -157,7 +194,10 @@ pub async fn extract_metadata(
 
     let prompt = render_prompt(
         METADATA_EXTRACTION_PROMPT,
-        &[("chunk_text", text_for_extraction)],
+        &[
+            ("chunk_text", text_for_extraction),
+            ("document_title", document_title),
+        ],
     );
     let messages = vec![LlmMessage {
         role: Role::User,
@@ -191,8 +231,16 @@ pub fn fallback_metadata(heading: &str, parent_heading: &str) -> ChunkMetadata {
 }
 
 /// Reconstruct the text of a chunk with its markdown heading prefix.
-pub fn build_chunk_text(chunk: &MdChunk) -> String {
+///
+/// When `document_title` is provided and non-empty, it is prepended as an
+/// H1 heading to give embeddings and the LLM document-level context.
+pub fn build_chunk_text(chunk: &MdChunk, document_title: Option<&str>) -> String {
     let mut parts = Vec::new();
+    if let Some(title) = document_title
+        && !title.is_empty()
+    {
+        parts.push(format!("# {title}"));
+    }
     if !chunk.heading.is_empty() {
         let prefix = if chunk.level == 2 { "##" } else { "###" };
         parts.push(format!("{} {}", prefix, chunk.heading));
@@ -247,8 +295,8 @@ pub async fn index_standards(
         )));
     }
 
-    let chunks = chunk_markdown(&params.content);
-    info!(count = chunks.len(), "Parsed markdown chunks");
+    let (doc_title, chunks) = chunk_markdown(&params.content);
+    info!(count = chunks.len(), doc_title = %doc_title, "Parsed markdown chunks");
 
     store.ensure_table(STANDARDS_TABLE, embed_dims).await?;
 
@@ -258,7 +306,7 @@ pub async fn index_standards(
     let mut indexed = 0usize;
 
     for (chunk_index, chunk) in chunks.iter().enumerate() {
-        let chunk_text = build_chunk_text(chunk);
+        let chunk_text = build_chunk_text(chunk, Some(&doc_title));
         if chunk_text.trim().is_empty() {
             debug!(chunk_index, "Skipping empty chunk");
             continue;
@@ -267,7 +315,7 @@ pub async fn index_standards(
         let meta = {
             let mut result = None;
             for attempt in 0..2 {
-                match extract_metadata(&chunk_text, llm_model, llm, budget).await {
+                match extract_metadata(&chunk_text, llm_model, llm, budget, &doc_title).await {
                     Ok(m) => {
                         result = Some(m);
                         break;
@@ -407,9 +455,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_extract_document_title() {
+        let text = "# SQL Injection Prevention Cheat Sheet\n\n## Introduction\nSome text";
+        assert_eq!(
+            extract_document_title(text),
+            "SQL Injection Prevention Cheat Sheet"
+        );
+    }
+
+    #[test]
+    fn test_extract_document_title_empty() {
+        let text = "## Only H2 headings\nSome text";
+        assert_eq!(extract_document_title(text), "");
+    }
+
+    #[test]
+    fn test_extract_document_title_ignores_h2() {
+        let text = "## Not a title\n### Also not\n# Real Title";
+        assert_eq!(extract_document_title(text), "Real Title");
+    }
+
+    #[test]
     fn test_chunk_markdown_no_headings() {
         let text = "Just some plain text.";
-        let chunks = chunk_markdown(text);
+        let (title, chunks) = chunk_markdown(text);
+        assert!(title.is_empty());
         assert_eq!(chunks.len(), 1);
         assert!(chunks[0].heading.is_empty());
         assert_eq!(chunks[0].body, "Just some plain text.");
@@ -418,31 +488,76 @@ mod tests {
     #[test]
     fn test_chunk_markdown_with_headings() {
         let text = "## First\nBody one\n## Second\nBody two";
-        let chunks = chunk_markdown(text);
+        let (_title, chunks) = chunk_markdown(text);
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].heading, "First");
         assert_eq!(chunks[1].heading, "Second");
     }
 
     #[test]
-    fn test_chunk_markdown_preamble() {
-        let text = "Preamble text\n\n## Heading\nBody";
-        let chunks = chunk_markdown(text);
-        assert_eq!(chunks.len(), 2);
-        assert!(chunks[0].heading.is_empty());
-        assert_eq!(chunks[0].body, "Preamble text");
-        assert_eq!(chunks[1].heading, "Heading");
+    fn test_chunk_markdown_preamble_substantial() {
+        let long_preamble = "a".repeat(150);
+        let text = format!("{}\n\n## Heading\nBody", long_preamble);
+        let (_title, chunks) = chunk_markdown(&text);
+        assert_eq!(chunks.len(), 1, "preamble should merge into first chunk");
+        assert_eq!(chunks[0].heading, "Heading");
+        assert!(
+            chunks[0].body.starts_with(&long_preamble),
+            "first chunk body should start with preamble content"
+        );
+        assert!(
+            chunks[0].body.contains("Body"),
+            "first chunk body should still contain original body"
+        );
+    }
+
+    #[test]
+    fn test_chunk_markdown_merges_title_preamble() {
+        let text = "# SQL Injection Prevention Cheat Sheet\n\n## Introduction\nSome text\n## Defense\nMore text";
+        let (title, chunks) = chunk_markdown(text);
+        assert_eq!(title, "SQL Injection Prevention Cheat Sheet");
+        assert_eq!(
+            chunks.len(),
+            2,
+            "preamble with just title should be merged (dropped)"
+        );
+        assert_eq!(chunks[0].heading, "Introduction");
+        assert_eq!(chunks[1].heading, "Defense");
+    }
+
+    #[test]
+    fn test_chunk_markdown_preamble_mixed_content() {
+        let text = "# Title\n\nSome intro paragraph.\n\n## Section\nBody";
+        let (title, chunks) = chunk_markdown(text);
+        assert_eq!(title, "Title");
+        assert_eq!(
+            chunks.len(),
+            1,
+            "mixed preamble should merge into first chunk"
+        );
+        assert_eq!(chunks[0].heading, "Section");
+        assert!(
+            chunks[0].body.contains("Some intro paragraph."),
+            "merged preamble content should be in chunk body"
+        );
     }
 
     #[test]
     fn test_chunk_markdown_nested_headings() {
         let text = "## Parent\nParent body\n### Child\nChild body";
-        let chunks = chunk_markdown(text);
+        let (_title, chunks) = chunk_markdown(text);
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].heading, "Parent");
         assert!(chunks[0].parent_heading.is_empty());
         assert_eq!(chunks[1].heading, "Child");
         assert_eq!(chunks[1].parent_heading, "Parent");
+    }
+
+    #[test]
+    fn test_chunk_markdown_returns_title() {
+        let text = "# My Document\n\n## Section\nBody";
+        let (title, _chunks) = chunk_markdown(text);
+        assert_eq!(title, "My Document");
     }
 
     #[test]
@@ -504,7 +619,7 @@ mod tests {
             level: 2,
             body: "Body text".into(),
         };
-        assert_eq!(build_chunk_text(&chunk), "## Title\n\nBody text");
+        assert_eq!(build_chunk_text(&chunk, None), "## Title\n\nBody text");
     }
 
     #[test]
@@ -515,7 +630,7 @@ mod tests {
             level: 3,
             body: "Content".into(),
         };
-        assert_eq!(build_chunk_text(&chunk), "### Sub\n\nContent");
+        assert_eq!(build_chunk_text(&chunk, None), "### Sub\n\nContent");
     }
 
     #[test]
@@ -526,7 +641,32 @@ mod tests {
             level: 0,
             body: "Just body".into(),
         };
-        assert_eq!(build_chunk_text(&chunk), "Just body");
+        assert_eq!(build_chunk_text(&chunk, None), "Just body");
+    }
+
+    #[test]
+    fn test_build_chunk_text_with_document_title() {
+        let chunk = MdChunk {
+            heading: "Introduction".into(),
+            parent_heading: String::new(),
+            level: 2,
+            body: "This cheat sheet...".into(),
+        };
+        assert_eq!(
+            build_chunk_text(&chunk, Some("SQL Injection Prevention Cheat Sheet")),
+            "# SQL Injection Prevention Cheat Sheet\n\n## Introduction\n\nThis cheat sheet..."
+        );
+    }
+
+    #[test]
+    fn test_build_chunk_text_with_empty_document_title() {
+        let chunk = MdChunk {
+            heading: "Section".into(),
+            parent_heading: String::new(),
+            level: 2,
+            body: "Body".into(),
+        };
+        assert_eq!(build_chunk_text(&chunk, Some("")), "## Section\n\nBody");
     }
 
     #[test]
@@ -535,6 +675,7 @@ mod tests {
         assert!(VALID_TYPES.contains(&"coding"));
         assert!(VALID_TYPES.contains(&"cve"));
         assert!(VALID_TYPES.contains(&"guideline"));
+        assert!(VALID_TYPES.contains(&"accessibility"));
         assert!(!VALID_TYPES.contains(&"random"));
     }
 }

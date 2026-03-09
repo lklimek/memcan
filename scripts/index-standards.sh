@@ -1,23 +1,20 @@
 #!/usr/bin/env bash
-# Index OWASP security standards into MemCan's memcan-standards collection.
-#
-# Sources (shallow-cloned from GitHub on first run):
-#   - OWASP Cheat Sheets: github.com/OWASP/CheatSheetSeries (master)
-#   - OWASP ASVS 5.0:     github.com/OWASP/ASVS (v5.0.0 tag)
+# Index WCAG and CVSS standards into MemCan's memcan-standards collection.
 #
 # Usage:
-#   ./scripts/index-owasp.sh                    # index everything
-#   ./scripts/index-owasp.sh cheatsheets        # index cheat sheets only
-#   ./scripts/index-owasp.sh asvs               # index ASVS only
-#   ./scripts/index-owasp.sh --drop             # drop all OWASP data
-#   ./scripts/index-owasp.sh --drop cheatsheets # drop cheat sheets only
-#   ./scripts/index-owasp.sh --drop asvs        # drop ASVS only
-#   ./scripts/index-owasp.sh --reindex          # drop then re-index target(s)
+#   ./scripts/index-standards.sh                    # index everything
+#   ./scripts/index-standards.sh wcag               # WCAG only
+#   ./scripts/index-standards.sh cvss               # CVSS only
+#   ./scripts/index-standards.sh --drop             # drop all
+#   ./scripts/index-standards.sh --drop wcag        # drop WCAG only
+#   ./scripts/index-standards.sh --drop cvss        # drop CVSS only
+#   ./scripts/index-standards.sh --reindex          # drop then re-index
+#   ./scripts/index-standards.sh --reindex wcag     # drop then re-index WCAG only
 #
 # Environment:
-#   CHEATSHEETS_DIR  override cheat sheets location (skip clone)
-#   ASVS_DIR         override ASVS location (skip clone)
-#   MEMCAN_DIR      override memcan repo root (default: script's repo)
+#   MEMCAN_DIR       override memcan repo root (default: script's parent dir)
+#   CARGO_TARGET_DIR if set, use $CARGO_TARGET_DIR/debug/memcan for CLI
+#   CACHE_DIR        cache directory (default: $MEMCAN_DIR/.cache)
 #   BATCH_SIZE       parallel jobs per batch (default: 16)
 #   BATCH_TIMEOUT    seconds to wait per batch (default: 1800 = 30min)
 
@@ -27,7 +24,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MEMCAN_DIR="${MEMCAN_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-CACHE_DIR="$MEMCAN_DIR/.cache"
+CACHE_DIR="${CACHE_DIR:-$MEMCAN_DIR/.cache}"
 
 if [ -n "${CARGO_TARGET_DIR:-}" ]; then
     MEMCAN_CLI="$CARGO_TARGET_DIR/debug/memcan"
@@ -35,22 +32,22 @@ else
     MEMCAN_CLI="$MEMCAN_DIR/target/debug/memcan"
 fi
 
-CHEATSHEETS_DIR="${CHEATSHEETS_DIR:-$CACHE_DIR/owasp-cheatsheets}"
-ASVS_DIR="${ASVS_DIR:-$CACHE_DIR/owasp-asvs-5.0}"
-
 BATCH_SIZE="${BATCH_SIZE:-16}"
 BATCH_TIMEOUT="${BATCH_TIMEOUT:-1800}"
 
 # --- constants ---
 
-CHEATSHEETS_REPO="https://github.com/OWASP/CheatSheetSeries.git"
-CHEATSHEETS_STANDARD_ID="owasp-cheatsheets"
-CHEATSHEETS_VERSION="2024"
+WCAG_REPO="https://github.com/w3c/wcag.git"
+WCAG_CACHE_DIR="$CACHE_DIR/w3c-wcag"
+WCAG_MD_DIR="$CACHE_DIR/wcag-md"
+WCAG_STANDARD_ID="wcag"
+WCAG_VERSION="2.2"
 
-ASVS_REPO="https://github.com/OWASP/ASVS.git"
-ASVS_TAG="v5.0.0"
-ASVS_STANDARD_ID="owasp-asvs"
-ASVS_VERSION="5.0"
+CVSS_URL="https://www.first.org/cvss/v4.0/specification-document"
+CVSS_CACHE_HTML="$CACHE_DIR/cvss-v4-spec.html"
+CVSS_CACHE_MD="$CACHE_DIR/cvss-v4-spec.md"
+CVSS_STANDARD_ID="cvss"
+CVSS_VERSION="4.0"
 
 # --- helpers ---
 
@@ -67,6 +64,13 @@ check_server() {
 
 check_cli() {
     [ -x "$MEMCAN_CLI" ] || fail "memcan CLI not found at $MEMCAN_CLI — run: cargo build -p memcan"
+}
+
+check_pandoc() {
+    command -v pandoc >/dev/null 2>&1 || fail "pandoc not found. Install it:
+  Ubuntu/Debian: sudo apt install pandoc
+  macOS:         brew install pandoc
+  Other:         https://pandoc.org/installing.html"
 }
 
 check_python3() {
@@ -223,87 +227,129 @@ drop_standard() {
     log "Drop complete: $standard_id"
 }
 
-# --- clone helpers ---
+# --- clone / fetch helpers ---
 
-clone_cheatsheets() {
-    if [ -d "$CHEATSHEETS_DIR/cheatsheets" ]; then
-        log "Cheat Sheets already cloned to $CHEATSHEETS_DIR"
+clone_wcag() {
+    if [ -d "$WCAG_CACHE_DIR/understanding" ]; then
+        log "WCAG already cloned to $WCAG_CACHE_DIR"
         return 0
     fi
-    log "Cloning OWASP CheatSheetSeries (shallow) ..."
+    log "Cloning W3C WCAG (shallow, branch: main) ..."
     mkdir -p "$CACHE_DIR"
-    git clone --depth 1 "$CHEATSHEETS_REPO" "$CHEATSHEETS_DIR"
-    log "Cloned to $CHEATSHEETS_DIR"
+    git clone --depth 1 --branch main "$WCAG_REPO" "$WCAG_CACHE_DIR"
+    log "Cloned to $WCAG_CACHE_DIR"
 }
 
-clone_asvs() {
-    if [ -d "$ASVS_DIR/5.0" ]; then
-        log "ASVS already cloned to $ASVS_DIR"
-        return 0
+convert_wcag_html() {
+    mkdir -p "$WCAG_MD_DIR"
+    local converted=0
+    local skipped=0
+
+    for dir in "$WCAG_CACHE_DIR"/understanding/20 "$WCAG_CACHE_DIR"/understanding/21 "$WCAG_CACHE_DIR"/understanding/22; do
+        [ -d "$dir" ] || continue
+        for html_file in "$dir"/*.html; do
+            [ -f "$html_file" ] || continue
+            local basename
+            basename=$(basename "$html_file")
+
+            # skip index.html
+            [ "$basename" = "index.html" ] && continue
+
+            # skip files < 500 bytes (empty stubs)
+            local filesize
+            filesize=$(wc -c < "$html_file")
+            if [ "$filesize" -lt 500 ]; then
+                ((skipped++)) || true
+                continue
+            fi
+
+            local md_file="$WCAG_MD_DIR/${basename%.html}.md"
+
+            # reuse converted file if source hasn't changed
+            if [ -f "$md_file" ] && [ "$md_file" -nt "$html_file" ]; then
+                ((skipped++)) || true
+                continue
+            fi
+
+            pandoc -f html -t markdown --wrap=none "$html_file" -o "$md_file"
+            ((converted++)) || true
+        done
+    done
+
+    log "Converted $converted HTML files to markdown ($skipped skipped)"
+}
+
+fetch_cvss() {
+    if [ -f "$CVSS_CACHE_HTML" ]; then
+        log "CVSS spec already cached at $CVSS_CACHE_HTML"
+    else
+        log "Fetching CVSS v4.0 specification ..."
+        mkdir -p "$CACHE_DIR"
+        curl -sL "$CVSS_URL" -o "$CVSS_CACHE_HTML"
+        log "Saved to $CVSS_CACHE_HTML"
     fi
-    log "Cloning OWASP ASVS $ASVS_TAG (shallow) ..."
-    mkdir -p "$CACHE_DIR"
-    git clone --depth 1 --branch "$ASVS_TAG" "$ASVS_REPO" "$ASVS_DIR"
-    log "Cloned to $ASVS_DIR"
+
+    # convert to markdown (always regenerate if HTML is newer)
+    if [ ! -f "$CVSS_CACHE_MD" ] || [ "$CVSS_CACHE_HTML" -nt "$CVSS_CACHE_MD" ]; then
+        log "Converting CVSS spec to markdown ..."
+        pandoc --from html --to markdown --wrap=none "$CVSS_CACHE_HTML" -o "$CVSS_CACHE_MD"
+        log "Saved to $CVSS_CACHE_MD"
+    fi
 }
 
 # --- index functions ---
 
 TOTAL_FAILED=0
 
-index_cheatsheets() {
-    clone_cheatsheets
-    local src_dir="$CHEATSHEETS_DIR/cheatsheets"
-    [ -d "$src_dir" ] || fail "Cheatsheets dir not found: $src_dir"
+index_wcag() {
+    clone_wcag
+    convert_wcag_html
 
     local -a files=()
-    for file in "$src_dir"/*.md; do
-        [[ "$(basename "$file")" =~ ^(Index|README) ]] && continue
+    for file in "$WCAG_MD_DIR"/*.md; do
+        [ -f "$file" ] || continue
         files+=("$file")
     done
 
-    log "Indexing ${#files[@]} OWASP Cheat Sheets"
-    log "  Source: $src_dir"
-    log "  Standard: $CHEATSHEETS_STANDARD_ID | Version: $CHEATSHEETS_VERSION"
+    [ ${#files[@]} -eq 0 ] && fail "No WCAG markdown files found in $WCAG_MD_DIR"
+
+    log "Indexing ${#files[@]} WCAG 2.2 understanding documents"
+    log "  Source: $WCAG_MD_DIR"
+    log "  Standard: $WCAG_STANDARD_ID | Version: $WCAG_VERSION"
     echo
 
     INDEXER_ARGS=(
-        --standard-id "$CHEATSHEETS_STANDARD_ID"
-        --standard-type security
-        --version "$CHEATSHEETS_VERSION"
+        --standard-id "$WCAG_STANDARD_ID"
+        --standard-type accessibility
+        --version "$WCAG_VERSION"
         --lang en
-        --url "https://cheatsheetseries.owasp.org/"
+        --url "https://www.w3.org/WAI/WCAG22/Understanding/"
     )
 
     process_batch "${files[@]}"
-    log "Cheat Sheets done. Failed: $TOTAL_FAILED"
+    log "WCAG done. Failed: $TOTAL_FAILED"
 }
 
-index_asvs() {
-    clone_asvs
-    local src_dir="$ASVS_DIR/5.0/en"
-    [ -d "$src_dir" ] || fail "ASVS dir not found: $src_dir"
+index_cvss() {
+    fetch_cvss
 
-    local -a files=()
-    for file in "$src_dir"/0x1*.md; do
-        files+=("$file")
-    done
+    [ -f "$CVSS_CACHE_MD" ] || fail "CVSS markdown not found at $CVSS_CACHE_MD"
 
-    log "Indexing ${#files[@]} OWASP ASVS 5.0 chapters"
-    log "  Source: $src_dir"
-    log "  Standard: $ASVS_STANDARD_ID | Version: $ASVS_VERSION"
+    log "Indexing CVSS v4.0 specification"
+    log "  Source: $CVSS_CACHE_MD"
+    log "  Standard: $CVSS_STANDARD_ID | Version: $CVSS_VERSION"
     echo
 
-    INDEXER_ARGS=(
-        --standard-id "$ASVS_STANDARD_ID"
-        --standard-type security
-        --version "$ASVS_VERSION"
-        --lang en
-        --url "https://github.com/OWASP/ASVS/tree/v5.0.0"
-    )
+    log "  Submitting: $(basename "$CVSS_CACHE_MD")"
+    "$MEMCAN_CLI" index-standards "$CVSS_CACHE_MD" \
+        --standard-id "$CVSS_STANDARD_ID" \
+        --standard-type security \
+        --version "$CVSS_VERSION" \
+        --lang en \
+        --url "$CVSS_URL" \
+        --wait
 
-    process_batch "${files[@]}"
-    log "ASVS done. Failed: $TOTAL_FAILED"
+    log "CVSS done."
 }
 
 # --- main ---
@@ -317,45 +363,46 @@ for arg in "$@"; do
         --drop)       DROP=true ;;
         --reindex)    REINDEX=true ;;
         --help|-h)    sed -n '2,20s/^# //p' "$0"; exit 0 ;;
-        cheatsheets)  TARGET="cheatsheets" ;;
-        asvs)         TARGET="asvs" ;;
+        wcag)         TARGET="wcag" ;;
+        cvss)         TARGET="cvss" ;;
         *)            fail "Unknown argument: $arg" ;;
     esac
 done
 
 check_cli
+check_pandoc
 check_python3
 check_server
 
 if $REINDEX; then
     case "$TARGET" in
-        cheatsheets) drop_standard "$CHEATSHEETS_STANDARD_ID" ;;
-        asvs)        drop_standard "$ASVS_STANDARD_ID" ;;
-        "")          drop_standard "$CHEATSHEETS_STANDARD_ID"
-                     drop_standard "$ASVS_STANDARD_ID" ;;
+        wcag) drop_standard "$WCAG_STANDARD_ID" ;;
+        cvss) drop_standard "$CVSS_STANDARD_ID" ;;
+        "")   drop_standard "$WCAG_STANDARD_ID"
+              drop_standard "$CVSS_STANDARD_ID" ;;
     esac
 fi
 
 if $DROP; then
     case "$TARGET" in
-        cheatsheets) drop_standard "$CHEATSHEETS_STANDARD_ID" ;;
-        asvs)        drop_standard "$ASVS_STANDARD_ID" ;;
-        "")          drop_standard "$CHEATSHEETS_STANDARD_ID"
-                     drop_standard "$ASVS_STANDARD_ID" ;;
+        wcag) drop_standard "$WCAG_STANDARD_ID" ;;
+        cvss) drop_standard "$CVSS_STANDARD_ID" ;;
+        "")   drop_standard "$WCAG_STANDARD_ID"
+              drop_standard "$CVSS_STANDARD_ID" ;;
     esac
     exit 0
 fi
 
 TOTAL_FAILED=0
 case "$TARGET" in
-    cheatsheets) index_cheatsheets ;;
-    asvs)        index_asvs ;;
+    wcag) index_wcag ;;
+    cvss) index_cvss ;;
     "")
-        index_cheatsheets
+        index_wcag
         echo
         echo "==============================="
         echo
-        index_asvs
+        index_cvss
         ;;
 esac
 

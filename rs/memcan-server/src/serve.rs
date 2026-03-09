@@ -1171,7 +1171,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
         config: ctx.settings.clone(),
         llm_model,
         queue_status: Arc::new(StdMutex::new(LruCache::new(
-            NonZeroUsize::new(1000).unwrap(),
+            NonZeroUsize::new(10000).unwrap(),
         ))),
         llm_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
         pending_tasks: Arc::new(AtomicUsize::new(0)),
