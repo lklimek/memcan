@@ -4053,7 +4053,7 @@ dependencies = [
 
 [[package]]
 name = "memcan"
-version = "0.32.1"
+version = "0.33.0"
 dependencies = [
  "clap",
  "dirs",
@@ -4071,7 +4071,7 @@ dependencies = [
 
 [[package]]
 name = "memcan-core"
-version = "0.32.1"
+version = "0.33.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4100,7 +4100,7 @@ dependencies = [
 
 [[package]]
 name = "memcan-server"
-version = "0.32.1"
+version = "0.33.0"
 dependencies = [
  "axum",
  "chrono",
