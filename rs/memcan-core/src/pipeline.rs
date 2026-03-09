@@ -38,6 +38,15 @@ const MAX_FACT_LENGTH: usize = 2000;
 /// Max number of facts returned from a single extraction.
 const MAX_FACTS_PER_EXTRACTION: usize = 50;
 
+/// Fraction of context window available for prompt content (system + user).
+const CONTEXT_BUDGET_RATIO: f32 = 0.40;
+
+/// Fallback context window when model doesn't report one.
+const DEFAULT_CONTEXT_WINDOW: usize = 4096;
+
+/// Approximate characters per token for budget estimation.
+const CHARS_PER_TOKEN: usize = 4;
+
 // INTENTIONAL(SEC-009): MD5 used for content deduplication only, not security.
 // Collision risk negligible for this use case.
 /// Compute MD5 hex digest of a string.
@@ -198,6 +207,7 @@ pub struct Pipeline {
     distill: bool,
     extraction_prompt: Option<String>,
     progress: Arc<Mutex<PipelineProgress>>,
+    context_budget: tokio::sync::OnceCell<usize>,
 }
 
 impl Pipeline {
@@ -218,6 +228,7 @@ impl Pipeline {
             distill,
             extraction_prompt: None,
             progress: Arc::new(Mutex::new(PipelineProgress::default())),
+            context_budget: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -401,6 +412,80 @@ impl Pipeline {
         Ok(())
     }
 
+    async fn resolve_context_budget(&self) -> usize {
+        *self
+            .context_budget
+            .get_or_init(|| async {
+                let ctx = self
+                    .llm
+                    .context_window(&self.llm_model)
+                    .await
+                    .unwrap_or(DEFAULT_CONTEXT_WINDOW);
+                let budget = (ctx as f32 * CONTEXT_BUDGET_RATIO) as usize;
+                info!(
+                    context_window = ctx,
+                    budget_tokens = budget,
+                    "resolved LLM context budget"
+                );
+                budget
+            })
+            .await
+    }
+
+    fn chunk_content<'a>(
+        content: &'a str,
+        system_prompt: &str,
+        budget_tokens: usize,
+    ) -> Vec<&'a str> {
+        let system_tokens = system_prompt.len() / CHARS_PER_TOKEN;
+        let user_budget_tokens = budget_tokens.saturating_sub(system_tokens);
+        let max_user_chars = user_budget_tokens * CHARS_PER_TOKEN;
+
+        if max_user_chars == 0 {
+            warn!("system prompt alone exceeds context budget");
+            return vec![content];
+        }
+
+        if content.len() <= max_user_chars {
+            return vec![content];
+        }
+
+        let mut chunks = Vec::new();
+        let mut start = 0;
+        while start < content.len() {
+            let end = (start + max_user_chars).min(content.len());
+            let end = content.floor_char_boundary(end);
+
+            let chunk = &content[start..end];
+            let split_at = if end < content.len() {
+                chunk
+                    .rfind("\n\n")
+                    .or_else(|| chunk.rfind('\n'))
+                    .map(|pos| start + pos + 1)
+                    .unwrap_or(end)
+            } else {
+                end
+            };
+
+            let actual_chunk = content[start..split_at].trim();
+            if !actual_chunk.is_empty() {
+                chunks.push(actual_chunk);
+            }
+            start = split_at;
+        }
+
+        if chunks.len() > 1 {
+            info!(
+                content_len = content.len(),
+                chunks = chunks.len(),
+                max_chars_per_chunk = max_user_chars,
+                "content exceeds context budget, splitting into chunks"
+            );
+        }
+
+        chunks
+    }
+
     /// Extract individual facts from content using the LLM.
     async fn extract_facts(&self, content: &str) -> Result<Option<Vec<String>>> {
         let today = Utc::now().format("%Y-%m-%d").to_string();
@@ -410,31 +495,59 @@ impl Pipeline {
             .unwrap_or(FACT_EXTRACTION_PROMPT);
         let rendered = render_prompt(prompt, &[("today", &today)]);
 
-        let messages = vec![
-            LlmMessage {
-                role: Role::System,
-                content: rendered,
-            },
-            LlmMessage {
-                role: Role::User,
-                content: content.to_string(),
-            },
-        ];
+        let budget = self.resolve_context_budget().await;
+        let chunks = Self::chunk_content(content, &rendered, budget);
 
-        let options = Some(LlmOptions {
-            format_json: true,
-            think: Some(false),
-            ..Default::default()
-        });
+        let mut all_facts = Vec::new();
+        for (i, &chunk) in chunks.iter().enumerate() {
+            if chunks.len() > 1 {
+                debug!(
+                    chunk_idx = i + 1,
+                    total = chunks.len(),
+                    len = chunk.len(),
+                    "extracting facts from chunk"
+                );
+            }
 
-        let response = self.llm.chat(&self.llm_model, &messages, options).await?;
-        match serde_json::from_str::<FactsResponse>(&response) {
-            Ok(parsed) => Ok(Some(validate_facts(parsed.facts))),
-            Err(e) => {
-                warn!("fact extraction JSON parse failed: {e}");
-                Ok(None)
+            let messages = vec![
+                LlmMessage {
+                    role: Role::System,
+                    content: rendered.clone(),
+                },
+                LlmMessage {
+                    role: Role::User,
+                    content: chunk.to_string(),
+                },
+            ];
+            let options = Some(LlmOptions {
+                format_json: true,
+                think: Some(false),
+                ..Default::default()
+            });
+
+            match self.llm.chat(&self.llm_model, &messages, options).await {
+                Ok(response) => match serde_json::from_str::<FactsResponse>(&response) {
+                    Ok(parsed) => all_facts.extend(parsed.facts),
+                    Err(e) if chunks.len() > 1 => {
+                        warn!(chunk_idx = i + 1, "fact extraction JSON parse failed: {e}");
+                    }
+                    Err(e) => {
+                        warn!("fact extraction JSON parse failed: {e}");
+                        return Ok(None);
+                    }
+                },
+                Err(e) if e.is_llm_error() && chunks.len() > 1 => {
+                    warn!(chunk_idx = i + 1, "fact extraction LLM call failed: {e}");
+                }
+                Err(e) => return Err(e),
             }
         }
+
+        if all_facts.is_empty() && chunks.len() > 1 {
+            return Ok(None);
+        }
+
+        Ok(Some(validate_facts(all_facts)))
     }
 
     /// Deduplicate facts against existing memories and store.
@@ -748,5 +861,67 @@ mod tests {
         assert!(p.warnings.is_empty());
         assert!(p.error.is_none());
         assert!(p.completed_at.is_none());
+    }
+
+    #[test]
+    fn test_chunk_content_fits() {
+        let content = "short content";
+        let system = "system prompt";
+        let budget = 1000;
+        let chunks = Pipeline::chunk_content(content, system, budget);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], "short content");
+    }
+
+    #[test]
+    fn test_chunk_content_splits() {
+        let content = "a".repeat(5000);
+        let system = "sys";
+        let budget = 500; // 500 tokens = ~2000 chars, minus ~1 token for sys = ~1996 chars
+        let chunks = Pipeline::chunk_content(&content, system, budget);
+        assert!(
+            chunks.len() > 1,
+            "expected multiple chunks, got {}",
+            chunks.len()
+        );
+        for &chunk in &chunks {
+            assert!(chunk.len() <= 2000, "chunk too large: {}", chunk.len());
+        }
+    }
+
+    #[test]
+    fn test_chunk_content_paragraph_boundary() {
+        let para1 = "a".repeat(100);
+        let para2 = "b".repeat(100);
+        let content = format!("{}\n\n{}", para1, para2);
+        let system = "";
+        let budget = 40; // 40 tokens = 160 chars, fits para1 (100) but not both (202)
+        let chunks = Pipeline::chunk_content(&content, system, budget);
+        assert_eq!(chunks.len(), 2, "expected split at paragraph boundary");
+        assert!(chunks[0].contains("aaa"));
+        assert!(chunks[1].contains("bbb"));
+    }
+
+    #[test]
+    fn test_chunk_content_zero_budget() {
+        let content = "some content";
+        let system = "a".repeat(5000);
+        let budget = 100; // 100 tokens = 400 chars, system is 5000 chars = 1250 tokens
+        let chunks = Pipeline::chunk_content(content, &system, budget);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], "some content");
+    }
+
+    #[test]
+    fn test_chunk_content_multibyte() {
+        let content = "🎉".repeat(500); // 2000 bytes
+        let system = "";
+        let budget = 200; // 200 tokens = 800 chars max
+        let chunks = Pipeline::chunk_content(&content, system, budget);
+        assert!(!chunks.is_empty());
+        for &chunk in &chunks {
+            assert!(!chunk.is_empty());
+            let _ = chunk.chars().count();
+        }
     }
 }
