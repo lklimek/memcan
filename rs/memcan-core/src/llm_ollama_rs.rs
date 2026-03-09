@@ -25,14 +25,21 @@ impl OllamaRsLlmProvider {
     /// prefix from the configured model name. When `OLLAMA_API_KEY` is set,
     /// injects a Bearer auth header via `Ollama::new_with_request_headers`.
     pub fn from_settings(settings: &Settings) -> Self {
-        let (host, port) = parse_host_port(
-            settings
-                .ollama_host
-                .as_deref()
-                .unwrap_or("http://localhost:11434"),
-        );
+        let raw_host = settings
+            .ollama_host
+            .as_deref()
+            .unwrap_or("http://localhost:11434");
+        let (host, port) = parse_host_port(raw_host);
 
         let default_model = strip_ollama_prefix(&settings.llm_model).to_string();
+
+        tracing::trace!(
+            host = %host,
+            port = port,
+            model = %default_model,
+            auth = settings.ollama_api_key.is_some(),
+            "OllamaRsLlmProvider: initializing"
+        );
 
         let client = if let Some(ref api_key) = settings.ollama_api_key {
             match reqwest::header::HeaderValue::from_str(&format!("Bearer {api_key}")) {
@@ -62,6 +69,11 @@ impl OllamaRsLlmProvider {
     /// Return the default model name (prefix-stripped).
     pub fn default_model(&self) -> &str {
         &self.default_model
+    }
+
+    /// Return the Ollama base URL (for diagnostics).
+    pub fn url(&self) -> &str {
+        self.client.url_str()
     }
 }
 
@@ -103,6 +115,16 @@ impl LlmProvider for OllamaRsLlmProvider {
     ) -> Result<String> {
         let model_name = strip_ollama_prefix(model);
         let opts = options.unwrap_or_default();
+
+        tracing::trace!(
+            model = model_name,
+            messages = messages.len(),
+            format_json = opts.format_json,
+            think = ?opts.think,
+            temperature = ?opts.temperature,
+            max_tokens = ?opts.max_tokens,
+            "ollama-rs: sending chat request"
+        );
 
         let chat_messages: Vec<ChatMessage> = messages
             .iter()
@@ -154,6 +176,11 @@ impl LlmProvider for OllamaRsLlmProvider {
                 })?;
 
         let text = response.message.content;
+        tracing::trace!(
+            model = model_name,
+            response_len = text.len(),
+            "ollama-rs: chat response received"
+        );
         if text.is_empty() {
             return Err(MemcanError::LlmChat {
                 context: "empty response from LLM".into(),
@@ -166,15 +193,19 @@ impl LlmProvider for OllamaRsLlmProvider {
 
     async fn context_window(&self, model: &str) -> Option<usize> {
         let model_name = strip_ollama_prefix(model).to_string();
+        tracing::trace!(model = %model_name, "ollama-rs: querying context window");
 
-        let info = self.client.show_model_info(model_name).await.ok()?;
+        let info = self.client.show_model_info(model_name.clone()).await.ok()?;
 
         for (key, value) in &info.model_info {
             if key.ends_with(".context_length") {
-                return value.as_u64().map(|v| v as usize);
+                let ctx = value.as_u64().map(|v| v as usize);
+                tracing::trace!(model = %model_name, context_window = ?ctx, "ollama-rs: context window resolved");
+                return ctx;
             }
         }
 
+        tracing::trace!(model = %model_name, "ollama-rs: no context_length found in model_info");
         None
     }
 }
