@@ -1,0 +1,94 @@
+{"decision": "rejected", "content": "Compilation check passed: clean, no errors"}
+{"decision": "rejected", "content": "All 17 tests passed in memcan-core"}
+{"decision": "rejected", "content": "cargo test --workspace all 79 tests pass"}
+{"decision": "rejected", "content": "cargo fmt --all -- --check returns clean results"}
+{"decision": "rejected", "content": "cargo clippy --workspace --all-targets -- -D warnings returns clean results"}
+{"decision": "rejected", "content": "cargo build --workspace passes with default features = ollama-rs-llm"}
+{"decision": "rejected", "content": "Changes were not committed"}
+{"decision": "rejected", "content": "cargo +nightly fmt -- formatted"}
+{"decision": "rejected", "content": "CI matrix entry added and verified passing with command cargo build --features genai-llm --no-default-features -p memcan-core"}
+{"decision": "rejected", "content": "Commit hash: 810b83c"}
+{"decision": "rejected", "content": "Branch used: test/ollama-rs-integration-suite"}
+{"decision": "rejected", "content": "/home/ubuntu/git/dash-evo-tool/src/database/mod.rs (lines 99-103)"}
+{"decision": "rejected", "content": "/home/ubuntu/git/dash-evo-tool/src/database/dashpay.rs (line 101) - Database schema comment path"}
+{"decision": "rejected", "content": "/home/ubuntu/git/dash-evo-tool/src/database/dashpay.rs (lines 223-259)"}
+{"decision": "rejected", "content": "/home/ubuntu/git/dash-evo-tool/src/backend_task/dashpay.rs (lines 108-115)"}
+{"decision": "rejected", "content": "/home/ubuntu/git/dash-evo-tool/src/database/initialization.rs (Migration 28)"}
+{"decision": "rejected", "content": "/home/ubuntu/git/dash-evo-tool/src/database/contacts.rs (lines 14-28)"}
+{"decision": "rejected", "content": "Contact profile viewer constructor load lines: 66-70"}
+{"decision": "rejected", "content": "Contacts list load all private info lines: 156-165"}
+{"decision": "rejected", "content": "DocumentReplaceTransitionBuilder usage lines: 192-253"}
+{"decision": "rejected", "content": "Platform check logic lines: 128-140"}
+{"decision": "rejected", "content": "Contact details load private info line: 137"}
+{"decision": "rejected", "content": "DocumentCreateTransitionBuilder usage lines: 259-338"}
+{"decision": "rejected", "content": "Contact profile viewer save lines: 129-140"}
+{"decision": "rejected", "content": "Contact profile viewer reload on cancel lines: 547-550"}
+{"decision": "rejected", "content": "Contacts list placeholder lines: /home/ubuntu/git/dash-evo-tool/src/ui/dashpay/contacts_list.rs (142-143)"}
+{"decision": "rejected", "content": "Contact profile viewer load lines: /home/ubuntu/git/dash-evo-tool/src/ui/dashpay/contact_profile_viewer.rs (63-140, 332-550)"}
+{"decision": "rejected", "content": "Contacts list save private info lines: 1124-1129"}
+{"decision": "rejected", "content": "Initialization path: /home/ubuntu/git/dash-evo-tool/src/database/initialization.rs (line 507) via init_contacts_tables()"}
+{"decision": "rejected", "content": "File deleted: /home/ubuntu/git/memcan/rs/memcan-core/tests/ollama_smoke.rs"}
+{"decision": "rejected", "content": "File created: /home/ubuntu/git/memcan/rs/memcan-core/tests/ollama_integration.rs"}
+{"decision": "rejected", "content": "Removed 7 moved tests from /home/ubuntu/git/memcan/rs/memcan-core/src/llm.rs"}
+{"decision": "rejected", "content": "Updated --model help text in /home/ubuntu/git/memcan/rs/memcan-server/src/main.rs"}
+{"decision": "rejected", "content": "Gated provider prefix warning behind genai-llm feature in /home/ubuntu/git/memcan/rs/memcan-core/src/config.rs"}
+{"decision": "rejected", "content": "New file /home/ubuntu/git/memcan/rs/memcan-core/src/llm_ollama_rs.rs implements LlmProvider trait via ollama_rs::Ollama"}
+{"decision": "rejected", "content": "Review written to /tmp/claude/0j7p5e/rust-review.md"}
+{"decision": "rejected", "content": "Changes were implemented in /home/ubuntu/git/memcan/.claude/worktrees/agent-a6d9a660/rs/memcan-core/src/pipeline.rs"}
+{"decision": "rejected", "content": "INFO item praising the factory pattern implementation."}
+{"decision": "rejected", "content": "INFO item praising the compile_error guard implementation."}
+{"decision": "rejected", "content": "The overall assessment for the ollama-rs migration is well-structured and low-risk."}
+{"decision": "rejected", "content": "Positive observation: Feature flags are correctly implemented with a compile-time guard."}
+{"decision": "rejected", "content": "Positive observation: API key handling is sound with no leakage paths found."}
+{"decision": "rejected", "content": "Positive observation: Constant-time auth comparison is preserved in the server."}
+{"decision": "rejected", "content": "Positive observation: Error messages do not leak credentials."}
+{"decision": "rejected", "content": "Finding SEC-001 is located at /home/ubuntu/git/memcan/rs/memcan-core/src/llm_ollama_rs.rs:40."}
+{"decision": "rejected", "content": "Status 'failed' on operation error at serve.rs line 370"}
+{"decision": "rejected", "content": "add_memory tool handler queueing phase: generate unique operation ID with Uuid::new_v4().to_string() at serve.rs line 295\n\nInitial QueueEntry inserted with status=queued, error=None, completed_at=None (lines 304-314)"}
+{"decision": "rejected", "content": "chat() implementation builds ChatMessage vec with system(), user(), assistant() constructors from LlmMessage roles"}
+{"decision": "rejected", "content": "OllamaRsLlmProvider chat() response maps to message.message Some with content field or None for empty; handles empty message returning MemcanError::LlmChat with message about empty response from LLM"}
+{"decision": "rejected", "content": "Both llm.rs and llm_ollama_rs.rs gate behind genai-llm and ollama-rs-llm features respectively in lib.rs"}
+{"decision": "rejected", "content": "/home/ubuntu/git/memcan/rs/memcan-core/src/init.rs added create_llm_provider(settings) -> (Arc<dyn LlmProvider>, String) with cfg-based dispatch, factory function in init.rs gates ollama-rs branch vs genai-llm branch with compile_error if neither feature enabled"}
+{"decision": "rejected", "content": "strip_ollama_prefix function and 4 unit tests moved to /home/ubuntu/git/memcan/rs/memcan-core/src/ollama.rs; llm.rs replaced with pub use crate::ollama::strip_ollama_prefix re-export for backward compatibility"}
+{"decision": "rejected", "content": "Core dependencies include serde ^1 and serde_json ^1 for serialization"}
+{"decision": "rejected", "content": "ollama-rs uses Tokio async runtime ^1.x"}
+{"decision": "rejected", "content": "ullama-rs core dependency includes async-stream for async iteration"}
+{"decision": "rejected", "content": "Default connection URL: http://localhost:11434"}
+{"decision": "rejected", "content": "System messages supported via ChatMessage with role \"system\" in history vector"}
+{"decision": "rejected", "content": "Model names are plain string format, e.g., llama2:latest or qwen3.5:4b"}
+{"decision": "rejected", "content": "ollama-rs is multi-LLM client pepperoni21/ollama-rs"}
+{"decision": "rejected", "content": "Source reference: ollama-rs on crates.io at https://crates.io/crates/ollama-rs, Source reference: ollama-rs 0.3.4 docs available at https://docs.rs/crate/ollama-rs/0.3.4"}
+{"decision": "rejected", "content": "OSV.dev crates.io ecosystem list link (https://osv.dev/list?ecosystem=crates.io&q=ollama-rs) was listed as a research source."}
+{"decision": "rejected", "content": "RustSec Advisory Database (https://rustsec.org/) was listed as a research source."}
+{"decision": "rejected", "content": "Test category 'Basic Chat': covers simple user message, system+user, multi-turn, ollama:: prefix in model name (4 tests)"}
+{"decision": "rejected", "content": "Test category 'Think Control': validates think:false no tags, think:false+json clean output, think:none default (3 tests)"}
+{"decision": "rejected", "content": "Test category 'Pipeline Pattern': handles fact extraction from multi-fact input, empty input greeting (2 tests)"}
+{"decision": "rejected", "content": "Test category 'Context Window': verifies positive value, reasonable range (2 tests)"}
+{"decision": "rejected", "content": "Attribute #[serial] applied to every test to prevent parallel Ollama requests"}
+{"decision": "rejected", "content": "Attribute #[ignore] applied to every test so regular cargo test remains unaffected"}
+{"decision": "rejected", "content": "Shared helper function 'provider_from_env()' avoids repeating Settings::load in every test"}
+{"decision": "rejected", "content": "Table name: contact_private_info"}
+{"decision": "rejected", "content": "Local caching table name: dashpay_profiles"}
+{"decision": "rejected", "content": "DashPay profile columns: display_name, bio, avatar_url, avatar_bytes, public_message"}
+{"decision": "rejected", "content": "Public profile data sent fields: display_name, bio, avatar_url"}
+{"decision": "rejected", "content": "Cleanup action: Deletes contact private info when clearing network data"}
+{"decision": "rejected", "content": "self.init_contacts_tables(tx) call added after self.add_core_wallet_name_column(tx) in Migration 28"}
+{"decision": "rejected", "content": "self.init_contacts_tables ensures users upgrading from older databases get the contact_private_info table created"}
+{"decision": "rejected", "content": "test_migration_28_creates_contact_private_info_table verifies the version is updated to 28"}
+{"decision": "rejected", "content": "New test test_migration_28_creates_contact_private_info_table added at line ~996"}
+{"decision": "rejected", "content": "The CREATE TABLE statement used is idempotent (CREATE TABLE IF NOT EXISTS)"}
+{"decision": "rejected", "content": "Constants CONTEXT_BUDGET_RATIO (0.40), DEFAULT_CONTEXT_WINDOW (4096), and CHARS_PER_TOKEN (4) were added after line 39 in the codebase.\n\nThese new constants represent LLM context window configuration values that appear to be stored at the top of a config or settings file, likely memcan-core/src/config.rs or a related settings module.\n\nRationale: These are novel facts about the codebase state not captured by existing memories (which focus on architectural recommendations about crate responsibility splits, queueing implementation in serve.rs, and pipeline changes). The memory store does not currently contain information about these specific constant definitions."}
+{"decision": "kept", "content": "qwen3.5:9b returns empty content under 3+ concurrent Ollama requests. Switched to gemma3n:e4b."}
+{"decision": "kept", "content": "ollama-rs parse_host_port() drops URL path component \u2014 OLLAMA_HOST with a base path like /v1 silently loses it."}
+{"decision": "kept", "content": "Decision: genai-llm feature disabled by default in v0.32; ollama-rs-llm is new default. Genai preserved behind feature flag for multi-provider scenarios."}
+{"decision": "kept", "content": "ollama-rs num_predict uses u32-to-i32 cast that silently wraps for values above i32::MAX. Fix: clamp with .min(i32::MAX as u32) before cast."}
+{"decision": "kept", "content": "Always verify feature-gated code compilation using cargo build and cargo clippy instead of trusting rust-analyzer diagnostics."}
+{"decision": "kept", "content": "When gating Rust modules behind feature flags with #[cfg(feature = \"...\")], rust-analyzer shows 'unlinked-file' and 'inactive-code' warnings for the gated modules. These warnings are IDE noise, not real errors."}
+{"decision": "kept", "content": "pydantic-settings Settings() reads .env during tests \u2014 pass _env_file=None to isolate"}
+{"decision": "kept", "content": "ollama-rs limitation: no streaming option for chat with history (GitHub Issue #41 pepperoni21/ollama-rs). MemCan uses non-streaming chat() as workaround."}
+{"decision": "kept", "content": "Ollama CVEs (CVE-2024-37032 Probllama RCE, CVE-2025-51471 Cross-Domain Token Exposure) assessed \u2014 not applicable to MemCan because only chat/show APIs are used, no model pulling occurs."}
+{"decision": "kept", "content": "Server auth uses constant-time comparison (subtle crate) to prevent timing side-channel attacks on Bearer token verification."}
+{"decision": "kept", "content": "Do not use symlinks in Docker build contexts \u2014 Docker resolves them differently."}
+{"decision": "kept", "content": "Bcrypt dummy hash was 61 chars instead of the standard 60."}
+{"decision": "kept", "content": "When verifying bug fixes, always test with fresh data \u2014 cached results may predate the fix."}
+{"decision": "kept", "content": "ollama-rs API: FormatType::Json for structured JSON output, ThinkType::False to disable chain-of-thought \u2014 both supported natively without workarounds."}

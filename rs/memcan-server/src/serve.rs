@@ -37,6 +37,7 @@ use memcan_core::{
     pipeline::{
         CODE_TABLE, MEMORIES_TABLE, Pipeline, PipelineGuard, PipelineProgress, STANDARDS_TABLE,
     },
+    prompts::FACT_EXTRACTION_HOOK_PROMPT,
     traits::{EmbeddingProvider, LlmProvider, VectorStore},
 };
 
@@ -304,6 +305,8 @@ impl MemcanService {
         let op_id = Uuid::new_v4().to_string();
         info!(user_id = %uid, len = memory.len(), operation_id = %op_id, "add_memory: queued");
 
+        let is_hook = metadata.get("source").and_then(|v| v.as_str()) == Some("auto-hook");
+
         let pipeline = Pipeline::new(
             Arc::clone(&self.state.store),
             Arc::clone(&self.state.embedder),
@@ -312,6 +315,11 @@ impl MemcanService {
             MEMORIES_TABLE,
             self.state.config.distill_memories,
         );
+        let pipeline = if is_hook {
+            pipeline.with_extraction_prompt(FACT_EXTRACTION_HOOK_PROMPT)
+        } else {
+            pipeline
+        };
         let progress = pipeline.progress();
         let mut guard = PipelineGuard::new(pipeline);
 

@@ -15,15 +15,25 @@ Return ONLY valid JSON: {"facts": ["...", ...]} or {"facts": []}
 If the input does not clearly match ANY of these 7 patterns, return {"facts": []}.
 When in doubt, return {"facts": []}.
 
+## Self-check — apply BEFORE outputting any fact
+
+For each candidate fact, ask: "Would a developer in a brand-new session find this useful to avoid a mistake or make a decision?" If the answer is no, drop it.
+
 ## Automatic rejection — ALWAYS return {"facts": []} for these
 
 - Descriptions of what code does, how functions work, or how modules are structured
 - Test results, pass/fail counts, benchmark numbers, timing data
 - Agent work summaries, changelogs, "here is what I changed" reports
-- File paths, branch names, worktree paths, commit hashes
-- Status messages: "done", "clean", "all passing", "committed"
+- File paths, branch names, worktree paths, commit hashes, line number references
+- Status messages: "done", "clean", "all passing", "committed", "no errors"
 - Well-known behavior that anyone familiar with the tool already knows
 - Greetings, filler text, thinking-out-loud, questions
+- Vague praise or criticism without specifics ("well-structured", "low-risk", "good pattern", "praising X")
+- "Positive observation:" or "INFO item" prefixed content
+- File creation, deletion, rename, or move notifications
+- Source/reference URLs without actionable context
+- Dependency version or runtime facts already in manifest files (e.g., "serde ^1", "Tokio ^1.x")
+- Compilation or lint outcomes ("clean build", "no warnings", "clippy passes")
 
 ## Examples
 
@@ -60,10 +70,44 @@ Output: {"facts": []}
 Input: Outer main() catches all exceptions so the hook never crashes.
 Output: {"facts": []}
 
+Input: Compilation check passed: clean, no errors.
+Output: {"facts": []}
+
+Input: Review written to /tmp/claude/xxxxx/report.md
+Output: {"facts": []}
+
+Input: Commit hash: 810b83c
+Output: {"facts": []}
+
+Input: INFO item praising the factory pattern implementation.
+Output: {"facts": []}
+
+Input: /home/ubuntu/git/foo/src/bar.rs (lines 99-103)
+Output: {"facts": []}
+
+Input: File created: /path/to/file.rs
+Output: {"facts": []}
+
+Input: Branch used: test/some-branch
+Output: {"facts": []}
+
+Input: cargo test --workspace all 79 tests pass
+Output: {"facts": []}
+
+Input: Contact profile viewer save lines: 129-140
+Output: {"facts": []}
+
+Input: Positive observation: well-structured error handling in the parser module.
+Output: {"facts": []}
+
+Input: serde = "^1.0" in Cargo.toml
+Output: {"facts": []}
+
 ## Rules
 
 - Each fact must name the specific tool, model, library, or setting involved.
 - Preserve version numbers, error messages, and config values.
 - Detect input language and record facts in the same language.
+- Tone: factual, third-person, present tense. No first person ("I found"), no vague qualifiers.
 - Do not return facts from the examples above.
 - Today's date is $today.

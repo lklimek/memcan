@@ -112,9 +112,11 @@ All release workflows trigger on **GitHub release creation**, not tag pushes.
 ## Building
 
 ```bash
-cargo build --workspace          # debug build
-cargo build --release --workspace # release build
+cargo build --workspace          # debug build (use for development)
+cargo build --release --workspace # release build (CI/deploy only — slow)
 ```
+
+**Always use debug builds during development and testing.** Release builds take 4+ minutes. Only use `--release` for CI, benchmarks, or final verification.
 
 ## Testing
 
@@ -124,6 +126,25 @@ cargo test -p memcan-core       # core library tests only
 ```
 
 Tests use `mockito` for HTTP mocking and `tempfile` for ephemeral LanceDB directories. No live Ollama or external services required.
+
+### Prompt Testing
+
+After changing any prompt in `rs/memcan-core/src/prompts/`, run the classification test against the fixture vectors:
+
+```bash
+cargo build -p memcan-server  # binary location depends on CARGO_TARGET_DIR
+memcan-server test-classification \
+  --prompt rs/memcan-core/src/prompts/fact-extraction-hook.md \
+  --model qwen3.5:9b \
+  --data rs/memcan-core/tests/fixtures/hook-test-vectors.jsonl
+```
+
+Test vectors live in `rs/memcan-core/tests/fixtures/`:
+- `hook-extraction-reject.jsonl` — 82 inputs that MUST produce `{"facts": []}` (junk patterns)
+- `hook-extraction-accept.jsonl` — 14 inputs that MUST produce ≥1 fact (valid lessons)
+- `hook-test-vectors.jsonl` — combined file in test-classification format (`decision`+`content`)
+
+Target: ≥90% accuracy, ≥85% precision on reject class. If false positives increase, strengthen the rejection examples in `fact-extraction-hook.md`.
 
 ## Quality Checks
 

@@ -20,6 +20,31 @@ Scan conversation history for items worth remembering:
 
 Collect as a raw numbered list. Search existing memories (`search_memories`) and drop duplicates.
 
+## Quality Gate — apply before Phase 2
+
+Every candidate memory must pass ALL of these criteria. Drop items that fail any one:
+
+- **Self-contained**: makes sense without surrounding conversation context
+- **Specific**: names the tool, library, setting, or API involved
+- **Actionable**: a future session can use this to avoid a mistake or make a decision
+- **Not ephemeral**: won't be invalidated by the next commit, test run, or deploy
+
+Good memories:
+
+- "ollama-rs parse_host_port() drops URL path component — OLLAMA_HOST with /v1 base path silently loses it"
+- "LanceDB compact_files() requires write lock — concurrent compaction causes silent data loss"
+- "Do not use `git add -A` in hooks — it stages unrelated files in monorepo worktrees"
+
+Bad memories (reject these):
+
+- "All 79 tests pass" — ephemeral status, not a lesson
+- "Well-structured error handling" — vague praise, no actionable detail
+- "File created: /path/to/foo.rs" — file notification, not a lesson
+- "Commit 810b83c" — opaque reference, useless without context
+- "serde = ^1.0" — manifest fact, already in Cargo.toml
+
+Tone: factual, third-person, present tense. Pattern: "[Subject]: [what happened/what to do] — [why/context]". No first person, no vague qualifiers.
+
 ## Phase 2 — Categorize and Save
 
 For each item:

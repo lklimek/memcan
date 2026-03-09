@@ -1,0 +1,14 @@
+{"input": "qwen3.5:9b returns empty content under 3+ concurrent Ollama requests. Switched to gemma3n:e4b.", "expected_min_facts": 1, "category": "bug-root-cause"}
+{"input": "ollama-rs parse_host_port() drops URL path component — OLLAMA_HOST with a base path like /v1 silently loses it.", "expected_min_facts": 1, "category": "tool-surprise"}
+{"input": "Decision: genai-llm feature disabled by default in v0.32; ollama-rs-llm is new default. Genai preserved behind feature flag for multi-provider scenarios.", "expected_min_facts": 1, "category": "architecture-decision"}
+{"input": "ollama-rs num_predict uses u32-to-i32 cast that silently wraps for values above i32::MAX. Fix: clamp with .min(i32::MAX as u32) before cast.", "expected_min_facts": 1, "category": "bug-root-cause"}
+{"input": "Always verify feature-gated code compilation using cargo build and cargo clippy instead of trusting rust-analyzer diagnostics.", "expected_min_facts": 1, "category": "explicit-rule"}
+{"input": "When gating Rust modules behind feature flags with #[cfg(feature = \"...\")], rust-analyzer shows 'unlinked-file' and 'inactive-code' warnings for the gated modules. These warnings are IDE noise, not real errors.", "expected_min_facts": 1, "category": "tool-surprise"}
+{"input": "pydantic-settings Settings() reads .env during tests — pass _env_file=None to isolate", "expected_min_facts": 1, "category": "configuration-trap"}
+{"input": "ollama-rs limitation: no streaming option for chat with history (GitHub Issue #41 pepperoni21/ollama-rs). MemCan uses non-streaming chat() as workaround.", "expected_min_facts": 1, "category": "tool-surprise"}
+{"input": "Ollama CVEs (CVE-2024-37032 Probllama RCE, CVE-2025-51471 Cross-Domain Token Exposure) assessed — not applicable to MemCan because only chat/show APIs are used, no model pulling occurs.", "expected_min_facts": 1, "category": "architecture-decision"}
+{"input": "Server auth uses constant-time comparison (subtle crate) to prevent timing side-channel attacks on Bearer token verification.", "expected_min_facts": 1, "category": "explicit-rule"}
+{"input": "Do not use symlinks in Docker build contexts — Docker resolves them differently.", "expected_min_facts": 1, "category": "explicit-rule"}
+{"input": "Bcrypt dummy hash was 61 chars instead of the standard 60.", "expected_min_facts": 1, "category": "numeric-deviation"}
+{"input": "When verifying bug fixes, always test with fresh data — cached results may predate the fix.", "expected_min_facts": 1, "category": "explicit-rule"}
+{"input": "ollama-rs API: FormatType::Json for structured JSON output, ThinkType::False to disable chain-of-thought — both supported natively without workarounds.", "expected_min_facts": 1, "category": "reusable-workaround"}

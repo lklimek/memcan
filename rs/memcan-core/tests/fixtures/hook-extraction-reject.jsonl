@@ -1,0 +1,80 @@
+{"input": "Compilation check passed: clean, no errors", "expected_facts": [], "category": "status-message"}
+{"input": "All 17 tests passed in memcan-core", "expected_facts": [], "category": "status-message"}
+{"input": "cargo test --workspace all 79 tests pass", "expected_facts": [], "category": "status-message"}
+{"input": "cargo fmt --all -- --check returns clean results", "expected_facts": [], "category": "status-message"}
+{"input": "cargo clippy --workspace --all-targets -- -D warnings returns clean results", "expected_facts": [], "category": "status-message"}
+{"input": "cargo build --workspace passes with default features = ollama-rs-llm", "expected_facts": [], "category": "status-message"}
+{"input": "Changes were not committed", "expected_facts": [], "category": "status-message"}
+{"input": "cargo +nightly fmt -- formatted", "expected_facts": [], "category": "status-message"}
+{"input": "CI matrix entry added and verified passing with command cargo build --features genai-llm --no-default-features -p memcan-core", "expected_facts": [], "category": "status-message"}
+{"input": "Commit hash: 810b83c", "expected_facts": [], "category": "commit-branch-ref"}
+{"input": "Branch used: test/ollama-rs-integration-suite", "expected_facts": [], "category": "commit-branch-ref"}
+{"input": "/home/ubuntu/git/dash-evo-tool/src/database/mod.rs (lines 99-103)", "expected_facts": [], "category": "file-path-line-ref"}
+{"input": "/home/ubuntu/git/dash-evo-tool/src/database/dashpay.rs (line 101) - Database schema comment path", "expected_facts": [], "category": "file-path-line-ref"}
+{"input": "/home/ubuntu/git/dash-evo-tool/src/database/dashpay.rs (lines 223-259)", "expected_facts": [], "category": "file-path-line-ref"}
+{"input": "/home/ubuntu/git/dash-evo-tool/src/backend_task/dashpay.rs (lines 108-115)", "expected_facts": [], "category": "file-path-line-ref"}
+{"input": "/home/ubuntu/git/dash-evo-tool/src/database/initialization.rs (Migration 28)", "expected_facts": [], "category": "file-path-line-ref"}
+{"input": "/home/ubuntu/git/dash-evo-tool/src/database/contacts.rs (lines 14-28)", "expected_facts": [], "category": "file-path-line-ref"}
+{"input": "Contact profile viewer constructor load lines: 66-70", "expected_facts": [], "category": "file-path-line-ref"}
+{"input": "Contacts list load all private info lines: 156-165", "expected_facts": [], "category": "file-path-line-ref"}
+{"input": "DocumentReplaceTransitionBuilder usage lines: 192-253", "expected_facts": [], "category": "file-path-line-ref"}
+{"input": "Platform check logic lines: 128-140", "expected_facts": [], "category": "file-path-line-ref"}
+{"input": "Contact details load private info line: 137", "expected_facts": [], "category": "file-path-line-ref"}
+{"input": "DocumentCreateTransitionBuilder usage lines: 259-338", "expected_facts": [], "category": "file-path-line-ref"}
+{"input": "Contact profile viewer save lines: 129-140", "expected_facts": [], "category": "file-path-line-ref"}
+{"input": "Contact profile viewer reload on cancel lines: 547-550", "expected_facts": [], "category": "file-path-line-ref"}
+{"input": "Contacts list placeholder lines: /home/ubuntu/git/dash-evo-tool/src/ui/dashpay/contacts_list.rs (142-143)", "expected_facts": [], "category": "file-path-line-ref"}
+{"input": "Contact profile viewer load lines: /home/ubuntu/git/dash-evo-tool/src/ui/dashpay/contact_profile_viewer.rs (63-140, 332-550)", "expected_facts": [], "category": "file-path-line-ref"}
+{"input": "Contacts list save private info lines: 1124-1129", "expected_facts": [], "category": "file-path-line-ref"}
+{"input": "Initialization path: /home/ubuntu/git/dash-evo-tool/src/database/initialization.rs (line 507) via init_contacts_tables()", "expected_facts": [], "category": "file-path-line-ref"}
+{"input": "File deleted: /home/ubuntu/git/memcan/rs/memcan-core/tests/ollama_smoke.rs", "expected_facts": [], "category": "file-crud-notification"}
+{"input": "File created: /home/ubuntu/git/memcan/rs/memcan-core/tests/ollama_integration.rs", "expected_facts": [], "category": "file-crud-notification"}
+{"input": "Removed 7 moved tests from /home/ubuntu/git/memcan/rs/memcan-core/src/llm.rs", "expected_facts": [], "category": "file-crud-notification"}
+{"input": "Updated --model help text in /home/ubuntu/git/memcan/rs/memcan-server/src/main.rs", "expected_facts": [], "category": "file-crud-notification"}
+{"input": "Gated provider prefix warning behind genai-llm feature in /home/ubuntu/git/memcan/rs/memcan-core/src/config.rs", "expected_facts": [], "category": "file-crud-notification"}
+{"input": "New file /home/ubuntu/git/memcan/rs/memcan-core/src/llm_ollama_rs.rs implements LlmProvider trait via ollama_rs::Ollama", "expected_facts": [], "category": "file-crud-notification"}
+{"input": "Review written to /tmp/claude/0j7p5e/rust-review.md", "expected_facts": [], "category": "temp-file-ref"}
+{"input": "Changes were implemented in /home/ubuntu/git/memcan/.claude/worktrees/agent-a6d9a660/rs/memcan-core/src/pipeline.rs", "expected_facts": [], "category": "temp-file-ref"}
+{"input": "INFO item praising the factory pattern implementation.", "expected_facts": [], "category": "vague-praise"}
+{"input": "INFO item praising the compile_error guard implementation.", "expected_facts": [], "category": "vague-praise"}
+{"input": "The overall assessment for the ollama-rs migration is well-structured and low-risk.", "expected_facts": [], "category": "vague-praise"}
+{"input": "Positive observation: Feature flags are correctly implemented with a compile-time guard.", "expected_facts": [], "category": "vague-praise"}
+{"input": "Positive observation: API key handling is sound with no leakage paths found.", "expected_facts": [], "category": "vague-praise"}
+{"input": "Positive observation: Constant-time auth comparison is preserved in the server.", "expected_facts": [], "category": "vague-praise"}
+{"input": "Positive observation: Error messages do not leak credentials.", "expected_facts": [], "category": "vague-praise"}
+{"input": "Finding SEC-001 is located at /home/ubuntu/git/memcan/rs/memcan-core/src/llm_ollama_rs.rs:40.", "expected_facts": [], "category": "finding-without-substance"}
+{"input": "Status 'failed' on operation error at serve.rs line 370", "expected_facts": [], "category": "code-description"}
+{"input": "add_memory tool handler queueing phase: generate unique operation ID with Uuid::new_v4().to_string() at serve.rs line 295\n\nInitial QueueEntry inserted with status=queued, error=None, completed_at=None (lines 304-314)", "expected_facts": [], "category": "code-description"}
+{"input": "chat() implementation builds ChatMessage vec with system(), user(), assistant() constructors from LlmMessage roles", "expected_facts": [], "category": "code-description"}
+{"input": "OllamaRsLlmProvider chat() response maps to message.message Some with content field or None for empty; handles empty message returning MemcanError::LlmChat with message about empty response from LLM", "expected_facts": [], "category": "code-description"}
+{"input": "Both llm.rs and llm_ollama_rs.rs gate behind genai-llm and ollama-rs-llm features respectively in lib.rs", "expected_facts": [], "category": "code-description"}
+{"input": "/home/ubuntu/git/memcan/rs/memcan-core/src/init.rs added create_llm_provider(settings) -> (Arc<dyn LlmProvider>, String) with cfg-based dispatch, factory function in init.rs gates ollama-rs branch vs genai-llm branch with compile_error if neither feature enabled", "expected_facts": [], "category": "code-description"}
+{"input": "strip_ollama_prefix function and 4 unit tests moved to /home/ubuntu/git/memcan/rs/memcan-core/src/ollama.rs; llm.rs replaced with pub use crate::ollama::strip_ollama_prefix re-export for backward compatibility", "expected_facts": [], "category": "code-description"}
+{"input": "Core dependencies include serde ^1 and serde_json ^1 for serialization", "expected_facts": [], "category": "dependency-trivia"}
+{"input": "ollama-rs uses Tokio async runtime ^1.x", "expected_facts": [], "category": "dependency-trivia"}
+{"input": "ullama-rs core dependency includes async-stream for async iteration", "expected_facts": [], "category": "dependency-trivia"}
+{"input": "Default connection URL: http://localhost:11434", "expected_facts": [], "category": "config-default"}
+{"input": "System messages supported via ChatMessage with role \"system\" in history vector", "expected_facts": [], "category": "api-description"}
+{"input": "Model names are plain string format, e.g., llama2:latest or qwen3.5:4b", "expected_facts": [], "category": "api-description"}
+{"input": "ollama-rs is multi-LLM client pepperoni21/ollama-rs", "expected_facts": [], "category": "library-description"}
+{"input": "Source reference: ollama-rs on crates.io at https://crates.io/crates/ollama-rs, Source reference: ollama-rs 0.3.4 docs available at https://docs.rs/crate/ollama-rs/0.3.4", "expected_facts": [], "category": "source-reference"}
+{"input": "OSV.dev crates.io ecosystem list link (https://osv.dev/list?ecosystem=crates.io&q=ollama-rs) was listed as a research source.", "expected_facts": [], "category": "source-reference"}
+{"input": "RustSec Advisory Database (https://rustsec.org/) was listed as a research source.", "expected_facts": [], "category": "source-reference"}
+{"input": "Test category 'Basic Chat': covers simple user message, system+user, multi-turn, ollama:: prefix in model name (4 tests)", "expected_facts": [], "category": "test-description"}
+{"input": "Test category 'Think Control': validates think:false no tags, think:false+json clean output, think:none default (3 tests)", "expected_facts": [], "category": "test-description"}
+{"input": "Test category 'Pipeline Pattern': handles fact extraction from multi-fact input, empty input greeting (2 tests)", "expected_facts": [], "category": "test-description"}
+{"input": "Test category 'Context Window': verifies positive value, reasonable range (2 tests)", "expected_facts": [], "category": "test-description"}
+{"input": "Attribute #[serial] applied to every test to prevent parallel Ollama requests", "expected_facts": [], "category": "test-description"}
+{"input": "Attribute #[ignore] applied to every test so regular cargo test remains unaffected", "expected_facts": [], "category": "test-description"}
+{"input": "Shared helper function 'provider_from_env()' avoids repeating Settings::load in every test", "expected_facts": [], "category": "test-description"}
+{"input": "Table name: contact_private_info", "expected_facts": [], "category": "bare-schema-fact"}
+{"input": "Local caching table name: dashpay_profiles", "expected_facts": [], "category": "bare-schema-fact"}
+{"input": "DashPay profile columns: display_name, bio, avatar_url, avatar_bytes, public_message", "expected_facts": [], "category": "bare-schema-fact"}
+{"input": "Public profile data sent fields: display_name, bio, avatar_url", "expected_facts": [], "category": "bare-schema-fact"}
+{"input": "Cleanup action: Deletes contact private info when clearing network data", "expected_facts": [], "category": "bare-schema-fact"}
+{"input": "self.init_contacts_tables(tx) call added after self.add_core_wallet_name_column(tx) in Migration 28", "expected_facts": [], "category": "code-description"}
+{"input": "self.init_contacts_tables ensures users upgrading from older databases get the contact_private_info table created", "expected_facts": [], "category": "code-description"}
+{"input": "test_migration_28_creates_contact_private_info_table verifies the version is updated to 28", "expected_facts": [], "category": "test-description"}
+{"input": "New test test_migration_28_creates_contact_private_info_table added at line ~996", "expected_facts": [], "category": "test-description"}
+{"input": "The CREATE TABLE statement used is idempotent (CREATE TABLE IF NOT EXISTS)", "expected_facts": [], "category": "code-description"}
+{"input": "Constants CONTEXT_BUDGET_RATIO (0.40), DEFAULT_CONTEXT_WINDOW (4096), and CHARS_PER_TOKEN (4) were added after line 39 in the codebase.\n\nThese new constants represent LLM context window configuration values that appear to be stored at the top of a config or settings file, likely memcan-core/src/config.rs or a related settings module.\n\nRationale: These are novel facts about the codebase state not captured by existing memories (which focus on architectural recommendations about crate responsibility splits, queueing implementation in serve.rs, and pipeline changes). The memory store does not currently contain information about these specific constant definitions.", "expected_facts": [], "category": "code-description"}
