@@ -6,15 +6,15 @@
 
 Stack: Rust MCP server (rmcp), LanceDB (embedded vectors), genai+Ollama (LLM), fastembed (embeddings).
 
-Architecture: Long-lived HTTP MCP server (`memcan-server`) with thin CLI client (`memcan`). Server handles all heavy operations (embedding, LLM, storage). CLI is a lightweight HTTP client with no fastembed/LanceDB deps.
+Architecture: Three-crate workspace — reusable library (`memcan-core`), MCP server binary (`memcan-server`), thin CLI client (`memcan`).
 
 ## Structure
 
 ```
 rs/                              # All Rust source code
-  memcan-core/                  # Shared library (traits, LanceDB, genai, fastembed, pipeline, config)
-  memcan-server/                # Fat server binary (MCP HTTP/stdio server + admin subcommands)
-  memcan/                       # Thin CLI client (binary: memcan)
+  memcan-core/                  # Reusable library
+  memcan-server/                # MCP server binary + admin CLI wrappers
+  memcan/                       # Thin CLI client (HTTP only, no core dep)
 Cargo.toml                       # Workspace root
 Dockerfile                       # Multi-stage build for memcan-server
 .claude-plugin/                  # Claude Code plugin manifest
@@ -23,6 +23,44 @@ skills/                          # Plugin skills
 .github/workflows/               # CI + Release workflows
 docker-compose.yml               # Traefik + memcan + optional Ollama
 ```
+
+## Crate Responsibilities
+
+### memcan-core (library)
+
+Reusable library. All domain logic lives here. Must not depend on transport, CLI, or MCP.
+
+| Module | Responsibility |
+|---|---|
+| `traits` | `VectorStore`, `EmbeddingProvider`, `LlmProvider` abstractions |
+| `lancedb_store` | LanceDB implementation of `VectorStore` |
+| `embed` | fastembed implementation of `EmbeddingProvider` |
+| `llm` | genai implementation of `LlmProvider` |
+| `ollama` | Ollama model resolution helpers |
+| `pipeline` | Memory add pipeline (LLM fact extraction, dedup, store) |
+| `query` | User ID resolution, SQL sanitization, result formatting |
+| `indexing::code` | Language-specific symbol extraction, incremental code indexing |
+| `indexing::standards` | Markdown chunking, LLM metadata extraction |
+| `indexing::batch` | Shared batch embedding + upsert helper |
+| `config` | `Settings` loading from env/files |
+| `init` | `MemcanContext` bootstrap (wires all components) |
+| `prompts` | LLM prompt templates |
+| `error` | Error types and `Result` aliases |
+
+### memcan-server (binary)
+
+Transport + concurrency glue. Thin wrappers around core. Must not contain domain logic.
+
+| Component | Responsibility |
+|---|---|
+| MCP service (`serve.rs`) | Tool handlers (delegate to core), async queue (LRU), LLM semaphore |
+| HTTP transport | axum server, Bearer token auth, health endpoint, graceful shutdown |
+| stdio transport | MCP over stdin/stdout for backward compat |
+| Admin CLI wrappers | Thin entry points for `index-code`, `index-standards`, `migrate`, `import-triaged`, `test-classification` — parse args, call core, report results |
+
+### memcan (thin CLI)
+
+HTTP client only. No `memcan-core` dependency. Communicates exclusively through MCP over HTTP.
 
 ## Server Subcommands
 
