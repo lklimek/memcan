@@ -15,6 +15,7 @@
 pub mod config;
 pub mod embed;
 pub mod error;
+pub mod indexing;
 pub mod init;
 pub mod lancedb_store;
 #[cfg(feature = "genai-llm")]

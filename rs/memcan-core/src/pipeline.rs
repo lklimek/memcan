@@ -46,13 +46,91 @@ const MAX_FACT_LENGTH: usize = 2000;
 const MAX_FACTS_PER_EXTRACTION: usize = 50;
 
 /// Fraction of context window available for prompt content (system + user).
-const CONTEXT_BUDGET_RATIO: f32 = 0.40;
+pub const CONTEXT_BUDGET_RATIO: f32 = 0.40;
 
 /// Fallback context window when model doesn't report one.
-const DEFAULT_CONTEXT_WINDOW: usize = 4096;
+pub const DEFAULT_CONTEXT_WINDOW: usize = 4096;
 
 /// Approximate characters per token for budget estimation.
-const CHARS_PER_TOKEN: usize = 4;
+pub const CHARS_PER_TOKEN: usize = 4;
+
+/// Query the LLM context window and compute the available budget in tokens.
+///
+/// Multiplies the context window by [`CONTEXT_BUDGET_RATIO`] to leave room for
+/// the model's output. Falls back to [`DEFAULT_CONTEXT_WINDOW`] when the
+/// provider cannot report the window size.
+pub async fn resolve_context_budget(llm: &dyn LlmProvider, llm_model: &str) -> usize {
+    let ctx = llm
+        .context_window(llm_model)
+        .await
+        .unwrap_or(DEFAULT_CONTEXT_WINDOW);
+    let budget = (ctx as f32 * CONTEXT_BUDGET_RATIO) as usize;
+    info!(
+        context_window = ctx,
+        budget_tokens = budget,
+        "resolved LLM context budget"
+    );
+    budget
+}
+
+/// Split `content` into chunks that fit the LLM context budget.
+///
+/// Given a `system_prompt` and a token `budget_tokens`, this function estimates
+/// how many characters of user content can accompany the system prompt per call,
+/// then splits the content on paragraph/line boundaries.
+pub fn chunk_content<'a>(
+    content: &'a str,
+    system_prompt: &str,
+    budget_tokens: usize,
+) -> Vec<&'a str> {
+    let system_tokens = system_prompt.len() / CHARS_PER_TOKEN;
+    let user_budget_tokens = budget_tokens.saturating_sub(system_tokens);
+    let max_user_chars = user_budget_tokens * CHARS_PER_TOKEN;
+
+    if max_user_chars == 0 {
+        warn!("system prompt alone exceeds context budget");
+        return vec![content];
+    }
+
+    if content.len() <= max_user_chars {
+        return vec![content];
+    }
+
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < content.len() {
+        let end = (start + max_user_chars).min(content.len());
+        let end = content.floor_char_boundary(end);
+
+        let chunk = &content[start..end];
+        let split_at = if end < content.len() {
+            chunk
+                .rfind("\n\n")
+                .or_else(|| chunk.rfind('\n'))
+                .map(|pos| start + pos + 1)
+                .unwrap_or(end)
+        } else {
+            end
+        };
+
+        let actual_chunk = content[start..split_at].trim();
+        if !actual_chunk.is_empty() {
+            chunks.push(actual_chunk);
+        }
+        start = split_at;
+    }
+
+    if chunks.len() > 1 {
+        info!(
+            content_len = content.len(),
+            chunks = chunks.len(),
+            max_chars_per_chunk = max_user_chars,
+            "content exceeds context budget, splitting into chunks"
+        );
+    }
+
+    chunks
+}
 
 // INTENTIONAL(SEC-009): MD5 used for content deduplication only, not security.
 // Collision risk negligible for this use case.
@@ -423,74 +501,9 @@ impl Pipeline {
         *self
             .context_budget
             .get_or_init(|| async {
-                let ctx = self
-                    .llm
-                    .context_window(&self.llm_model)
-                    .await
-                    .unwrap_or(DEFAULT_CONTEXT_WINDOW);
-                let budget = (ctx as f32 * CONTEXT_BUDGET_RATIO) as usize;
-                info!(
-                    context_window = ctx,
-                    budget_tokens = budget,
-                    "resolved LLM context budget"
-                );
-                budget
+                resolve_context_budget(self.llm.as_ref(), &self.llm_model).await
             })
             .await
-    }
-
-    fn chunk_content<'a>(
-        content: &'a str,
-        system_prompt: &str,
-        budget_tokens: usize,
-    ) -> Vec<&'a str> {
-        let system_tokens = system_prompt.len() / CHARS_PER_TOKEN;
-        let user_budget_tokens = budget_tokens.saturating_sub(system_tokens);
-        let max_user_chars = user_budget_tokens * CHARS_PER_TOKEN;
-
-        if max_user_chars == 0 {
-            warn!("system prompt alone exceeds context budget");
-            return vec![content];
-        }
-
-        if content.len() <= max_user_chars {
-            return vec![content];
-        }
-
-        let mut chunks = Vec::new();
-        let mut start = 0;
-        while start < content.len() {
-            let end = (start + max_user_chars).min(content.len());
-            let end = content.floor_char_boundary(end);
-
-            let chunk = &content[start..end];
-            let split_at = if end < content.len() {
-                chunk
-                    .rfind("\n\n")
-                    .or_else(|| chunk.rfind('\n'))
-                    .map(|pos| start + pos + 1)
-                    .unwrap_or(end)
-            } else {
-                end
-            };
-
-            let actual_chunk = content[start..split_at].trim();
-            if !actual_chunk.is_empty() {
-                chunks.push(actual_chunk);
-            }
-            start = split_at;
-        }
-
-        if chunks.len() > 1 {
-            info!(
-                content_len = content.len(),
-                chunks = chunks.len(),
-                max_chars_per_chunk = max_user_chars,
-                "content exceeds context budget, splitting into chunks"
-            );
-        }
-
-        chunks
     }
 
     /// Extract individual facts from content using the LLM.
@@ -503,7 +516,7 @@ impl Pipeline {
         let rendered = render_prompt(prompt, &[("today", &today)]);
 
         let budget = self.resolve_context_budget().await;
-        let chunks = Self::chunk_content(content, &rendered, budget);
+        let chunks = chunk_content(content, &rendered, budget);
 
         let mut all_facts = Vec::new();
         for (i, &chunk) in chunks.iter().enumerate() {
@@ -929,7 +942,7 @@ mod tests {
         let content = "short content";
         let system = "system prompt";
         let budget = 1000;
-        let chunks = Pipeline::chunk_content(content, system, budget);
+        let chunks = chunk_content(content, system, budget);
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0], "short content");
     }
@@ -939,7 +952,7 @@ mod tests {
         let content = "a".repeat(5000);
         let system = "sys";
         let budget = 500; // 500 tokens = ~2000 chars, minus ~1 token for sys = ~1996 chars
-        let chunks = Pipeline::chunk_content(&content, system, budget);
+        let chunks = chunk_content(&content, system, budget);
         assert!(
             chunks.len() > 1,
             "expected multiple chunks, got {}",
@@ -957,7 +970,7 @@ mod tests {
         let content = format!("{}\n\n{}", para1, para2);
         let system = "";
         let budget = 40; // 40 tokens = 160 chars, fits para1 (100) but not both (202)
-        let chunks = Pipeline::chunk_content(&content, system, budget);
+        let chunks = chunk_content(&content, system, budget);
         assert_eq!(chunks.len(), 2, "expected split at paragraph boundary");
         assert!(chunks[0].contains("aaa"));
         assert!(chunks[1].contains("bbb"));
@@ -968,7 +981,7 @@ mod tests {
         let content = "some content";
         let system = "a".repeat(5000);
         let budget = 100; // 100 tokens = 400 chars, system is 5000 chars = 1250 tokens
-        let chunks = Pipeline::chunk_content(content, &system, budget);
+        let chunks = chunk_content(content, &system, budget);
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0], "some content");
     }
@@ -978,7 +991,7 @@ mod tests {
         let content = "🎉".repeat(500); // 2000 bytes
         let system = "";
         let budget = 200; // 200 tokens = 800 chars max
-        let chunks = Pipeline::chunk_content(&content, system, budget);
+        let chunks = chunk_content(&content, system, budget);
         assert!(!chunks.is_empty());
         for &chunk in &chunks {
             assert!(!chunk.is_empty());

@@ -377,10 +377,7 @@ pub async fn run(args: &IndexCodeArgs) -> MemcanResult<()> {
         ctx.store
             .ensure_table(table, ctx.settings.embed_dims)
             .await?;
-        let filter = format!(
-            "project = '{}'",
-            args.project.replace('\'', "''")
-        );
+        let filter = format!("project = '{}'", args.project.replace('\'', "''"));
         let deleted = ctx.store.delete_by_filter(table, &filter).await?;
         info!(deleted, project = %args.project, "Dropped indexed data");
         return Ok(());
@@ -411,10 +408,7 @@ pub async fn run(args: &IndexCodeArgs) -> MemcanResult<()> {
     let git_hash = git_short_hash(&project_dir);
     let now = Utc::now().to_rfc3339();
 
-    let project_filter = format!(
-        "project = '{}'",
-        args.project.replace('\'', "''")
-    );
+    let project_filter = format!("project = '{}'", args.project.replace('\'', "''"));
     let existing_records = ctx
         .store
         .scroll(table, Some(&project_filter), 100_000, 0)
