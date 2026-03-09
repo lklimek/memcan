@@ -4,7 +4,7 @@ target/
 .cache/
 .claude/
 .claude-plugin/
-.fastembed_cache/
+**/.fastembed_cache/
 .pytest_cache/
 .ruff_cache/
 bin/

@@ -2,7 +2,7 @@
 name: setup-memcan
 description: Configure MemCan environment — .env file, Claude Code settings, and user rule. Run once per machine after plugin install.
 user-invocable: true
-allowed-tools: Read, Write, Edit, Bash(bash *), Bash(mkdir *), Bash(curl *), Bash(which *), Bash(cp *), Glob, Grep, AskUserQuestion, mcp__plugin_memcan_brain__search_memories
+allowed-tools: Read, Write, Edit, Bash(bash *), Bash(mkdir *), Bash(curl *), Bash(which *), Bash(cp *), Bash(cat *), Bash(python3 *), Glob, Grep, AskUserQuestion, mcp__plugin_memcan_brain__search_memories
 ---
 
 # Setup MemCan
@@ -114,13 +114,72 @@ Use the MemCan MCP server to store and recall knowledge across sessions.
 - Search before adding to avoid duplicates
 ```
 
-### 4. Verify
+### 4. Configure Hooks
+
+Use `AskUserQuestion` to ask which hooks to install. Default: **None**.
+
+Options:
+- **lessons-learned (recommended)** — `SubagentStop` hook. Runs `memcan extract` after each agent task completes, automatically capturing learnings from the conversation. Best approach for persistent memory — fully automatic, zero effort.
+- **pre-compact** — `PreCompact` hook. Runs `memcan extract` before context compaction to save knowledge that would otherwise be lost.
+- **Both** — install both hooks above.
+- **None** (default) — skip hook installation.
+
+If the user selects any hooks, merge them into the project's `.claude/settings.json` under the `hooks` key. Read the existing file first (or start with `{}`). Each selected hook adds an entry:
+
+SubagentStop (lessons-learned):
+```json
+{
+  "hooks": {
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "memcan extract",
+            "async": true,
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+PreCompact:
+```json
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "memcan extract",
+            "async": true,
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Merge into existing hooks — do not overwrite other hook entries. Use `python3` or `jq` for JSON manipulation. Create `.claude/` directory if needed.
+
+If the user selects "None", skip this step entirely.
+
+### 5. Verify
 
 Print a summary:
 - CLI installed and on PATH (`memcan`)
 - `.env` exists at `~/.config/memcan/.env` with `MEMCAN_URL` and `MEMCAN_API_KEY` configured
 - Claude Code settings at `~/.claude/settings.json` has `MEMCAN_API_KEY` and `MEMCAN_URL` in `env` block
 - User rule exists at `~/.claude/rules/memcan.md`
+- Hooks: list which hooks were installed (or "none") and their target `.claude/settings.json` path
 - MCP server is connected (test: call `search_memories(query="test", limit=1)` — success = connected, failure or tool unavailable = not connected)
 
 Security warnings (show only when applicable):

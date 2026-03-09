@@ -85,12 +85,12 @@ wait_for_ops() {
     local failed=0
     local total=${#ops[@]}
 
-    declare -A pending
+    declare -A pending=()
     for op in "${ops[@]}"; do
         [ -n "$op" ] && pending[$op]=1
     done
 
-    while [ ${#pending[@]} -gt 0 ]; do
+    while [ "${#pending[@]}" -gt 0 ]; do
         local now
         now=$(date +%s)
         local elapsed=$(( now - start_time ))
@@ -105,7 +105,15 @@ wait_for_ops() {
             local status_json
             status_json=$("$MEMCAN_CLI" status "$op" 2>/dev/null) || continue
             local step
-            step=$(echo "$status_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('step',d.get('status','')))" 2>/dev/null) || continue
+            step=$(echo "$status_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('step',d.get('status','')))" 2>/dev/null) || true
+
+            # Treat empty/error response as "expired from LRU" → assume completed
+            if [ -z "$step" ] || echo "$status_json" | grep -q '"error"'; then
+                ((completed++)) || true
+                unset "pending[$op]"
+                log "  EXPIRED: $op (evicted from server LRU, assuming completed)"
+                continue
+            fi
 
             case "$step" in
                 completed|completed_degraded)
