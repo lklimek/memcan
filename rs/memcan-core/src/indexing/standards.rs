@@ -19,7 +19,7 @@ use crate::traits::{
 };
 
 /// Accepted standard types for validation.
-pub const VALID_TYPES: &[&str] = &["security", "coding", "cve", "guideline"];
+pub const VALID_TYPES: &[&str] = &["security", "coding", "cve", "guideline", "accessibility"];
 
 /// Compiled regex for safe identifier validation (cached via `OnceLock`).
 fn safe_id_re() -> &'static Regex {
@@ -638,6 +638,7 @@ mod tests {
         assert!(VALID_TYPES.contains(&"coding"));
         assert!(VALID_TYPES.contains(&"cve"));
         assert!(VALID_TYPES.contains(&"guideline"));
+        assert!(VALID_TYPES.contains(&"accessibility"));
         assert!(!VALID_TYPES.contains(&"random"));
     }
 }
