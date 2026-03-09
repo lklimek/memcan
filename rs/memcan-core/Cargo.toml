@@ -5,11 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-[features]
-vendored-openssl = ["dep:openssl"]
-
 [dependencies]
-openssl = { version = "0.10", features = ["vendored"], optional = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
