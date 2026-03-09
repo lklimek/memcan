@@ -73,11 +73,22 @@ check_pandoc() {
   Other:         https://pandoc.org/installing.html"
 }
 
+check_python3() {
+    command -v python3 >/dev/null 2>&1 || fail "python3 not found — required for JSON parsing"
+}
+
 submit_file() {
     local file="$1"; shift
     local result
     result=$("$MEMCAN_CLI" index-standards "$file" "$@" 2>/dev/null) || true
-    echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('operation_id',''))" 2>/dev/null || echo ""
+    local op_id
+    op_id=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('operation_id',''))" 2>/dev/null) || op_id=""
+    if [ -z "$op_id" ]; then
+        log "WARNING: submit failed for $(basename "$file")"
+        echo ""
+        return 1
+    fi
+    echo "$op_id"
 }
 
 wait_for_ops() {
@@ -90,8 +101,9 @@ wait_for_ops() {
     local total=${#ops[@]}
 
     declare -A pending=()
+    declare -A retries=()
     for op in "${ops[@]}"; do
-        [ -n "$op" ] && pending[$op]=1
+        [ -n "$op" ] && pending[$op]=1 && retries[$op]=0
     done
 
     while [ "${#pending[@]}" -gt 0 ]; do
@@ -107,18 +119,43 @@ wait_for_ops() {
 
         for op in "${!pending[@]}"; do
             local status_json
-            status_json=$("$MEMCAN_CLI" status "$op" 2>/dev/null) || continue
-            local step
-            step=$(echo "$status_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('step',d.get('status','')))" 2>/dev/null) || true
+            status_json=$("$MEMCAN_CLI" status "$op" 2>/dev/null) || status_json=""
 
-            # Treat empty/error response as "expired from LRU" → assume completed
-            if [ -z "$step" ] || echo "$status_json" | grep -q '"error"'; then
-                ((completed++)) || true
-                unset "pending[$op]"
-                log "  EXPIRED: $op (evicted from server LRU, assuming completed)"
+            # Empty or non-JSON response: increment retry counter
+            if [ -z "$status_json" ] || ! echo "$status_json" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
+                retries[$op]=$(( ${retries[$op]} + 1 ))
+                if [ "${retries[$op]}" -ge 3 ]; then
+                    ((failed++)) || true
+                    unset "pending[$op]"
+                    log "  FAILED: $op (3 consecutive status failures)"
+                fi
                 continue
             fi
 
+            # Check for error responses
+            if echo "$status_json" | grep -q '"error"'; then
+                if echo "$status_json" | grep -qi '"not found"\|"expired"'; then
+                    ((completed++)) || true
+                    unset "pending[$op]"
+                    log "  EXPIRED: $op (evicted from server LRU, assuming completed)"
+                else
+                    ((failed++)) || true
+                    unset "pending[$op]"
+                    log "  FAILED: $op (server error)"
+                fi
+                continue
+            fi
+
+            local step
+            step=$(echo "$status_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('step',d.get('status','')))" 2>/dev/null) || true
+
+            # Valid JSON but no step yet: still processing
+            if [ -z "$step" ]; then
+                retries[$op]=0
+                continue
+            fi
+
+            retries[$op]=0
             case "$step" in
                 completed|completed_degraded)
                     ((completed++)) || true
@@ -160,8 +197,12 @@ process_batch() {
             local file="${files[$j]}"
             log "  Submitting: $(basename "$file")"
             local op_id
-            op_id=$(submit_file "$file" "${INDEXER_ARGS[@]}")
-            op_ids+=("$op_id")
+            op_id=$(submit_file "$file" "${INDEXER_ARGS[@]}") || true
+            if [ -n "$op_id" ]; then
+                op_ids+=("$op_id")
+            else
+                TOTAL_FAILED=$((TOTAL_FAILED + 1))
+            fi
             ((j++)) || true
         done
 
@@ -330,6 +371,7 @@ done
 
 check_cli
 check_pandoc
+check_python3
 check_server
 
 if $REINDEX; then

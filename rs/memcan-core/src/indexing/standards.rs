@@ -62,8 +62,9 @@ pub fn extract_document_title(text: &str) -> String {
 ///
 /// Returns `(document_title, chunks)`. The document title is extracted from
 /// the first `# ` heading. If the preamble (text before the first `##`)
-/// contains only the title (< 100 chars, no `##` headings), it is merged
-/// into the first real chunk instead of creating a separate entry.
+/// contains only H1 headings and whitespace, it is dropped (the title is
+/// provided separately via [`build_chunk_text`]). If the preamble contains
+/// any other content, it is merged into the first chunk's body.
 /// Parent-child relationships are tracked so `###` sections know
 /// which `##` they belong to.
 pub fn chunk_markdown(text: &str) -> (String, Vec<MdChunk>) {
@@ -86,17 +87,19 @@ pub fn chunk_markdown(text: &str) -> (String, Vec<MdChunk>) {
 
     let mut chunks = Vec::new();
     let preamble = text[..matches[0].start()].trim();
-    let preamble_is_title_only =
-        !preamble.is_empty() && preamble.len() < 100 && !preamble.contains("## ");
+    let preamble_is_title_only = !preamble.is_empty()
+        && preamble
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .all(|l| l.starts_with("# "));
 
-    if !preamble.is_empty() && !preamble_is_title_only {
-        chunks.push(MdChunk {
-            heading: String::new(),
-            parent_heading: String::new(),
-            level: 0,
-            body: preamble.to_string(),
-        });
-    }
+    // Non-empty preamble that isn't just H1 headings gets merged into the
+    // first chunk body so the content is not lost.
+    let mut preamble_carry = if !preamble.is_empty() && !preamble_is_title_only {
+        Some(preamble)
+    } else {
+        None
+    };
 
     let captures: Vec<_> = heading_re.captures_iter(text).collect();
     let match_positions: Vec<_> = heading_re.find_iter(text).collect();
@@ -111,7 +114,18 @@ pub fn chunk_markdown(text: &str) -> (String, Vec<MdChunk>) {
         } else {
             text.len()
         };
-        let body = text[start..end].trim().to_string();
+        let mut body = text[start..end].trim().to_string();
+
+        // Merge preamble content into the first chunk
+        if i == 0
+            && let Some(pre) = preamble_carry.take()
+        {
+            body = if body.is_empty() {
+                pre.to_string()
+            } else {
+                format!("{pre}\n\n{body}")
+            };
+        }
 
         let parent = if level == 2 {
             current_h2 = heading.clone();
@@ -485,10 +499,16 @@ mod tests {
         let long_preamble = "a".repeat(150);
         let text = format!("{}\n\n## Heading\nBody", long_preamble);
         let (_title, chunks) = chunk_markdown(&text);
-        assert_eq!(chunks.len(), 2);
-        assert!(chunks[0].heading.is_empty());
-        assert_eq!(chunks[0].body, long_preamble);
-        assert_eq!(chunks[1].heading, "Heading");
+        assert_eq!(chunks.len(), 1, "preamble should merge into first chunk");
+        assert_eq!(chunks[0].heading, "Heading");
+        assert!(
+            chunks[0].body.starts_with(&long_preamble),
+            "first chunk body should start with preamble content"
+        );
+        assert!(
+            chunks[0].body.contains("Body"),
+            "first chunk body should still contain original body"
+        );
     }
 
     #[test]
@@ -503,6 +523,23 @@ mod tests {
         );
         assert_eq!(chunks[0].heading, "Introduction");
         assert_eq!(chunks[1].heading, "Defense");
+    }
+
+    #[test]
+    fn test_chunk_markdown_preamble_mixed_content() {
+        let text = "# Title\n\nSome intro paragraph.\n\n## Section\nBody";
+        let (title, chunks) = chunk_markdown(text);
+        assert_eq!(title, "Title");
+        assert_eq!(
+            chunks.len(),
+            1,
+            "mixed preamble should merge into first chunk"
+        );
+        assert_eq!(chunks[0].heading, "Section");
+        assert!(
+            chunks[0].body.contains("Some intro paragraph."),
+            "merged preamble content should be in chunk body"
+        );
     }
 
     #[test]
