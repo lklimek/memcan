@@ -60,6 +60,21 @@ This document provides a comprehensive set of security verification requirements
 Output:
 {"section_id": "", "section_title": "Introduction", "chapter": "", "ref_ids": [], "code_patterns": ""}
 
+Input (document: "SQL Injection Prevention Cheat Sheet"):
+## Primary Defenses
+- **Option 1: Use of Prepared Statements (with Parameterized Queries)**
+- **Option 2: Use of Stored Procedures**
+- **Option 3: Allow-list Input Validation**
+
+Output:
+{"section_id": "", "section_title": "Primary Defenses", "chapter": "SQL Injection Prevention", "ref_ids": [], "code_patterns": ""}
+
+## Document Context
+
+This chunk is from: $document_title
+
+When the chunk has no explicit chapter or section hierarchy, use the document title as the chapter value. Strip common suffixes like " Cheat Sheet" or " Guide" from the chapter value to keep it clean.
+
 ## Rules
 
 - Return ONLY the JSON object, no markdown fences, no explanation.
@@ -67,7 +82,7 @@ Output:
 - Capture ALL cross-referenced IDs: CWE, CVE, NIST, RFC, OWASP, rule codes, requirement IDs.
 - If a heading contains both an ID and title (e.g. "V2.1.1 Password Security"), split them correctly.
 - For code_patterns, preserve the code but collapse it to a single line with \n separators.
-- When in doubt about chapter, use the most recent higher-level heading context.
+- When in doubt about chapter, use the document title (from Document Context above) as the chapter.
 - Do not invent or hallucinate IDs — only extract what is present in the text.
 
 ## Input
