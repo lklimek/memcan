@@ -1146,6 +1146,7 @@ async fn health_handler() -> impl IntoResponse {
 
 pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
     let ctx = MemcanContext::init().await?;
+    ctx.init_llm().await?;
     setup_logging(&ctx.settings.log_file);
 
     info!("Loading config: lancedb_path={}", ctx.settings.lancedb_path);

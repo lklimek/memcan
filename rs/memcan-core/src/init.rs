@@ -23,8 +23,6 @@ impl MemcanContext {
     pub async fn init() -> Result<Self> {
         let settings = Settings::load()?;
         settings.ensure_log_dir()?;
-        let (llm_provider, _model) = create_llm_provider(&settings);
-        llm_provider.init().await?;
         let embedder = FastEmbedProvider::from_settings(&settings)?;
         let store = LanceDbStore::open(&settings.lancedb_path).await?;
         Ok(Self {
@@ -32,6 +30,13 @@ impl MemcanContext {
             embedder,
             store,
         })
+    }
+
+    /// Initialize the LLM provider, checking model availability.
+    /// Call this only in code paths that require LLM (serve, index_standards).
+    pub async fn init_llm(&self) -> Result<()> {
+        let (provider, _model) = create_llm_provider(&self.settings);
+        provider.init().await
     }
 
     /// Load settings and create embedder only (no store).
