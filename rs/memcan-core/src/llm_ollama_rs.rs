@@ -191,6 +191,30 @@ impl LlmProvider for OllamaRsLlmProvider {
         Ok(text)
     }
 
+    async fn init(&self) -> Result<()> {
+        let model_name = &self.default_model;
+
+        match self.client.show_model_info(model_name.to_string()).await {
+            Ok(_) => {
+                tracing::info!(model = %model_name, "LLM model available");
+                return Ok(());
+            }
+            Err(_) => {
+                tracing::info!(model = %model_name, "LLM model not found locally, pulling");
+            }
+        }
+
+        self.client
+            .pull_model(model_name.to_string(), false)
+            .await
+            .map_err(|e| {
+                MemcanError::Other(format!("failed to pull Ollama model '{model_name}': {e}"))
+            })?;
+
+        tracing::info!(model = %model_name, "LLM model pulled successfully");
+        Ok(())
+    }
+
     async fn context_window(&self, model: &str) -> Option<usize> {
         let model_name = strip_ollama_prefix(model).to_string();
         tracing::trace!(model = %model_name, "ollama-rs: querying context window");

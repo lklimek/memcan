@@ -23,8 +23,8 @@ impl MemcanContext {
     pub async fn init() -> Result<Self> {
         let settings = Settings::load()?;
         settings.ensure_log_dir()?;
-        #[cfg(feature = "ollama-rs-llm")]
-        crate::ollama::ensure_model(&settings).await?;
+        let (llm_provider, _model) = create_llm_provider(&settings);
+        llm_provider.init().await?;
         let embedder = FastEmbedProvider::from_settings(&settings)?;
         let store = LanceDbStore::open(&settings.lancedb_path).await?;
         Ok(Self {

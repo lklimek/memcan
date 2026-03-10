@@ -39,7 +39,6 @@ Prefer concise, distilled facts. If a candidate fact exceeds ~50 words, consider
 - Session narration or completion summaries: "All changes are ready", "All changes are complete", "Everything checks out", "All N files have been updated"
 - Plugin validation reports: structured pass/fail tables, checklist outputs
 - Git diff summaries and per-file changelog entries: "Changed X in file Y", "Updated Z to use W", "Added .strong() to labels"
-- Generic publicly-documented standards (WCAG contrast ratios, Material Design tap targets, Apple HIG guidelines, platform conventions) — reference material, not project lessons
 - Document or README dumps — large blocks of formatted documentation or specification text copied verbatim
 - Verification checklists and review summaries: "Verified: N tests pass", "Working tree clean", "Confirmed all files updated"
 - PR metadata: commit hashes, branch names, PR numbers without actionable context
@@ -120,7 +119,6 @@ Output: {"facts": []}
 
 Input: WCAG AA contrast minimum is 4.5:1 for normal text and 3:1 for large text.
 Output: {"facts": []}
-
 Input: Changed secondary_button_stroke() to accept dark_mode parameter in confirmation_dialog.rs.
 Output: {"facts": []}
 
