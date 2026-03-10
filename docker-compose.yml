@@ -1,10 +1,14 @@
 # MemCan Docker Compose
 #
 # Usage:
-#   docker compose up                     — traefik + memcan (pulls lklimek/memcan:nightly)
+#   docker compose up                     — traefik + memcan only (no bundled Ollama)
 #   docker compose up --build             — traefik + memcan (builds from local Dockerfile)
-#   docker compose --profile gpu up       — traefik + memcan + ollama + open-webui
-#   Set COMPOSE_PROFILES=gpu in .env to enable Ollama by default.
+#   COMPOSE_PROFILES=ollama docker compose up  — traefik + memcan + ollama (CPU, default via .env)
+#   COMPOSE_PROFILES=ollama,webui docker compose up  — traefik + memcan + ollama + open-webui
+#
+# The setup skill writes COMPOSE_PROFILES=ollama to the server .env, enabling Ollama by default.
+# To disable the bundled Ollama, set COMPOSE_PROFILES= (empty) or remove it from the server .env.
+# To use an external Ollama instead, also set OLLAMA_HOST to point at it.
 
 services:
   traefik:
@@ -73,8 +77,16 @@ services:
 
   ollama:
     image: ollama/ollama:0.6.2
-    profiles: ["gpu"]
-    runtime: nvidia
+    profiles: [ollama]
+    # CPU mode by default. For GPU acceleration, add:
+    #   runtime: nvidia
+    #   deploy:
+    #     resources:
+    #       reservations:
+    #         devices:
+    #           - driver: nvidia
+    #             count: all
+    #             capabilities: [gpu]
     environment:
       OLLAMA_CONTEXT_LENGTH: 196608
       OLLAMA_KEEP_ALIVE: 60m
@@ -88,13 +100,6 @@ services:
     networks:
       - traefik
       - backend
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     labels:
       - "traefik.instance=ollama"
       - "traefik.enable=true"
@@ -113,7 +118,7 @@ services:
 
   open-webui:
     image: ghcr.io/open-webui/open-webui:latest
-    profiles: ["gpu"]
+    profiles: ["webui"]
     volumes:
       - open-webui:/app/backend/data
     environment:
