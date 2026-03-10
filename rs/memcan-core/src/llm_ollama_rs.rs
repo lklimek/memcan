@@ -81,7 +81,7 @@ impl OllamaRsLlmProvider {
 ///
 /// Validates that the scheme is `http` or `https`. Falls back to
 /// `http://localhost:11434` with a warning on unparseable input.
-fn parse_host_port(host: &str) -> (String, u16) {
+pub(crate) fn parse_host_port(host: &str) -> (String, u16) {
     let host = host.trim_end_matches('/');
 
     if let Ok(url) = reqwest::Url::parse(host) {

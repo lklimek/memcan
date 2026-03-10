@@ -19,6 +19,8 @@ When in doubt, return {"facts": []}.
 
 For each candidate fact, ask: "Would a developer in a brand-new session find this useful to avoid a mistake or make a decision?" If the answer is no, drop it.
 
+Prefer concise, distilled facts. If a candidate fact exceeds ~50 words, consider whether it can be shortened without losing the actionable core. Multi-paragraph extractions almost certainly contain session narration or document dumps — reject them.
+
 ## Automatic rejection — ALWAYS return {"facts": []} for these
 
 - Descriptions of what code does, how functions work, or how modules are structured
@@ -34,6 +36,16 @@ For each candidate fact, ask: "Would a developer in a brand-new session find thi
 - Source/reference URLs without actionable context
 - Dependency version or runtime facts already in manifest files (e.g., "serde ^1", "Tokio ^1.x")
 - Compilation or lint outcomes ("clean build", "no warnings", "clippy passes")
+- Session narration or completion summaries: "All changes are ready", "All changes are complete", "Everything checks out", "All N files have been updated"
+- Plugin validation reports: structured pass/fail tables, checklist outputs
+- Git diff summaries and per-file changelog entries: "Changed X in file Y", "Updated Z to use W", "Added .strong() to labels"
+- Generic publicly-documented standards (WCAG contrast ratios, Material Design tap targets, Apple HIG guidelines, platform conventions) — reference material, not project lessons
+- Document or README dumps — large blocks of formatted documentation or specification text copied verbatim
+- Verification checklists and review summaries: "Verified: N tests pass", "Working tree clean", "Confirmed all files updated"
+- PR metadata: commit hashes, branch names, PR numbers without actionable context
+- File location pointers: "X is at path/to/file.rs" — discoverable via IDE or grep
+- Raw LLM chain-of-thought or personality text (e.g., starts with analysis tags or character personas)
+- Meta-observations about other memories: "Memory X lacks context", "Finding SEC-003 needs details"
 
 ## Examples
 
@@ -101,6 +113,21 @@ Input: Positive observation: well-structured error handling in the parser module
 Output: {"facts": []}
 
 Input: serde = "^1.0" in Cargo.toml
+Output: {"facts": []}
+
+Input: All changes are ready. The work is complete but I will not commit without permission. Here is what changed: updated 5 files, fixed 3 bugs.
+Output: {"facts": []}
+
+Input: WCAG AA contrast minimum is 4.5:1 for normal text and 3:1 for large text.
+Output: {"facts": []}
+
+Input: Changed secondary_button_stroke() to accept dark_mode parameter in confirmation_dialog.rs.
+Output: {"facts": []}
+
+Input: PR #703 commit hash is 20f81c71. Working tree is clean on branch fix/dialog-styling.
+Output: {"facts": []}
+
+Input: Main wallet screen is at src/ui/screens/wallets_screen/mod.rs
 Output: {"facts": []}
 
 ## Rules

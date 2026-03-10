@@ -1,6 +1,6 @@
 //! Ollama model management utilities.
 
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::config::Settings;
 
@@ -11,88 +11,63 @@ pub fn strip_ollama_prefix(name: &str) -> &str {
     name.strip_prefix("ollama::").unwrap_or(name)
 }
 
-const NOTHINK_SUFFIX: &str = "-memcan-nothink";
-const NOTHINK_SYSTEM: &str =
-    "/no_think\nAlways respond with valid JSON only. No markdown, no commentary.";
-
-#[deprecated(since = "0.32.0", note = "ollama-rs handles think:false natively")]
-/// Ensure a nothink model variant exists on the Ollama server.
+/// Ensure the configured LLM model exists on the Ollama server, pulling it if
+/// absent. Non-Ollama providers are silently skipped.
 ///
-/// Derives `{base_model}-memcan-nothink`, checks if it exists via
-/// `POST /api/show`, and creates it via `POST /api/create` if missing.
-/// Returns the nothink model name with `ollama::` prefix restored.
-///
-/// Falls back gracefully on failure (logs warning, returns original model).
-pub async fn ensure_nothink_model(settings: &Settings) -> String {
-    let original = &settings.llm_model;
+/// Called at startup from [`crate::init::MemcanContext::init`] so that a
+/// missing model causes an immediate, loud failure instead of silent fallback
+/// to raw storage.
+#[cfg(feature = "ollama-rs-llm")]
+pub async fn ensure_model(settings: &Settings) -> crate::error::Result<()> {
+    use ollama_rs::Ollama;
 
-    if !original.to_lowercase().contains("ollama") {
-        return original.clone();
+    use crate::error::MemcanError;
+    use crate::llm_ollama_rs::parse_host_port;
+
+    if !settings.llm_model.to_lowercase().contains("ollama") {
+        return Ok(());
     }
 
-    let base_model = strip_ollama_prefix(original);
-    let nothink_name = format!("{base_model}{NOTHINK_SUFFIX}");
+    let model_name = strip_ollama_prefix(&settings.llm_model);
 
-    let host = settings
+    let raw_host = settings
         .ollama_host
         .as_deref()
         .unwrap_or("http://localhost:11434");
-    let host = host.trim_end_matches('/');
+    let (host, port) = parse_host_port(raw_host);
 
-    let client = reqwest::Client::new();
-
-    let mut show_req = client
-        .post(format!("{host}/api/show"))
-        .json(&serde_json::json!({"name": &nothink_name}));
-    if let Some(ref key) = settings.ollama_api_key {
-        show_req = show_req.header("Authorization", format!("Bearer {key}"));
-    }
-
-    match show_req.send().await {
-        Ok(resp) if resp.status().is_success() => {
-            info!(model = %nothink_name, "nothink model already exists");
-            return format!("ollama::{nothink_name}");
+    let client = if let Some(ref api_key) = settings.ollama_api_key {
+        match reqwest::header::HeaderValue::from_str(&format!("Bearer {api_key}")) {
+            Ok(val) => {
+                let mut headers = reqwest::header::HeaderMap::new();
+                headers.insert(reqwest::header::AUTHORIZATION, val);
+                Ollama::new_with_request_headers(host, port, headers)
+            }
+            Err(_) => Ollama::new(host, port),
         }
+    } else {
+        Ollama::new(host, port)
+    };
+
+    match client.show_model_info(model_name.to_string()).await {
         Ok(_) => {
-            info!(model = %nothink_name, "nothink model not found, creating");
+            info!(model = %model_name, "LLM model available");
+            return Ok(());
         }
-        Err(e) => {
-            warn!(error = %e, "failed to check nothink model, using original");
-            return original.clone();
+        Err(_) => {
+            info!(model = %model_name, "LLM model not found locally, pulling");
         }
     }
 
-    let mut create_req = client
-        .post(format!("{host}/api/create"))
-        .json(&serde_json::json!({
-            "model": &nothink_name,
-            "from": base_model,
-            "system": NOTHINK_SYSTEM,
-        }));
-    if let Some(ref key) = settings.ollama_api_key {
-        create_req = create_req.header("Authorization", format!("Bearer {key}"));
-    }
+    client
+        .pull_model(model_name.to_string(), false)
+        .await
+        .map_err(|e| {
+            MemcanError::Other(format!("failed to pull Ollama model '{model_name}': {e}"))
+        })?;
 
-    match create_req.send().await {
-        Ok(resp) if resp.status().is_success() => {
-            info!(model = %nothink_name, "nothink model created");
-            format!("ollama::{nothink_name}")
-        }
-        Ok(resp) => {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            warn!(
-                status = %status,
-                body = %body,
-                "failed to create nothink model, using original"
-            );
-            original.clone()
-        }
-        Err(e) => {
-            warn!(error = %e, "failed to create nothink model, using original");
-            original.clone()
-        }
-    }
+    info!(model = %model_name, "LLM model pulled successfully");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -119,26 +94,14 @@ mod tests {
         assert_eq!(strip_ollama_prefix("ollama:model"), "ollama:model");
     }
 
-    #[test]
-    fn test_nothink_suffix() {
-        assert_eq!(NOTHINK_SUFFIX, "-memcan-nothink");
-    }
-
-    #[test]
-    fn test_nothink_name_derivation() {
-        let base = strip_ollama_prefix("ollama::qwen3.5:9b");
-        let nothink = format!("{base}{NOTHINK_SUFFIX}");
-        assert_eq!(nothink, "qwen3.5:9b-memcan-nothink");
-    }
-
+    #[cfg(feature = "ollama-rs-llm")]
     #[tokio::test]
-    #[allow(deprecated)]
-    async fn test_non_ollama_model_passthrough() {
+    async fn test_ensure_model_non_ollama_skips() {
         let settings = Settings {
             llm_model: "gpt-4o".into(),
             ..Settings::default()
         };
-        let result = ensure_nothink_model(&settings).await;
-        assert_eq!(result, "gpt-4o");
+        let result = ensure_model(&settings).await;
+        assert!(result.is_ok());
     }
 }
