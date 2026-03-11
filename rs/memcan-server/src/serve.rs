@@ -28,7 +28,7 @@ use rmcp::{
 use serde::Deserialize;
 use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
-use tracing::info;
+use tracing::{debug, info};
 use uuid::Uuid;
 
 use memcan_core::{
@@ -368,6 +368,7 @@ impl MemcanService {
         &self,
         Parameters(params): Parameters<AddMemoryParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "add_memory", project = ?params.project, user_id = ?params.user_id, len = params.memory.len(), "MCP request");
         let uid = resolve_user_id(
             &params.project,
             &params.user_id,
@@ -475,6 +476,7 @@ impl MemcanService {
         &self,
         Parameters(params): Parameters<SearchMemoriesParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "search_memories", query = %params.query, project = ?params.project, user_id = ?params.user_id, "MCP request");
         let limit = params.limit.unwrap_or(10).clamp(1, 1000) as usize;
         let uid = resolve_user_id(
             &params.project,
@@ -509,6 +511,7 @@ impl MemcanService {
         &self,
         Parameters(params): Parameters<GetMemoriesParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "get_memories", project = ?params.project, user_id = ?params.user_id, "MCP request");
         let limit = params.limit.unwrap_or(100).clamp(1, 1000) as usize;
         let uid = resolve_user_id(
             &params.project,
@@ -536,6 +539,7 @@ impl MemcanService {
         &self,
         Parameters(params): Parameters<CountMemoriesParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "count_memories", project = ?params.project, user_id = ?params.user_id, "MCP request");
         let uid = resolve_user_id(
             &params.project,
             &params.user_id,
@@ -563,7 +567,7 @@ impl MemcanService {
         &self,
         Parameters(params): Parameters<DeleteMemoryParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        info!(memory_id = %params.memory_id, "delete_memory");
+        debug!(tool = "delete_memory", memory_id = %params.memory_id, "MCP request");
 
         self.state
             .store
@@ -582,7 +586,7 @@ impl MemcanService {
         &self,
         Parameters(params): Parameters<UpdateMemoryParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        info!(memory_id = %params.memory_id, "update_memory");
+        debug!(tool = "update_memory", memory_id = %params.memory_id, "MCP request");
 
         let existing = self
             .state
@@ -693,6 +697,7 @@ impl MemcanService {
         description = "List available data collections with point counts. Call this to discover what data is indexed and what filter values are valid for search_standards, search_code, and search_memories."
     )]
     async fn list_collections(&self) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "list_collections", "MCP request");
         let known_tables = [MEMORIES_TABLE, STANDARDS_TABLE, CODE_TABLE];
         let mut collections: Vec<serde_json::Value> = Vec::new();
 
@@ -718,6 +723,7 @@ impl MemcanService {
         &self,
         Parameters(params): Parameters<SearchStandardsParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "search_standards", query = %params.query, standard_id = ?params.standard_id, standard_type = ?params.standard_type, "MCP request");
         let limit = params.limit.unwrap_or(10).clamp(1, 100) as usize;
         let standard_type = params.standard_type.map(|s| s.to_lowercase());
         let standard_id = params.standard_id.map(|s| s.to_lowercase());
@@ -794,6 +800,7 @@ impl MemcanService {
         &self,
         Parameters(params): Parameters<SearchCodeParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "search_code", query = %params.query, project = ?params.project, tech_stack = ?params.tech_stack, "MCP request");
         let limit = params.limit.unwrap_or(10).clamp(1, 100) as usize;
         let project = params.project.map(|s| s.to_lowercase());
         let tech_stack = params.tech_stack.map(|s| s.to_lowercase());
@@ -858,7 +865,7 @@ impl MemcanService {
         &self,
         Parameters(params): Parameters<UnifiedSearchParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        info!(query = %params.query, "unified search");
+        debug!(tool = "search", query = %params.query, collections = ?params.collections, project = ?params.project, "MCP request");
 
         self.state
             .health
@@ -918,6 +925,7 @@ impl MemcanService {
         &self,
         Parameters(params): Parameters<IndexStandardsToolParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "index_standards", standard_id = %params.standard_id, standard_type = %params.standard_type, content_len = params.content.len(), "MCP request");
         if params.standard_id.is_empty() {
             return Err(ErrorData::internal_error(
                 "standard_id must not be empty",
@@ -1074,14 +1082,13 @@ impl MemcanService {
         &self,
         Parameters(params): Parameters<DropIndexedStandardsParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "drop_indexed_standards", standard_id = %params.standard_id, "MCP request");
         if params.standard_id.is_empty() {
             return Err(ErrorData::internal_error(
                 "standard_id must not be empty",
                 None,
             ));
         }
-
-        info!(standard_id = %params.standard_id, "drop_indexed_standards");
 
         let deleted = standards_indexing::drop_standards(
             &params.standard_id,
@@ -1107,6 +1114,7 @@ impl MemcanService {
         &self,
         Parameters(params): Parameters<GetQueueStatusParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "get_queue_status", operation_id = ?params.operation_id, "MCP request");
         let limit = params.limit.unwrap_or(10).clamp(1, 100) as usize;
 
         // Collect entries while holding the LRU lock, then drop it before
@@ -1188,7 +1196,9 @@ fn setup_logging(log_file: &str) {
             .with_writer(std::io::stderr)
             .with_ansi(false)
             .with_env_filter(
-                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                    EnvFilter::new("info,memcan_core=debug,memcan_server=debug")
+                }),
             )
             .init();
         return;
@@ -1211,7 +1221,8 @@ fn setup_logging(log_file: &str) {
         .with_writer(file_appender)
         .with_ansi(false)
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug")),
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info,memcan_core=debug,memcan_server=debug")),
         )
         .init();
 
