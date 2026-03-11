@@ -1,0 +1,13 @@
+# Cargo audit configuration
+# Transitive deps pinned by upstream (lance 2.0 → tantivy ^0.24, fastembed 5.x).
+# Review on each fastembed/lancedb/lance major bump — remove if resolved.
+
+[advisories]
+ignore = [
+    # number_prefix 0.4.0 — unmaintained (fastembed → hf-hub → indicatif)
+    "RUSTSEC-2025-0119",
+    # paste 1.0.15 — unmaintained (fastembed/lancedb/datafusion deep transitive)
+    "RUSTSEC-2024-0436",
+    # lru 0.12.5 — unsound IterMut (lancedb → lance → tantivy pins 0.12.x)
+    "RUSTSEC-2026-0002",
+]

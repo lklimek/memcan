@@ -73,7 +73,6 @@ jobs:
   audit:
     name: Cargo Audit
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
       - uses: actions/checkout@v4
