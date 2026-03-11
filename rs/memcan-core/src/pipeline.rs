@@ -37,6 +37,7 @@ const RESERVED_KEYS: &[&str] = &[
     "user_id",
     "created_at",
     "updated_at",
+    "collection",
 ];
 
 /// Max length of a single extracted fact (chars). Longer facts are truncated.
@@ -435,6 +436,7 @@ impl Pipeline {
             "hash": hash,
             "content_hash": hash,
             "user_id": user_id,
+            "collection": "memories",
             "created_at": created_at,
             "updated_at": now,
         });
@@ -478,6 +480,7 @@ impl Pipeline {
             "hash": hash,
             "content_hash": hash,
             "user_id": user_id,
+            "collection": "memories",
             "created_at": now,
             "updated_at": serde_json::Value::Null,
         });
@@ -638,6 +641,7 @@ impl Pipeline {
                             "hash": hash,
                             "content_hash": hash,
                             "user_id": user_id,
+                            "collection": "memories",
                             "created_at": now,
                             "updated_at": serde_json::Value::Null,
                         });
@@ -677,6 +681,7 @@ impl Pipeline {
                                 "hash": hash,
                                 "content_hash": hash,
                                 "user_id": user_id,
+                                "collection": "memories",
                                 "created_at": created_at,
                                 "updated_at": now,
                             });
@@ -838,6 +843,7 @@ mod tests {
         assert!(RESERVED_KEYS.contains(&"hash"));
         assert!(RESERVED_KEYS.contains(&"content_hash"));
         assert!(RESERVED_KEYS.contains(&"user_id"));
+        assert!(RESERVED_KEYS.contains(&"collection"));
         assert!(!RESERVED_KEYS.contains(&"source"));
     }
 

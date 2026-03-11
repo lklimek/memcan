@@ -17,7 +17,10 @@ use uuid::Uuid;
 
 use crate::error::{MemcanError, Result, ResultExt};
 use crate::pipeline::CODE_TABLE;
-use crate::traits::{EmbeddingProvider, VectorPoint, VectorStore};
+use crate::prompts::CODE_DESCRIPTION_PROMPT;
+use crate::traits::{
+    EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, VectorPoint, VectorStore,
+};
 
 const UUID_NAMESPACE: Uuid = Uuid::from_bytes([
     0xa3, 0xe1, 0xf8, 0xc0, 0x7b, 0x2d, 0x4e, 0x5a, 0x9f, 0x1c, 0x6d, 0x8b, 0x0e, 0x3a, 0x5c, 0x7f,
@@ -412,15 +415,43 @@ pub async fn drop_code(project: &str, store: &dyn VectorStore, embed_dims: usize
     Ok(deleted)
 }
 
+async fn generate_description(
+    code: &str,
+    llm: &dyn LlmProvider,
+    llm_model: &str,
+) -> Result<String> {
+    let messages = vec![
+        LlmMessage {
+            role: Role::System,
+            content: CODE_DESCRIPTION_PROMPT.to_string(),
+        },
+        LlmMessage {
+            role: Role::User,
+            content: code.to_string(),
+        },
+    ];
+    let options = Some(LlmOptions {
+        temperature: Some(0.0),
+        max_tokens: Some(256),
+        think: Some(false),
+        ..Default::default()
+    });
+    llm.chat(llm_model, &messages, options).await
+}
+
 /// Index source code from a project directory.
 ///
 /// Walks the directory tree, extracts symbols or falls back to line-based chunks,
-/// embeds each chunk, and upserts into the vector store. Performs incremental
+/// calls the LLM to generate a functional description for each symbol,
+/// prepends the description to the embedding text for better semantic recall,
+/// then embeds and upserts into the vector store. Performs incremental
 /// updates via content hashing and cleans up stale entries for deleted files.
 pub async fn index_code(
     params: &IndexCodeParams,
     store: &dyn VectorStore,
     embedder: &dyn EmbeddingProvider,
+    llm: &dyn LlmProvider,
+    llm_model: &str,
     embed_dims: usize,
 ) -> Result<IndexCodeResult> {
     let project_dir = params.project_dir.canonicalize().with_context(|| {
@@ -535,8 +566,34 @@ pub async fn index_code(
                 continue;
             }
 
+            let description = match generate_description(&sym.text, llm, llm_model).await {
+                Ok(desc) => {
+                    let desc = desc.trim().to_string();
+                    if desc.is_empty() { None } else { Some(desc) }
+                }
+                Err(e) => {
+                    warn!(
+                        symbol = %sym.symbol_name,
+                        file = %rel_path,
+                        error = %e,
+                        "LLM description generation failed, indexing without description"
+                    );
+                    None
+                }
+            };
+
+            let embed_text = if let Some(ref desc) = description {
+                format!("# Description: {desc}\n{data}")
+            } else {
+                data.clone()
+            };
+
             let mut payload = serde_json::Map::new();
             payload.insert("data".into(), serde_json::Value::String(data.clone()));
+            payload.insert(
+                "collection".into(),
+                serde_json::Value::String("code".into()),
+            );
             payload.insert(
                 "project".into(),
                 serde_json::Value::String(params.project.clone()),
@@ -566,6 +623,12 @@ pub async fn index_code(
                 serde_json::Value::Number(serde_json::Number::from(sym.end_line as u64)),
             );
             payload.insert("content_hash".into(), serde_json::Value::String(chash));
+            if let Some(ref desc) = description {
+                payload.insert(
+                    "description".into(),
+                    serde_json::Value::String(desc.clone()),
+                );
+            }
             payload.insert(
                 "git_hash".into(),
                 serde_json::Value::String(git_hash.clone()),
@@ -578,7 +641,7 @@ pub async fn index_code(
                 payload: serde_json::Value::Object(payload),
             };
 
-            batch.push((point, data));
+            batch.push((point, embed_text));
 
             if batch.len() >= BATCH_SIZE {
                 match flush_batch(embedder, store, CODE_TABLE, &mut batch).await {

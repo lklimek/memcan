@@ -4,7 +4,7 @@ use tracing::info;
 
 use memcan_core::error::{MemcanError, Result as MemcanResult};
 use memcan_core::indexing::code::{IndexCodeParams, drop_code, index_code};
-use memcan_core::init::MemcanContext;
+use memcan_core::init::{MemcanContext, create_llm_provider};
 
 use crate::IndexCodeArgs;
 
@@ -20,6 +20,8 @@ pub async fn run(args: &IndexCodeArgs) -> MemcanResult<()> {
         MemcanError::Other("--tech-stack is required unless --drop is specified".into())
     })?;
 
+    let (llm, llm_model) = create_llm_provider(&ctx.settings);
+
     let params = IndexCodeParams {
         project_dir: args.project_dir.clone(),
         project: args.project.clone(),
@@ -27,7 +29,15 @@ pub async fn run(args: &IndexCodeArgs) -> MemcanResult<()> {
         max_file_size: args.max_file_size,
     };
 
-    let result = index_code(&params, &ctx.store, &ctx.embedder, ctx.settings.embed_dims).await?;
+    let result = index_code(
+        &params,
+        &ctx.store,
+        &ctx.embedder,
+        llm.as_ref(),
+        &llm_model,
+        ctx.settings.embed_dims,
+    )
+    .await?;
 
     info!(
         upserted = result.upserted,

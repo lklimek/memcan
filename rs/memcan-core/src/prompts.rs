@@ -13,6 +13,9 @@ pub const MEMORY_UPDATE_PROMPT: &str = include_str!("prompts/memory-update.md");
 /// Prompt for extracting metadata from technical standards documents.
 pub const METADATA_EXTRACTION_PROMPT: &str = include_str!("prompts/metadata-extraction.md");
 
+/// Prompt for generating functional descriptions of code snippets.
+pub const CODE_DESCRIPTION_PROMPT: &str = include_str!("prompts/code-description.md");
+
 /// Render a prompt template with variable substitution.
 ///
 /// Uses handlebars syntax (`{{key}}`). Falls back to legacy `$key` replacement
@@ -67,6 +70,7 @@ mod tests {
         assert!(!FACT_EXTRACTION_HOOK_PROMPT.is_empty());
         assert!(!MEMORY_UPDATE_PROMPT.is_empty());
         assert!(!METADATA_EXTRACTION_PROMPT.is_empty());
+        assert!(!CODE_DESCRIPTION_PROMPT.is_empty());
     }
 
     #[test]
