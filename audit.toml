@@ -1,6 +1,6 @@
 # Cargo audit configuration
-# Ignore advisories for transitive dependencies we cannot control.
-# Review periodically when upgrading fastembed, lancedb, or lance.
+# Transitive deps pinned by upstream (lance 2.0 → tantivy ^0.24, fastembed 5.x).
+# Review on each fastembed/lancedb/lance major bump — remove if resolved.
 
 [advisories]
 ignore = [
