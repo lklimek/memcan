@@ -18,7 +18,7 @@ Scan conversation history for items worth remembering:
 - Patterns and anti-patterns — recurring solutions or mistakes
 - Configuration quirks — project-specific setup, environment gotchas
 
-Collect as a raw numbered list. Search existing memories (`search_memories`) and drop duplicates.
+Collect as a raw numbered list. Search existing knowledge (`search`) and drop duplicates.
 
 ## Quality Gate — apply before Phase 2
 
@@ -57,12 +57,13 @@ Log each save briefly: scope, type, one-line summary.
 
 ## MCP Tools
 
-| Tool | Example |
-|------|---------|
-| `search_memories` | `search_memories(query="docker cache", project="penny", limit=5)` |
-| `add_memory` | `add_memory(memory="...", project="penny", metadata={"type": "lesson"})` |
-| `update_memory` | `update_memory(memory_id="<uuid>", memory="...")` |
-| `count_memories` | `count_memories(project="penny")` or `count_memories()` for global |
+| Tool | Use | Example |
+|------|-----|---------|
+| `search` | **Default.** Dedup check across all collections. | `search(query="docker cache", project="penny")` |
+| `search_memories` | Advanced: memories-only scoped search. | `search_memories(query="docker cache", project="penny", limit=5)` |
+| `add_memory` | Save a new memory. | `add_memory(memory="...", project="penny", metadata={"type": "lesson"})` |
+| `update_memory` | Update an existing memory. | `update_memory(memory_id="<uuid>", memory="...")` |
+| `count_memories` | Count memories. | `count_memories(project="penny")` |
 
 ## Best Practices
 
