@@ -9,12 +9,13 @@ use tracing::warn;
 use crate::error::Result;
 use crate::pipeline::{CODE_TABLE, MEMORIES_TABLE, STANDARDS_TABLE};
 use crate::query::{resolve_user_id, sanitize_eq, sanitize_like};
+use crate::todo::TODOS_TABLE;
 use crate::traits::{EmbeddingProvider, SearchResult, VectorStore};
 
 const DEFAULT_LIMIT: u32 = 5;
 const MAX_LIMIT: u32 = 100;
 
-const ALL_COLLECTIONS: &[&str] = &["memories", "standards", "code"];
+const ALL_COLLECTIONS: &[&str] = &["memories", "standards", "code", "todos"];
 
 /// Parameters for a unified cross-collection search.
 #[derive(Debug, Clone, Deserialize)]
@@ -49,8 +50,16 @@ fn table_for_collection(name: &str) -> Option<&'static str> {
         "memories" => Some(MEMORIES_TABLE),
         "standards" => Some(STANDARDS_TABLE),
         "code" => Some(CODE_TABLE),
+        "todos" => Some(TODOS_TABLE),
         _ => None,
     }
+}
+
+fn build_todos_filter(params: &UnifiedSearchParams) -> Option<String> {
+    params.project.as_ref().map(|p| {
+        let safe = sanitize_eq(p);
+        format!("project = '{safe}'")
+    })
 }
 
 fn build_memories_filter(params: &UnifiedSearchParams, default_user_id: &str) -> String {
@@ -153,6 +162,7 @@ pub async fn unified_search(
     let search_memories = collections.contains(&"memories");
     let search_standards = collections.contains(&"standards");
     let search_code = collections.contains(&"code");
+    let search_todos = collections.contains(&"todos");
 
     let mem_filter = if search_memories {
         Some(build_memories_filter(params, default_user_id))
@@ -166,6 +176,11 @@ pub async fn unified_search(
     };
     let code_filter = if search_code {
         build_code_filter(params)
+    } else {
+        None
+    };
+    let todos_filter = if search_todos {
+        build_todos_filter(params)
     } else {
         None
     };
@@ -221,12 +236,31 @@ pub async fn unified_search(
         }
     };
 
-    let (mem_results, std_results, code_results) = tokio::join!(mem_fut, std_fut, code_fut);
+    let todos_fut = async {
+        if !search_todos {
+            return Vec::new();
+        }
+        let table = table_for_collection("todos").unwrap();
+        match store
+            .search(table, vector, todos_filter.as_deref(), limit, 0)
+            .await
+        {
+            Ok(r) => to_unified("todos", r),
+            Err(e) => {
+                warn!(collection = "todos", error = %e, "collection search failed");
+                Vec::new()
+            }
+        }
+    };
+
+    let (mem_results, std_results, code_results, todos_results) =
+        tokio::join!(mem_fut, std_fut, code_fut, todos_fut);
 
     let mut all: Vec<UnifiedSearchResult> = Vec::new();
     all.extend(mem_results);
     all.extend(std_results);
     all.extend(code_results);
+    all.extend(todos_results);
 
     all.sort_by(|a, b| {
         b.score
@@ -342,6 +376,7 @@ mod tests {
             vec![make_result("s1", 0.8, "OWASP standard")],
         );
         store.add_results(CODE_TABLE, vec![make_result("c1", 0.7, "fn main() {}")]);
+        store.add_results(TODOS_TABLE, vec![make_result("t1", 0.6, "fix the tests")]);
 
         let params = UnifiedSearchParams {
             query: "rust".to_string(),
@@ -359,11 +394,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(results.len(), 3);
+        assert_eq!(results.len(), 4);
         assert_eq!(results[0].collection, "memories");
         assert_eq!(results[0].score, 0.9);
         assert_eq!(results[1].collection, "standards");
         assert_eq!(results[2].collection, "code");
+        assert_eq!(results[3].collection, "todos");
     }
 
     #[tokio::test]
@@ -543,6 +579,40 @@ mod tests {
         assert_eq!(table_for_collection("memories"), Some(MEMORIES_TABLE));
         assert_eq!(table_for_collection("standards"), Some(STANDARDS_TABLE));
         assert_eq!(table_for_collection("code"), Some(CODE_TABLE));
+        assert_eq!(table_for_collection("todos"), Some(TODOS_TABLE));
         assert_eq!(table_for_collection("unknown"), None);
+    }
+
+    #[test]
+    fn test_build_todos_filter_with_project() {
+        let params = UnifiedSearchParams {
+            query: String::new(),
+            collections: None,
+            project: Some("myproj".into()),
+            user_id: None,
+            limit: None,
+            standard_type: None,
+            standard_id: None,
+            tech_stack: None,
+            file_path: None,
+        };
+        let filter = build_todos_filter(&params).unwrap();
+        assert_eq!(filter, "project = 'myproj'");
+    }
+
+    #[test]
+    fn test_build_todos_filter_no_project() {
+        let params = UnifiedSearchParams {
+            query: String::new(),
+            collections: None,
+            project: None,
+            user_id: None,
+            limit: None,
+            standard_type: None,
+            standard_id: None,
+            tech_stack: None,
+            file_path: None,
+        };
+        assert!(build_todos_filter(&params).is_none());
     }
 }

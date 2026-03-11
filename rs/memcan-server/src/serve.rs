@@ -43,6 +43,7 @@ use memcan_core::{
     prompts::FACT_EXTRACTION_HOOK_PROMPT,
     query::{resolve_user_id, sanitize_eq, sanitize_like},
     search,
+    todo::{self, TODOS_TABLE},
     traits::{EmbeddingProvider, LlmProvider, VectorStore},
 };
 
@@ -226,6 +227,54 @@ pub struct IndexStandardsToolParams {
 pub struct DropIndexedStandardsParams {
     /// Standard identifier to drop all indexed data for.
     pub standard_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct AddTodoParams {
+    /// Short title of the TODO item.
+    pub title: String,
+    /// Optional longer description.
+    pub description: Option<String>,
+    /// Project this TODO belongs to (required).
+    pub project: String,
+    /// Priority: "low", "medium", or "high". Defaults to "medium".
+    pub priority: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListTodosParams {
+    /// Project to list TODOs for (required).
+    pub project: String,
+    /// Filter by status: "pending" or "done". Omit for all.
+    pub status: Option<String>,
+    /// Max results (default 50, max 200).
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UpdateTodoParams {
+    /// ID of the TODO to update.
+    pub todo_id: String,
+    /// New title (optional).
+    pub title: Option<String>,
+    /// New description (optional).
+    pub description: Option<String>,
+    /// New priority (optional).
+    pub priority: Option<String>,
+    /// New status: "pending" or "done" (optional).
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CompleteTodoParams {
+    /// ID of the TODO to mark as done.
+    pub todo_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DeleteTodoParams {
+    /// ID of the TODO to delete.
+    pub todo_id: String,
 }
 
 // --- Helpers ---
@@ -698,7 +747,7 @@ impl MemcanService {
     )]
     async fn list_collections(&self) -> Result<CallToolResult, ErrorData> {
         debug!(tool = "list_collections", "MCP request");
-        let known_tables = [MEMORIES_TABLE, STANDARDS_TABLE, CODE_TABLE];
+        let known_tables = [MEMORIES_TABLE, STANDARDS_TABLE, CODE_TABLE, TODOS_TABLE];
         let mut collections: Vec<serde_json::Value> = Vec::new();
 
         for name in &known_tables {
@@ -1108,6 +1157,190 @@ impl MemcanService {
     }
 
     #[tool(
+        description = "Add a per-project TODO item. TODOs are also searchable via the unified 'search' tool."
+    )]
+    async fn add_todo(
+        &self,
+        Parameters(params): Parameters<AddTodoParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "add_todo", project = %params.project, title = %params.title, "MCP request");
+
+        self.state
+            .health
+            .check(DependencyId::Embedding)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        self.state
+            .health
+            .check(DependencyId::LanceDb)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let core_params = todo::AddTodoParams {
+            title: params.title,
+            description: params.description,
+            project: params.project,
+            priority: params.priority,
+        };
+
+        let item = todo::add_todo(
+            self.state.store.as_ref(),
+            self.state.embedder.as_ref(),
+            core_params,
+        )
+        .await
+        .map_err(|e| {
+            report_error_to_health(&self.state.health, &e);
+            ErrorData::internal_error(format!("add_todo failed: {e}"), None)
+        })?;
+
+        self.state.health.report_success(DependencyId::Embedding);
+        self.state.health.report_success(DependencyId::LanceDb);
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&item).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(
+        description = "List TODO items for a project, sorted by priority (high first). TODOs are also searchable via the unified 'search' tool."
+    )]
+    async fn list_todos(
+        &self,
+        Parameters(params): Parameters<ListTodosParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "list_todos", project = %params.project, status = ?params.status, "MCP request");
+
+        self.state
+            .health
+            .check(DependencyId::LanceDb)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let limit = params.limit.unwrap_or(50).clamp(1, 200) as usize;
+
+        let todos = todo::list_todos(
+            self.state.store.as_ref(),
+            &params.project,
+            params.status.as_deref(),
+            limit,
+        )
+        .await
+        .map_err(|e| {
+            report_error_to_health(&self.state.health, &e);
+            ErrorData::internal_error(format!("list_todos failed: {e}"), None)
+        })?;
+
+        self.state.health.report_success(DependencyId::LanceDb);
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&todos).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(description = "Update a TODO item's title, description, priority, or status.")]
+    async fn update_todo(
+        &self,
+        Parameters(params): Parameters<UpdateTodoParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "update_todo", todo_id = %params.todo_id, "MCP request");
+
+        self.state
+            .health
+            .check(DependencyId::Embedding)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        self.state
+            .health
+            .check(DependencyId::LanceDb)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let updates = todo::UpdateTodoFields {
+            title: params.title,
+            description: params.description,
+            priority: params.priority,
+            status: params.status,
+        };
+
+        let item = todo::update_todo(
+            self.state.store.as_ref(),
+            self.state.embedder.as_ref(),
+            &params.todo_id,
+            updates,
+        )
+        .await
+        .map_err(|e| {
+            report_error_to_health(&self.state.health, &e);
+            ErrorData::internal_error(format!("update_todo failed: {e}"), None)
+        })?;
+
+        self.state.health.report_success(DependencyId::Embedding);
+        self.state.health.report_success(DependencyId::LanceDb);
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&item).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(description = "Mark a TODO item as done.")]
+    async fn complete_todo(
+        &self,
+        Parameters(params): Parameters<CompleteTodoParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "complete_todo", todo_id = %params.todo_id, "MCP request");
+
+        self.state
+            .health
+            .check(DependencyId::Embedding)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        self.state
+            .health
+            .check(DependencyId::LanceDb)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let item = todo::complete_todo(
+            self.state.store.as_ref(),
+            self.state.embedder.as_ref(),
+            &params.todo_id,
+        )
+        .await
+        .map_err(|e| {
+            report_error_to_health(&self.state.health, &e);
+            ErrorData::internal_error(format!("complete_todo failed: {e}"), None)
+        })?;
+
+        self.state.health.report_success(DependencyId::Embedding);
+        self.state.health.report_success(DependencyId::LanceDb);
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&item).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(description = "Delete a TODO item by ID.")]
+    async fn delete_todo(
+        &self,
+        Parameters(params): Parameters<DeleteTodoParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "delete_todo", todo_id = %params.todo_id, "MCP request");
+
+        self.state
+            .health
+            .check(DependencyId::LanceDb)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        todo::delete_todo(self.state.store.as_ref(), &params.todo_id)
+            .await
+            .map_err(|e| {
+                report_error_to_health(&self.state.health, &e);
+                ErrorData::internal_error(format!("delete_todo failed: {e}"), None)
+            })?;
+
+        self.state.health.report_success(DependencyId::LanceDb);
+
+        let response = serde_json::json!({ "status": "deleted", "todo_id": params.todo_id });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&response).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(
         description = "Check status of queued async operations (add_memory, update_memory). Returns recent operations or a specific one by ID."
     )]
     async fn get_queue_status(
@@ -1287,8 +1520,9 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
     ctx.store.ensure_table(MEMORIES_TABLE, dims).await?;
     ctx.store.ensure_table(STANDARDS_TABLE, dims).await?;
     ctx.store.ensure_table(CODE_TABLE, dims).await?;
+    ctx.store.ensure_table(TODOS_TABLE, dims).await?;
 
-    info!("Tables ensured: {MEMORIES_TABLE}, {STANDARDS_TABLE}, {CODE_TABLE}");
+    info!("Tables ensured: {MEMORIES_TABLE}, {STANDARDS_TABLE}, {CODE_TABLE}, {TODOS_TABLE}");
 
     let listen_addr = args
         .listen

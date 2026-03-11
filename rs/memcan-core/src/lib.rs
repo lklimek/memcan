@@ -28,6 +28,7 @@ pub mod pipeline;
 pub mod prompts;
 pub mod query;
 pub mod search;
+pub mod todo;
 pub mod traits;
 
 #[cfg(not(any(feature = "ollama-rs-llm", feature = "genai-llm")))]
