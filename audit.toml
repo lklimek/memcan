@@ -1,0 +1,13 @@
+# Cargo audit configuration
+# Ignore advisories for transitive dependencies we cannot control.
+# Review periodically when upgrading fastembed, lancedb, or lance.
+
+[advisories]
+ignore = [
+    # number_prefix 0.4.0 — unmaintained (fastembed → hf-hub → indicatif)
+    "RUSTSEC-2025-0119",
+    # paste 1.0.15 — unmaintained (fastembed/lancedb/datafusion deep transitive)
+    "RUSTSEC-2024-0436",
+    # lru 0.12.5 — unsound IterMut (lancedb → lance → tantivy pins 0.12.x)
+    "RUSTSEC-2026-0002",
+]
