@@ -34,6 +34,7 @@ use uuid::Uuid;
 use memcan_core::{
     config::Settings,
     error::MemcanError,
+    health::{DependencyHealth, DependencyId},
     indexing::standards::{self as standards_indexing, VALID_TYPES},
     init::{MemcanContext, create_llm_provider},
     pipeline::{
@@ -112,6 +113,7 @@ struct SharedState {
     queue_status: Arc<StdMutex<LruCache<String, QueueEntry>>>,
     llm_semaphore: Arc<tokio::sync::Semaphore>,
     pending_tasks: Arc<AtomicUsize>,
+    health: Arc<DependencyHealth>,
 }
 
 // --- Tool parameter structs ---
@@ -323,6 +325,18 @@ fn empty_hint(filters: &[(&str, Option<&str>)]) -> serde_json::Value {
     serde_json::json!({ "results": [], "hint": hint })
 }
 
+/// Classify an error and report the appropriate dependency as failed.
+fn report_error_to_health(health: &DependencyHealth, err: &MemcanError) {
+    let msg = err.to_string();
+    if err.is_llm_error() {
+        health.report_failure(DependencyId::Ollama, &msg);
+    } else if err.is_lancedb_error() {
+        health.report_failure(DependencyId::LanceDb, &msg);
+    } else if err.is_embedding_error() {
+        health.report_failure(DependencyId::Embedding, &msg);
+    }
+}
+
 // --- MCP Service ---
 
 #[derive(Debug, Clone)]
@@ -402,8 +416,17 @@ impl MemcanService {
             );
         }
 
+        // Fail fast if LLM is known to be down (embedding + lancedb checked on demand)
+        if self.state.config.distill_memories {
+            self.state
+                .health
+                .check(DependencyId::Ollama)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        }
+
         let task_guard = try_enqueue(&self.state.pending_tasks)?;
         let sem = Arc::clone(&self.state.llm_semaphore);
+        let health = Arc::clone(&self.state.health);
         let uid_clone = uid.clone();
         tokio::spawn(async move {
             let _task_guard = task_guard;
@@ -418,6 +441,9 @@ impl MemcanService {
             match guard.add_memory(&memory, &uid_clone, &metadata).await {
                 Ok(_) => {
                     info!(user_id = %uid_clone, "add_memory: persisted");
+                    health.report_success(DependencyId::Ollama);
+                    health.report_success(DependencyId::Embedding);
+                    health.report_success(DependencyId::LanceDb);
                     guard.complete();
                 }
                 Err(e) => {
@@ -428,6 +454,7 @@ impl MemcanService {
                         memory_preview = %preview,
                         "add_memory: pipeline failed to store memory"
                     );
+                    report_error_to_health(&health, &e);
                     guard.fail(&e);
                 }
             }
@@ -612,6 +639,7 @@ impl MemcanService {
 
         let task_guard = try_enqueue(&self.state.pending_tasks)?;
         let sem = Arc::clone(&self.state.llm_semaphore);
+        let health = Arc::clone(&self.state.health);
         let memory_id = params.memory_id.clone();
         let memory = params.memory;
         tokio::spawn(async move {
@@ -636,10 +664,13 @@ impl MemcanService {
             {
                 Ok(()) => {
                     info!(memory_id = %memory_id, "update_memory: persisted");
+                    health.report_success(DependencyId::Embedding);
+                    health.report_success(DependencyId::LanceDb);
                     guard.complete();
                 }
                 Err(e) => {
                     tracing::error!(memory_id = %memory_id, error = %e, "update_memory: failed");
+                    report_error_to_health(&health, &e);
                     guard.fail(&e);
                 }
             }
@@ -878,6 +909,12 @@ impl MemcanService {
             );
         }
 
+        // Fail fast if LLM is known to be down
+        self.state
+            .health
+            .check(DependencyId::Ollama)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
         let task_guard = try_enqueue(&self.state.pending_tasks)?;
         let store = Arc::clone(&self.state.store);
         let embedder = Arc::clone(&self.state.embedder);
@@ -885,6 +922,7 @@ impl MemcanService {
         let llm_model = self.state.llm_model.clone();
         let embed_dims = self.state.config.embed_dims;
         let sem = Arc::clone(&self.state.llm_semaphore);
+        let health = Arc::clone(&self.state.health);
 
         let core_params = standards_indexing::IndexStandardsParams {
             content: params.content,
@@ -934,6 +972,9 @@ impl MemcanService {
                         p.step = memcan_core::pipeline::PipelineStep::CompletedDegraded;
                     }
                     p.completed_at = Some(chrono::Utc::now().to_rfc3339());
+                    health.report_success(DependencyId::Ollama);
+                    health.report_success(DependencyId::Embedding);
+                    health.report_success(DependencyId::LanceDb);
                     info!(
                         indexed = result.indexed,
                         errors = result.errors.len(),
@@ -945,6 +986,7 @@ impl MemcanService {
                     p.step = memcan_core::pipeline::PipelineStep::Failed;
                     p.error = Some(e.to_string());
                     p.completed_at = Some(chrono::Utc::now().to_rfc3339());
+                    report_error_to_health(&health, &e);
                     tracing::error!(error = %e, "index_standards: failed");
                 }
             }
@@ -1138,8 +1180,19 @@ async fn shutdown_signal() {
 
 // --- Health handler ---
 
-async fn health_handler() -> impl IntoResponse {
-    axum::response::Json(serde_json::json!({"status": "ok"}))
+async fn health_handler(
+    axum::extract::State(health): axum::extract::State<Arc<DependencyHealth>>,
+) -> impl IntoResponse {
+    let deps = health.status();
+    let overall = if health.all_healthy() {
+        "ok"
+    } else {
+        "degraded"
+    };
+    axum::response::Json(serde_json::json!({
+        "status": overall,
+        "dependencies": deps,
+    }))
 }
 
 // --- Entry point ---
@@ -1164,6 +1217,8 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
         .clone()
         .unwrap_or_else(|| ctx.settings.listen.clone());
 
+    let health = Arc::new(DependencyHealth::with_defaults());
+
     let shared = Arc::new(SharedState {
         store: Arc::new(ctx.store),
         embedder: Arc::new(ctx.embedder),
@@ -1175,6 +1230,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
         ))),
         llm_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
         pending_tasks: Arc::new(AtomicUsize::new(0)),
+        health: Arc::clone(&health),
     });
 
     if args.stdio {
@@ -1235,7 +1291,10 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
         };
 
         let app = Router::new()
-            .route("/health", get(health_handler))
+            .route(
+                "/health",
+                get(health_handler).with_state(Arc::clone(&health)),
+            )
             .merge(mcp_router);
 
         let listener = TcpListener::bind(&listen_addr)

@@ -51,6 +51,10 @@ pub enum MemcanError {
     #[error("invalid configuration: {0}")]
     Config(String),
 
+    // -- Dependency health ---------------------------------------------------
+    #[error("dependency '{dependency}' unavailable: {message}")]
+    DependencyUnavailable { dependency: String, message: String },
+
     // -- Generic (replaces bail!/anyhow!) ------------------------------------
     #[error("{0}")]
     Other(String),
@@ -60,6 +64,21 @@ impl MemcanError {
     /// Returns `true` when this error originated from an LLM chat call.
     pub fn is_llm_error(&self) -> bool {
         matches!(self, MemcanError::LlmChat { .. })
+    }
+
+    /// Returns `true` when this error originated from a LanceDB operation.
+    pub fn is_lancedb_error(&self) -> bool {
+        matches!(self, MemcanError::LanceDb { .. })
+    }
+
+    /// Returns `true` when this error originated from an embedding operation.
+    pub fn is_embedding_error(&self) -> bool {
+        matches!(self, MemcanError::Embedding { .. })
+    }
+
+    /// Returns `true` when this error indicates a dependency is unavailable.
+    pub fn is_dependency_unavailable(&self) -> bool {
+        matches!(self, MemcanError::DependencyUnavailable { .. })
     }
 }
 
@@ -152,5 +171,43 @@ mod tests {
 
         let err = MemcanError::Config("bad".into());
         assert!(!err.is_llm_error());
+    }
+
+    #[test]
+    fn test_is_lancedb_error() {
+        let err = MemcanError::LanceDb {
+            context: "test".into(),
+            source: lancedb::Error::Runtime {
+                message: "fail".into(),
+            },
+        };
+        assert!(err.is_lancedb_error());
+        assert!(!err.is_llm_error());
+        assert!(!err.is_embedding_error());
+    }
+
+    #[test]
+    fn test_is_embedding_error() {
+        let err = MemcanError::Embedding {
+            context: "test".into(),
+            detail: "fail".into(),
+        };
+        assert!(err.is_embedding_error());
+        assert!(!err.is_llm_error());
+        assert!(!err.is_lancedb_error());
+    }
+
+    #[test]
+    fn test_is_dependency_unavailable() {
+        let err = MemcanError::DependencyUnavailable {
+            dependency: "ollama".into(),
+            message: "connection refused".into(),
+        };
+        assert!(err.is_dependency_unavailable());
+        assert!(!err.is_llm_error());
+        assert!(!err.is_lancedb_error());
+        assert!(!err.is_embedding_error());
+        assert!(err.to_string().contains("ollama"));
+        assert!(err.to_string().contains("connection refused"));
     }
 }
