@@ -12,7 +12,20 @@ Execute each phase in order. Track pass/fail for the summary table.
 
 ## Architecture Note
 
-MemCan uses async processing: `add_memory` and `update_memory` return immediately with `status: queued`. Background tasks handle LLM distillation. Use `get_queue_status` to monitor completion, and add short delays before verification phases.
+MemCan uses async processing: `add_memory` and `update_memory` return immediately with `status: queued`. Background tasks handle LLM distillation. Use `get_queue_status` to monitor completion, and add delays before verification phases.
+
+### Recommended Wait Times
+
+LLM distillation time depends on memory length and model speed. Observed with `qwen3.5:9b`:
+
+| Memory size | Typical processing time |
+|---|---|
+| Short (~20 words) | ~10-15s |
+| Medium (~60 words) | ~15-25s |
+| Long (~120 words) | ~30-45s |
+| Very Long (~250 words) | ~60-90s |
+
+When all 4 test memories are queued together (serialized LLM processing), total wall time is ~90-120s. Use **15-20 second** initial waits with retry loops rather than fixed 10-second sleeps. For single-memory operations (update, Phase 9), 10-15 seconds usually suffices.
 
 ## Phase 0: Baseline
 
@@ -65,12 +78,12 @@ add_memory(
 
 ## Phase 2: Wait and Verify Creation
 
-1. Wait 10 seconds for async processing to complete.
+1. Wait 20 seconds for async processing to begin completing.
 2. `get_queue_status()` -- check that operations are `completed` or `stored`.
-3. `count_memories(project="__smoke_test__")` -- must equal 4.
-4. `get_memories(project="__smoke_test__", limit=10)` -- must return all 4. Record their IDs.
+3. `count_memories(project="__smoke_test__")` -- expect distilled facts (typically 15-25, not 4 — LLM splits memories into atomic facts).
+4. `get_memories(project="__smoke_test__", limit=30)` -- must return all distilled facts. Record their IDs.
 
-If count is less than 4, wait another 10 seconds and retry. The LLM distillation step can take time depending on model speed.
+If pending tasks remain, wait 15 seconds and retry. Repeat until `pending_tasks: 0`. The very long memory (~250 words) takes the longest — up to 90s for LLM fact extraction. Total wall time for all 4 memories is typically 90-120s.
 
 ## Phase 3: Search
 
@@ -93,7 +106,7 @@ Mark each search PASS if the expected memory ranks first, WARN if it appears but
    )
    ```
 3. Should return `status: queued`.
-4. Wait 10 seconds, then `get_memories(project="__smoke_test__", limit=10)` -- verify the updated memory contains the new text about `reserve()`.
+4. Wait 10-15 seconds, then `get_memories(project="__smoke_test__", limit=30)` -- verify the updated memory contains the new text about `reserve()`. Updates are fast since they skip LLM distillation.
 
 ## Phase 5: Search After Update
 
@@ -186,7 +199,7 @@ Test the unified `search` tool that searches across all collections simultaneous
      metadata={"type": "lesson"}
    )
    ```
-   Wait 10 seconds for async processing.
+   Wait 15 seconds for async processing (single short memory).
 
 2. **Search all collections** (no collection filter):
    ```
