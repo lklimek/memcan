@@ -12,14 +12,15 @@ use crate::IndexStandardsArgs;
 
 pub async fn run(args: &IndexStandardsArgs) -> MemcanResult<()> {
     let ctx = MemcanContext::init().await?;
-    ctx.init_llm().await?;
-    let (llm, default_model) = create_llm_provider(&ctx.settings);
-    let model = args.model.as_deref().unwrap_or(&default_model);
 
     if args.drop {
         drop_standards(&args.standard_id, &ctx.store, ctx.settings.embed_dims).await?;
         return Ok(());
     }
+
+    ctx.init_llm().await?;
+    let (llm, default_model) = create_llm_provider(&ctx.settings);
+    let model = args.model.as_deref().unwrap_or(&default_model);
 
     let file = args
         .file
