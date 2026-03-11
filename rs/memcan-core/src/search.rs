@@ -4,10 +4,11 @@
 //! and merges results by score descending.
 
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::warn;
 
 use crate::error::Result;
 use crate::pipeline::{CODE_TABLE, MEMORIES_TABLE, STANDARDS_TABLE};
+use crate::query::{resolve_user_id, sanitize_eq, sanitize_like};
 use crate::traits::{EmbeddingProvider, SearchResult, VectorStore};
 
 const DEFAULT_LIMIT: u32 = 5;
@@ -41,27 +42,6 @@ pub struct UnifiedSearchResult {
     pub score: f32,
     pub data: String,
     pub metadata: serde_json::Value,
-}
-
-fn sanitize_eq(s: &str) -> String {
-    s.replace('\'', "''")
-}
-
-fn sanitize_like(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('\'', "''")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
-
-fn resolve_user_id(project: &Option<String>, user_id: &Option<String>, default: &str) -> String {
-    if let Some(uid) = user_id {
-        return uid.clone();
-    }
-    if let Some(proj) = project {
-        return format!("project:{proj}");
-    }
-    default.to_string()
 }
 
 fn table_for_collection(name: &str) -> Option<&'static str> {
@@ -201,7 +181,7 @@ pub async fn unified_search(
         {
             Ok(r) => to_unified("memories", r),
             Err(e) => {
-                debug!(error = %e, "memories search failed (table may not exist)");
+                warn!(collection = "memories", error = %e, "collection search failed");
                 Vec::new()
             }
         }
@@ -218,7 +198,7 @@ pub async fn unified_search(
         {
             Ok(r) => to_unified("standards", r),
             Err(e) => {
-                debug!(error = %e, "standards search failed (table may not exist)");
+                warn!(collection = "standards", error = %e, "collection search failed");
                 Vec::new()
             }
         }
@@ -235,7 +215,7 @@ pub async fn unified_search(
         {
             Ok(r) => to_unified("code", r),
             Err(e) => {
-                debug!(error = %e, "code search failed (table may not exist)");
+                warn!(collection = "code", error = %e, "collection search failed");
                 Vec::new()
             }
         }

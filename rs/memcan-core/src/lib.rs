@@ -26,6 +26,7 @@ pub mod llm_ollama_rs;
 pub mod ollama;
 pub mod pipeline;
 pub mod prompts;
+pub mod query;
 pub mod search;
 pub mod traits;
 

@@ -39,7 +39,7 @@ Reusable library. All domain logic lives here. Must not depend on transport, CLI
 | `llm` | genai implementation of `LlmProvider` |
 | `ollama` | Ollama model resolution helpers |
 | `pipeline` | Memory add pipeline (LLM fact extraction, dedup, store) |
-| `query` | User ID resolution, SQL sanitization, result formatting |
+| `query` | User ID resolution, SQL sanitization helpers |
 | `indexing::code` | Language-specific symbol extraction, incremental code indexing |
 | `indexing::standards` | Markdown chunking, LLM metadata extraction |
 | `indexing::batch` | Shared batch embedding + upsert helper |

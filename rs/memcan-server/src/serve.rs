@@ -41,6 +41,7 @@ use memcan_core::{
         CODE_TABLE, MEMORIES_TABLE, Pipeline, PipelineGuard, PipelineProgress, STANDARDS_TABLE,
     },
     prompts::FACT_EXTRACTION_HOOK_PROMPT,
+    query::{resolve_user_id, sanitize_eq, sanitize_like},
     search,
     traits::{EmbeddingProvider, LlmProvider, VectorStore},
 };
@@ -228,27 +229,6 @@ pub struct DropIndexedStandardsParams {
 }
 
 // --- Helpers ---
-
-fn resolve_user_id(project: &Option<String>, user_id: &Option<String>, default: &str) -> String {
-    if let Some(uid) = user_id {
-        return uid.clone();
-    }
-    if let Some(proj) = project {
-        return format!("project:{proj}");
-    }
-    default.to_string()
-}
-
-fn sanitize_eq(s: &str) -> String {
-    s.replace('\'', "''")
-}
-
-fn sanitize_like(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('\'', "''")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
 
 fn user_filter(user_id: &str) -> String {
     let safe = sanitize_eq(user_id);
@@ -880,6 +860,15 @@ impl MemcanService {
     ) -> Result<CallToolResult, ErrorData> {
         info!(query = %params.query, "unified search");
 
+        self.state
+            .health
+            .check(DependencyId::Embedding)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        self.state
+            .health
+            .check(DependencyId::LanceDb)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
         let core_params = search::UnifiedSearchParams {
             query: params.query,
             collections: params.collections,
@@ -892,14 +881,27 @@ impl MemcanService {
             file_path: params.file_path,
         };
 
-        let results = search::unified_search(
+        let results = match search::unified_search(
             &core_params,
             self.state.store.as_ref(),
             self.state.embedder.as_ref(),
             &self.state.config.default_user_id,
         )
         .await
-        .map_err(|e| ErrorData::internal_error(format!("unified search failed: {e}"), None))?;
+        {
+            Ok(r) => {
+                self.state.health.report_success(DependencyId::Embedding);
+                self.state.health.report_success(DependencyId::LanceDb);
+                r
+            }
+            Err(e) => {
+                report_error_to_health(&self.state.health, &e);
+                return Err(ErrorData::internal_error(
+                    format!("unified search failed: {e}"),
+                    None,
+                ));
+            }
+        };
 
         let output = serde_json::json!({
             "results": results,
