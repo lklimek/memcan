@@ -92,6 +92,12 @@ pub trait LlmProvider: Send + Sync {
     /// Query the model's context window size in tokens.
     /// Returns None if the provider doesn't support this query.
     async fn context_window(&self, model: &str) -> Option<usize>;
+
+    /// Provider-specific initialization (e.g. model availability check).
+    /// Default is a no-op.
+    async fn init(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Role of a participant in an LLM conversation.
