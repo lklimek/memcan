@@ -10,6 +10,7 @@ use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
 use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase, Select};
+use lancedb::table::NewColumnTransform;
 use lancedb::{Connection, Table, connect};
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
@@ -72,6 +73,8 @@ impl LanceDbStore {
             Field::new("tech_stack", DataType::Utf8, true),
             Field::new("file_path", DataType::Utf8, true),
             Field::new("content_hash", DataType::Utf8, true),
+            Field::new("status", DataType::Utf8, true),
+            Field::new("priority", DataType::Utf8, true),
         ]))
     }
 
@@ -141,6 +144,14 @@ impl LanceDbStore {
             .iter()
             .map(|p| Self::json_opt_str(&p.payload, "content_hash"))
             .collect();
+        let statuses: Vec<Option<&str>> = points
+            .iter()
+            .map(|p| Self::json_opt_str(&p.payload, "status"))
+            .collect();
+        let priorities: Vec<Option<&str>> = points
+            .iter()
+            .map(|p| Self::json_opt_str(&p.payload, "priority"))
+            .collect();
 
         let batch = RecordBatch::try_new(
             schema,
@@ -155,6 +166,8 @@ impl LanceDbStore {
                 Arc::new(StringArray::from(tech_stacks)) as ArrayRef,
                 Arc::new(StringArray::from(file_paths)) as ArrayRef,
                 Arc::new(StringArray::from(content_hashes)) as ArrayRef,
+                Arc::new(StringArray::from(statuses)) as ArrayRef,
+                Arc::new(StringArray::from(priorities)) as ArrayRef,
             ],
         )?;
         Ok(batch)
@@ -273,6 +286,30 @@ impl VectorStore for LanceDbStore {
                      or revert EMBED_MODEL to match the existing data."
                 )));
             }
+
+            // Migrate: add status/priority columns if missing.
+            let schema = tbl.schema().await?;
+            let field_names: Vec<&str> =
+                schema.fields().iter().map(|f| f.name().as_str()).collect();
+            let missing: Vec<(String, String)> = ["status", "priority"]
+                .iter()
+                .filter(|col| !field_names.contains(*col))
+                .map(|col| (col.to_string(), "CAST(NULL AS STRING)".to_string()))
+                .collect();
+            if !missing.is_empty() {
+                let col_names: Vec<&str> = missing.iter().map(|(n, _)| n.as_str()).collect();
+                warn!(
+                    table = name,
+                    columns = ?col_names,
+                    "migrating table: adding missing columns"
+                );
+                tbl.add_columns(NewColumnTransform::SqlExpressions(missing), None)
+                    .await
+                    .with_context(|| {
+                        format!("failed to add status/priority columns to table {name}")
+                    })?;
+            }
+
             return Ok(());
         }
         debug!(name, dims, "creating table");
@@ -431,7 +468,7 @@ mod tests {
     #[test]
     fn test_schema_creation() {
         let schema = LanceDbStore::table_schema(768);
-        assert_eq!(schema.fields().len(), 10);
+        assert_eq!(schema.fields().len(), 12);
         assert_eq!(schema.field(0).name(), "id");
         assert_eq!(schema.field(1).name(), "vector");
         assert_eq!(schema.field(2).name(), "payload");
@@ -443,6 +480,8 @@ mod tests {
         assert_eq!(schema.field(7).name(), "tech_stack");
         assert_eq!(schema.field(8).name(), "file_path");
         assert_eq!(schema.field(9).name(), "content_hash");
+        assert_eq!(schema.field(10).name(), "status");
+        assert_eq!(schema.field(11).name(), "priority");
         match schema.field(1).data_type() {
             DataType::FixedSizeList(_, size) => assert_eq!(*size, 768),
             other => panic!("unexpected type: {:?}", other),
@@ -467,7 +506,7 @@ mod tests {
         }];
         let batch = LanceDbStore::points_to_batch(&points, dims).unwrap();
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(batch.num_columns(), 10);
+        assert_eq!(batch.num_columns(), 12);
     }
 
     #[tokio::test]
@@ -508,5 +547,85 @@ mod tests {
         }];
         let result = LanceDbStore::points_to_batch(&points, dims);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_points_to_batch_extracts_status_and_priority() {
+        let dims = 4;
+        let points = vec![VectorPoint {
+            id: "todo-1".into(),
+            vector: vec![1.0, 2.0, 3.0, 4.0],
+            payload: serde_json::json!({
+                "status": "pending",
+                "priority": "high",
+                "project": "test",
+            }),
+        }];
+        let batch = LanceDbStore::points_to_batch(&points, dims).unwrap();
+        let status_col = batch
+            .column_by_name("status")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            .expect("status column");
+        assert_eq!(status_col.value(0), "pending");
+        let priority_col = batch
+            .column_by_name("priority")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            .expect("priority column");
+        assert_eq!(priority_col.value(0), "high");
+    }
+
+    #[tokio::test]
+    async fn test_ensure_table_migrates_missing_columns() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().to_str().expect("tempdir path");
+        let dims: usize = 4;
+
+        // Create a table with the OLD schema (without status/priority).
+        let old_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    dims as i32,
+                ),
+                false,
+            ),
+            Field::new("payload", DataType::LargeUtf8, false),
+            Field::new("user_id", DataType::Utf8, true),
+            Field::new("project", DataType::Utf8, true),
+            Field::new("standard_type", DataType::Utf8, true),
+            Field::new("standard_id", DataType::Utf8, true),
+            Field::new("tech_stack", DataType::Utf8, true),
+            Field::new("file_path", DataType::Utf8, true),
+            Field::new("content_hash", DataType::Utf8, true),
+        ]));
+
+        let conn = connect(path).execute().await.expect("connect");
+        let batches = RecordBatchIterator::new(vec![], old_schema.clone());
+        conn.create_table("migrate_test", Box::new(batches))
+            .execute()
+            .await
+            .expect("create old-schema table");
+
+        // Now open via LanceDbStore and ensure_table should migrate.
+        let store = LanceDbStore::open(path).await.expect("open");
+        store
+            .ensure_table("migrate_test", dims)
+            .await
+            .expect("ensure_table should migrate");
+
+        // Verify columns were added.
+        let tbl = store.open_table("migrate_test").await.expect("open table");
+        let schema = tbl.schema().await.expect("schema");
+        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert!(
+            names.contains(&"status"),
+            "status column missing after migration"
+        );
+        assert!(
+            names.contains(&"priority"),
+            "priority column missing after migration"
+        );
     }
 }
