@@ -2,7 +2,7 @@
 name: setup-memcan
 description: Configure MemCan environment — .env file, Claude Code settings, and user rule. Run once per machine after plugin install.
 user-invocable: true
-allowed-tools: Read, Write, Edit, Bash(bash *), Bash(mkdir *), Bash(curl *), Bash(which *), Bash(cp *), Bash(cat *), Bash(python3 *), Glob, Grep, AskUserQuestion, mcp__plugin_memcan_brain__search_memories
+allowed-tools: Read, Write, Edit, Bash(bash *), Bash(mkdir *), Bash(curl *), Bash(which *), Bash(cp *), Bash(cat *), Bash(python3 *), Glob, Grep, AskUserQuestion, mcp__plugin_memcan_brain__search
 ---
 
 # Setup MemCan
@@ -87,8 +87,8 @@ Write this content:
 Use the MemCan MCP server to store and recall knowledge across sessions.
 
 ## Session Start
-- Search memories for the current project: `search_memories(query="project context", project="<repo-name>")`
-- Also search global memories for cross-project learnings
+- Search for project context: `search(query="project context", project="<repo-name>")`
+- This searches all collections (memories, standards, code) in one call
 
 ## When to Save (add_memory)
 - Lessons learned from bugs, failed approaches, workarounds
@@ -97,11 +97,12 @@ Use the MemCan MCP server to store and recall knowledge across sessions.
 - Discovered patterns and anti-patterns
 - Project-specific configuration quirks
 
-## When to Search (search_memories)
+## When to Search
+- Use `search` (unified) as the default — searches all collections at once
+- Use `search_memories`, `search_standards`, `search_code` for collection-specific filtering
 - Before architectural decisions — check for prior art or known pitfalls
 - On errors — search for similar past issues and their fixes
 - During code reviews — recall project conventions
-- When starting work on an unfamiliar area
 
 ## Scoping
 - Set `project` param to git remote origin repo name — NOT the directory name (e.g., `dash-evo-tool` not `dash-evo-tool-2`)
@@ -182,7 +183,7 @@ Print a summary:
 - Claude Code settings at `~/.claude/settings.json` has `MEMCAN_API_KEY` and `MEMCAN_URL` in `env` block
 - User rule exists at `~/.claude/rules/memcan.md`
 - Hooks: list which hooks were installed (or "none") and their target `.claude/settings.json` path
-- MCP server is connected (test: call `search_memories(query="test", limit=1)` — success = connected, failure or tool unavailable = not connected)
+- MCP server is connected (test: call `search(query="test")` — success = connected, failure or tool unavailable = not connected)
 
 Security warnings (show only when applicable):
 - If `MEMCAN_API_KEY` is not set: warn that the MCP server has no auth — anyone with network access can read/write memories.

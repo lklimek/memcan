@@ -39,8 +39,11 @@ Reusable library. All domain logic lives here. Must not depend on transport, CLI
 | `llm` | genai implementation of `LlmProvider` |
 | `ollama` | Ollama model resolution helpers |
 | `pipeline` | Memory add pipeline (LLM fact extraction, dedup, store) |
-| `query` | User ID resolution, SQL sanitization, result formatting |
-| `indexing::code` | Language-specific symbol extraction, incremental code indexing |
+| `query` | User ID resolution, SQL sanitization helpers |
+| `search` | Unified cross-collection search (memories, standards, code, todos) |
+| `todo` | Per-project TODO list CRUD operations |
+| `health` | Dependency circuit breaker (Ollama, LanceDB, Embedding) |
+| `indexing::code` | Language-specific symbol extraction, LLM descriptions, incremental code indexing |
 | `indexing::standards` | Markdown chunking, LLM metadata extraction |
 | `indexing::batch` | Shared batch embedding + upsert helper |
 | `config` | `Settings` loading from env/files |
@@ -105,6 +108,11 @@ Server exposes these MCP tools (via HTTP at `/mcp`):
 | `search_code` | Search indexed code snippets |
 | `index_standards` | Index a standards document (async, returns operation_id) |
 | `drop_indexed_standards` | Drop all indexed data for a standard_id |
+| `add_todo` | Add a per-project TODO item |
+| `list_todos` | List TODO items for a project |
+| `update_todo` | Update a TODO item's fields |
+| `complete_todo` | Mark a TODO item as done |
+| `delete_todo` | Delete a TODO item by ID |
 | `get_queue_status` | Poll async operation progress |
 
 ## Versioning

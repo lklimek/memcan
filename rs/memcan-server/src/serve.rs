@@ -28,18 +28,22 @@ use rmcp::{
 use serde::Deserialize;
 use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
-use tracing::info;
+use tracing::{debug, info};
 use uuid::Uuid;
 
 use memcan_core::{
     config::Settings,
     error::MemcanError,
+    health::{DependencyHealth, DependencyId},
     indexing::standards::{self as standards_indexing, VALID_TYPES},
     init::{MemcanContext, create_llm_provider},
     pipeline::{
         CODE_TABLE, MEMORIES_TABLE, Pipeline, PipelineGuard, PipelineProgress, STANDARDS_TABLE,
     },
     prompts::FACT_EXTRACTION_HOOK_PROMPT,
+    query::{resolve_user_id, sanitize_eq, sanitize_like},
+    search,
+    todo::{self, TODOS_TABLE},
     traits::{EmbeddingProvider, LlmProvider, VectorStore},
 };
 
@@ -112,6 +116,7 @@ struct SharedState {
     queue_status: Arc<StdMutex<LruCache<String, QueueEntry>>>,
     llm_semaphore: Arc<tokio::sync::Semaphore>,
     pending_tasks: Arc<AtomicUsize>,
+    health: Arc<DependencyHealth>,
 }
 
 // --- Tool parameter structs ---
@@ -183,6 +188,26 @@ pub struct SearchCodeParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UnifiedSearchParams {
+    /// The search query.
+    pub query: String,
+    /// Collections to search. Omit to search all (memories, standards, code).
+    pub collections: Option<Vec<String>>,
+    pub project: Option<String>,
+    pub user_id: Option<String>,
+    /// Per-collection result limit (default 5, max 100).
+    pub limit: Option<u32>,
+    /// Filter standards by type (security, coding, cve, guideline, accessibility).
+    pub standard_type: Option<String>,
+    /// Filter standards by ID (e.g., "owasp-cheatsheets").
+    pub standard_id: Option<String>,
+    /// Filter code by tech stack.
+    pub tech_stack: Option<String>,
+    /// Filter code by file path (substring match).
+    pub file_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct IndexStandardsToolParams {
     /// Markdown content of the standards document to index.
     pub content: String,
@@ -204,28 +229,55 @@ pub struct DropIndexedStandardsParams {
     pub standard_id: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct AddTodoParams {
+    /// Short title of the TODO item.
+    pub title: String,
+    /// Optional longer description.
+    pub description: Option<String>,
+    /// Project this TODO belongs to (required).
+    pub project: String,
+    /// Priority: "low", "medium", or "high". Defaults to "medium".
+    pub priority: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListTodosParams {
+    /// Project to list TODOs for (required).
+    pub project: String,
+    /// Filter by status: "pending" or "done". Omit for all.
+    pub status: Option<String>,
+    /// Max results (default 50, max 200).
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UpdateTodoParams {
+    /// ID of the TODO to update.
+    pub todo_id: String,
+    /// New title (optional).
+    pub title: Option<String>,
+    /// New description (optional).
+    pub description: Option<String>,
+    /// New priority (optional).
+    pub priority: Option<String>,
+    /// New status: "pending" or "done" (optional).
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CompleteTodoParams {
+    /// ID of the TODO to mark as done.
+    pub todo_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DeleteTodoParams {
+    /// ID of the TODO to delete.
+    pub todo_id: String,
+}
+
 // --- Helpers ---
-
-fn resolve_user_id(project: &Option<String>, user_id: &Option<String>, default: &str) -> String {
-    if let Some(uid) = user_id {
-        return uid.clone();
-    }
-    if let Some(proj) = project {
-        return format!("project:{proj}");
-    }
-    default.to_string()
-}
-
-fn sanitize_eq(s: &str) -> String {
-    s.replace('\'', "''")
-}
-
-fn sanitize_like(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('\'', "''")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
 
 fn user_filter(user_id: &str) -> String {
     let safe = sanitize_eq(user_id);
@@ -323,6 +375,18 @@ fn empty_hint(filters: &[(&str, Option<&str>)]) -> serde_json::Value {
     serde_json::json!({ "results": [], "hint": hint })
 }
 
+/// Classify an error and report the appropriate dependency as failed.
+fn report_error_to_health(health: &DependencyHealth, err: &MemcanError) {
+    let msg = err.to_string();
+    if err.is_llm_error() {
+        health.report_failure(DependencyId::Ollama, &msg);
+    } else if err.is_lancedb_error() {
+        health.report_failure(DependencyId::LanceDb, &msg);
+    } else if err.is_embedding_error() {
+        health.report_failure(DependencyId::Embedding, &msg);
+    }
+}
+
 // --- MCP Service ---
 
 #[derive(Debug, Clone)]
@@ -353,6 +417,7 @@ impl MemcanService {
         &self,
         Parameters(params): Parameters<AddMemoryParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "add_memory", project = ?params.project, user_id = ?params.user_id, len = params.memory.len(), "MCP request");
         let uid = resolve_user_id(
             &params.project,
             &params.user_id,
@@ -402,8 +467,17 @@ impl MemcanService {
             );
         }
 
+        // Fail fast if LLM is known to be down (embedding + lancedb checked on demand)
+        if self.state.config.distill_memories {
+            self.state
+                .health
+                .check(DependencyId::Ollama)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        }
+
         let task_guard = try_enqueue(&self.state.pending_tasks)?;
         let sem = Arc::clone(&self.state.llm_semaphore);
+        let health = Arc::clone(&self.state.health);
         let uid_clone = uid.clone();
         tokio::spawn(async move {
             let _task_guard = task_guard;
@@ -418,6 +492,9 @@ impl MemcanService {
             match guard.add_memory(&memory, &uid_clone, &metadata).await {
                 Ok(_) => {
                     info!(user_id = %uid_clone, "add_memory: persisted");
+                    health.report_success(DependencyId::Ollama);
+                    health.report_success(DependencyId::Embedding);
+                    health.report_success(DependencyId::LanceDb);
                     guard.complete();
                 }
                 Err(e) => {
@@ -428,6 +505,7 @@ impl MemcanService {
                         memory_preview = %preview,
                         "add_memory: pipeline failed to store memory"
                     );
+                    report_error_to_health(&health, &e);
                     guard.fail(&e);
                 }
             }
@@ -440,11 +518,14 @@ impl MemcanService {
         )]))
     }
 
-    #[tool(description = "Semantic search across stored memories.")]
+    #[tool(
+        description = "Search memories with user/project scope filtering. For general search across all knowledge, prefer the unified 'search' tool."
+    )]
     async fn search_memories(
         &self,
         Parameters(params): Parameters<SearchMemoriesParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "search_memories", query = %params.query, project = ?params.project, user_id = ?params.user_id, "MCP request");
         let limit = params.limit.unwrap_or(10).clamp(1, 1000) as usize;
         let uid = resolve_user_id(
             &params.project,
@@ -479,6 +560,7 @@ impl MemcanService {
         &self,
         Parameters(params): Parameters<GetMemoriesParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "get_memories", project = ?params.project, user_id = ?params.user_id, "MCP request");
         let limit = params.limit.unwrap_or(100).clamp(1, 1000) as usize;
         let uid = resolve_user_id(
             &params.project,
@@ -506,6 +588,7 @@ impl MemcanService {
         &self,
         Parameters(params): Parameters<CountMemoriesParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "count_memories", project = ?params.project, user_id = ?params.user_id, "MCP request");
         let uid = resolve_user_id(
             &params.project,
             &params.user_id,
@@ -533,7 +616,7 @@ impl MemcanService {
         &self,
         Parameters(params): Parameters<DeleteMemoryParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        info!(memory_id = %params.memory_id, "delete_memory");
+        debug!(tool = "delete_memory", memory_id = %params.memory_id, "MCP request");
 
         self.state
             .store
@@ -552,7 +635,7 @@ impl MemcanService {
         &self,
         Parameters(params): Parameters<UpdateMemoryParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        info!(memory_id = %params.memory_id, "update_memory");
+        debug!(tool = "update_memory", memory_id = %params.memory_id, "MCP request");
 
         let existing = self
             .state
@@ -612,6 +695,7 @@ impl MemcanService {
 
         let task_guard = try_enqueue(&self.state.pending_tasks)?;
         let sem = Arc::clone(&self.state.llm_semaphore);
+        let health = Arc::clone(&self.state.health);
         let memory_id = params.memory_id.clone();
         let memory = params.memory;
         tokio::spawn(async move {
@@ -636,10 +720,13 @@ impl MemcanService {
             {
                 Ok(()) => {
                     info!(memory_id = %memory_id, "update_memory: persisted");
+                    health.report_success(DependencyId::Embedding);
+                    health.report_success(DependencyId::LanceDb);
                     guard.complete();
                 }
                 Err(e) => {
                     tracing::error!(memory_id = %memory_id, error = %e, "update_memory: failed");
+                    report_error_to_health(&health, &e);
                     guard.fail(&e);
                 }
             }
@@ -659,7 +746,8 @@ impl MemcanService {
         description = "List available data collections with point counts. Call this to discover what data is indexed and what filter values are valid for search_standards, search_code, and search_memories."
     )]
     async fn list_collections(&self) -> Result<CallToolResult, ErrorData> {
-        let known_tables = [MEMORIES_TABLE, STANDARDS_TABLE, CODE_TABLE];
+        debug!(tool = "list_collections", "MCP request");
+        let known_tables = [MEMORIES_TABLE, STANDARDS_TABLE, CODE_TABLE, TODOS_TABLE];
         let mut collections: Vec<serde_json::Value> = Vec::new();
 
         for name in &known_tables {
@@ -677,11 +765,14 @@ impl MemcanService {
         )]))
     }
 
-    #[tool(description = "Search indexed standards (CWE, OWASP, etc.) by semantic similarity.")]
+    #[tool(
+        description = "Search indexed standards (CWE, OWASP, etc.) with advanced filters. For general search across all knowledge, prefer the unified 'search' tool."
+    )]
     async fn search_standards(
         &self,
         Parameters(params): Parameters<SearchStandardsParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "search_standards", query = %params.query, standard_id = ?params.standard_id, standard_type = ?params.standard_type, "MCP request");
         let limit = params.limit.unwrap_or(10).clamp(1, 100) as usize;
         let standard_type = params.standard_type.map(|s| s.to_lowercase());
         let standard_id = params.standard_id.map(|s| s.to_lowercase());
@@ -751,11 +842,14 @@ impl MemcanService {
         )]))
     }
 
-    #[tool(description = "Search indexed code snippets by semantic similarity.")]
+    #[tool(
+        description = "Search indexed code snippets with project/file/stack filters. For general search across all knowledge, prefer the unified 'search' tool."
+    )]
     async fn search_code(
         &self,
         Parameters(params): Parameters<SearchCodeParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "search_code", query = %params.query, project = ?params.project, tech_stack = ?params.tech_stack, "MCP request");
         let limit = params.limit.unwrap_or(10).clamp(1, 100) as usize;
         let project = params.project.map(|s| s.to_lowercase());
         let tech_stack = params.tech_stack.map(|s| s.to_lowercase());
@@ -814,12 +908,73 @@ impl MemcanService {
     }
 
     #[tool(
+        description = "Search across all knowledge (memories, code, standards) in one query. Use this as the default search tool. Results are merged by relevance score. Optionally filter by collection or apply collection-specific filters."
+    )]
+    async fn search(
+        &self,
+        Parameters(params): Parameters<UnifiedSearchParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "search", query = %params.query, collections = ?params.collections, project = ?params.project, "MCP request");
+
+        self.state
+            .health
+            .check(DependencyId::Embedding)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        self.state
+            .health
+            .check(DependencyId::LanceDb)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let core_params = search::UnifiedSearchParams {
+            query: params.query,
+            collections: params.collections,
+            project: params.project,
+            user_id: params.user_id,
+            limit: params.limit,
+            standard_type: params.standard_type,
+            standard_id: params.standard_id,
+            tech_stack: params.tech_stack,
+            file_path: params.file_path,
+        };
+
+        let results = match search::unified_search(
+            &core_params,
+            self.state.store.as_ref(),
+            self.state.embedder.as_ref(),
+            &self.state.config.default_user_id,
+        )
+        .await
+        {
+            Ok(r) => {
+                self.state.health.report_success(DependencyId::Embedding);
+                self.state.health.report_success(DependencyId::LanceDb);
+                r
+            }
+            Err(e) => {
+                report_error_to_health(&self.state.health, &e);
+                return Err(ErrorData::internal_error(
+                    format!("unified search failed: {e}"),
+                    None,
+                ));
+            }
+        };
+
+        let output = serde_json::json!({
+            "results": results,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&output).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(
         description = "Index a markdown standards document into the vector store. Returns an operation_id for progress tracking via get_queue_status."
     )]
     async fn index_standards(
         &self,
         Parameters(params): Parameters<IndexStandardsToolParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "index_standards", standard_id = %params.standard_id, standard_type = %params.standard_type, content_len = params.content.len(), "MCP request");
         if params.standard_id.is_empty() {
             return Err(ErrorData::internal_error(
                 "standard_id must not be empty",
@@ -878,6 +1033,12 @@ impl MemcanService {
             );
         }
 
+        // Fail fast if LLM is known to be down
+        self.state
+            .health
+            .check(DependencyId::Ollama)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
         let task_guard = try_enqueue(&self.state.pending_tasks)?;
         let store = Arc::clone(&self.state.store);
         let embedder = Arc::clone(&self.state.embedder);
@@ -885,6 +1046,7 @@ impl MemcanService {
         let llm_model = self.state.llm_model.clone();
         let embed_dims = self.state.config.embed_dims;
         let sem = Arc::clone(&self.state.llm_semaphore);
+        let health = Arc::clone(&self.state.health);
 
         let core_params = standards_indexing::IndexStandardsParams {
             content: params.content,
@@ -934,6 +1096,9 @@ impl MemcanService {
                         p.step = memcan_core::pipeline::PipelineStep::CompletedDegraded;
                     }
                     p.completed_at = Some(chrono::Utc::now().to_rfc3339());
+                    health.report_success(DependencyId::Ollama);
+                    health.report_success(DependencyId::Embedding);
+                    health.report_success(DependencyId::LanceDb);
                     info!(
                         indexed = result.indexed,
                         errors = result.errors.len(),
@@ -945,6 +1110,7 @@ impl MemcanService {
                     p.step = memcan_core::pipeline::PipelineStep::Failed;
                     p.error = Some(e.to_string());
                     p.completed_at = Some(chrono::Utc::now().to_rfc3339());
+                    report_error_to_health(&health, &e);
                     tracing::error!(error = %e, "index_standards: failed");
                 }
             }
@@ -965,14 +1131,13 @@ impl MemcanService {
         &self,
         Parameters(params): Parameters<DropIndexedStandardsParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "drop_indexed_standards", standard_id = %params.standard_id, "MCP request");
         if params.standard_id.is_empty() {
             return Err(ErrorData::internal_error(
                 "standard_id must not be empty",
                 None,
             ));
         }
-
-        info!(standard_id = %params.standard_id, "drop_indexed_standards");
 
         let deleted = standards_indexing::drop_standards(
             &params.standard_id,
@@ -992,12 +1157,197 @@ impl MemcanService {
     }
 
     #[tool(
+        description = "Add a per-project TODO item. TODOs are also searchable via the unified 'search' tool."
+    )]
+    async fn add_todo(
+        &self,
+        Parameters(params): Parameters<AddTodoParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "add_todo", project = %params.project, title = %params.title, "MCP request");
+
+        self.state
+            .health
+            .check(DependencyId::Embedding)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        self.state
+            .health
+            .check(DependencyId::LanceDb)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let core_params = todo::AddTodoParams {
+            title: params.title,
+            description: params.description,
+            project: params.project,
+            priority: params.priority,
+        };
+
+        let item = todo::add_todo(
+            self.state.store.as_ref(),
+            self.state.embedder.as_ref(),
+            core_params,
+        )
+        .await
+        .map_err(|e| {
+            report_error_to_health(&self.state.health, &e);
+            ErrorData::internal_error(format!("add_todo failed: {e}"), None)
+        })?;
+
+        self.state.health.report_success(DependencyId::Embedding);
+        self.state.health.report_success(DependencyId::LanceDb);
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&item).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(
+        description = "List TODO items for a project, sorted by priority (high first). TODOs are also searchable via the unified 'search' tool."
+    )]
+    async fn list_todos(
+        &self,
+        Parameters(params): Parameters<ListTodosParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "list_todos", project = %params.project, status = ?params.status, "MCP request");
+
+        self.state
+            .health
+            .check(DependencyId::LanceDb)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let limit = params.limit.unwrap_or(50).clamp(1, 200) as usize;
+
+        let todos = todo::list_todos(
+            self.state.store.as_ref(),
+            &params.project,
+            params.status.as_deref(),
+            limit,
+        )
+        .await
+        .map_err(|e| {
+            report_error_to_health(&self.state.health, &e);
+            ErrorData::internal_error(format!("list_todos failed: {e}"), None)
+        })?;
+
+        self.state.health.report_success(DependencyId::LanceDb);
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&todos).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(description = "Update a TODO item's title, description, priority, or status.")]
+    async fn update_todo(
+        &self,
+        Parameters(params): Parameters<UpdateTodoParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "update_todo", todo_id = %params.todo_id, "MCP request");
+
+        self.state
+            .health
+            .check(DependencyId::Embedding)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        self.state
+            .health
+            .check(DependencyId::LanceDb)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let updates = todo::UpdateTodoFields {
+            title: params.title,
+            description: params.description,
+            priority: params.priority,
+            status: params.status,
+        };
+
+        let item = todo::update_todo(
+            self.state.store.as_ref(),
+            self.state.embedder.as_ref(),
+            &params.todo_id,
+            updates,
+        )
+        .await
+        .map_err(|e| {
+            report_error_to_health(&self.state.health, &e);
+            ErrorData::internal_error(format!("update_todo failed: {e}"), None)
+        })?;
+
+        self.state.health.report_success(DependencyId::Embedding);
+        self.state.health.report_success(DependencyId::LanceDb);
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&item).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(description = "Mark a TODO item as done.")]
+    async fn complete_todo(
+        &self,
+        Parameters(params): Parameters<CompleteTodoParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "complete_todo", todo_id = %params.todo_id, "MCP request");
+
+        self.state
+            .health
+            .check(DependencyId::Embedding)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        self.state
+            .health
+            .check(DependencyId::LanceDb)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let item = todo::complete_todo(
+            self.state.store.as_ref(),
+            self.state.embedder.as_ref(),
+            &params.todo_id,
+        )
+        .await
+        .map_err(|e| {
+            report_error_to_health(&self.state.health, &e);
+            ErrorData::internal_error(format!("complete_todo failed: {e}"), None)
+        })?;
+
+        self.state.health.report_success(DependencyId::Embedding);
+        self.state.health.report_success(DependencyId::LanceDb);
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&item).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(description = "Delete a TODO item by ID.")]
+    async fn delete_todo(
+        &self,
+        Parameters(params): Parameters<DeleteTodoParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "delete_todo", todo_id = %params.todo_id, "MCP request");
+
+        self.state
+            .health
+            .check(DependencyId::LanceDb)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        todo::delete_todo(self.state.store.as_ref(), &params.todo_id)
+            .await
+            .map_err(|e| {
+                report_error_to_health(&self.state.health, &e);
+                ErrorData::internal_error(format!("delete_todo failed: {e}"), None)
+            })?;
+
+        self.state.health.report_success(DependencyId::LanceDb);
+
+        let response = serde_json::json!({ "status": "deleted", "todo_id": params.todo_id });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&response).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(
         description = "Check status of queued async operations (add_memory, update_memory). Returns recent operations or a specific one by ID."
     )]
     async fn get_queue_status(
         &self,
         Parameters(params): Parameters<GetQueueStatusParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "get_queue_status", operation_id = ?params.operation_id, "MCP request");
         let limit = params.limit.unwrap_or(10).clamp(1, 100) as usize;
 
         // Collect entries while holding the LRU lock, then drop it before
@@ -1079,7 +1429,9 @@ fn setup_logging(log_file: &str) {
             .with_writer(std::io::stderr)
             .with_ansi(false)
             .with_env_filter(
-                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                    EnvFilter::new("info,memcan_core=debug,memcan_server=debug")
+                }),
             )
             .init();
         return;
@@ -1102,7 +1454,8 @@ fn setup_logging(log_file: &str) {
         .with_writer(file_appender)
         .with_ansi(false)
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug")),
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info,memcan_core=debug,memcan_server=debug")),
         )
         .init();
 
@@ -1138,8 +1491,19 @@ async fn shutdown_signal() {
 
 // --- Health handler ---
 
-async fn health_handler() -> impl IntoResponse {
-    axum::response::Json(serde_json::json!({"status": "ok"}))
+async fn health_handler(
+    axum::extract::State(health): axum::extract::State<Arc<DependencyHealth>>,
+) -> impl IntoResponse {
+    let deps = health.status();
+    let overall = if health.all_healthy() {
+        "ok"
+    } else {
+        "degraded"
+    };
+    axum::response::Json(serde_json::json!({
+        "status": overall,
+        "dependencies": deps,
+    }))
 }
 
 // --- Entry point ---
@@ -1157,13 +1521,16 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
     ctx.store.ensure_table(MEMORIES_TABLE, dims).await?;
     ctx.store.ensure_table(STANDARDS_TABLE, dims).await?;
     ctx.store.ensure_table(CODE_TABLE, dims).await?;
+    ctx.store.ensure_table(TODOS_TABLE, dims).await?;
 
-    info!("Tables ensured: {MEMORIES_TABLE}, {STANDARDS_TABLE}, {CODE_TABLE}");
+    info!("Tables ensured: {MEMORIES_TABLE}, {STANDARDS_TABLE}, {CODE_TABLE}, {TODOS_TABLE}");
 
     let listen_addr = args
         .listen
         .clone()
         .unwrap_or_else(|| ctx.settings.listen.clone());
+
+    let health = Arc::new(DependencyHealth::with_defaults());
 
     let shared = Arc::new(SharedState {
         store: Arc::new(ctx.store),
@@ -1176,6 +1543,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
         ))),
         llm_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
         pending_tasks: Arc::new(AtomicUsize::new(0)),
+        health: Arc::clone(&health),
     });
 
     if args.stdio {
@@ -1236,7 +1604,10 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
         };
 
         let app = Router::new()
-            .route("/health", get(health_handler))
+            .route(
+                "/health",
+                get(health_handler).with_state(Arc::clone(&health)),
+            )
             .merge(mcp_router);
 
         let listener = TcpListener::bind(&listen_addr)

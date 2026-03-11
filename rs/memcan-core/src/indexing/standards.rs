@@ -354,6 +354,10 @@ pub async fn index_standards(
         let mut payload = serde_json::Map::new();
         payload.insert("data".into(), serde_json::Value::String(chunk_text));
         payload.insert(
+            "collection".into(),
+            serde_json::Value::String("standards".into()),
+        );
+        payload.insert(
             "standard_id".into(),
             serde_json::Value::String(params.standard_id.clone()),
         );

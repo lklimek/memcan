@@ -30,6 +30,7 @@ lancedb = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 reqwest = { workspace = true }
+sha2 = { workspace = true }
 handlebars = "6"
 regex = { workspace = true }
 

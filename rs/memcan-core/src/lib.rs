@@ -15,6 +15,7 @@
 pub mod config;
 pub mod embed;
 pub mod error;
+pub mod health;
 pub mod indexing;
 pub mod init;
 pub mod lancedb_store;
@@ -25,6 +26,9 @@ pub mod llm_ollama_rs;
 pub mod ollama;
 pub mod pipeline;
 pub mod prompts;
+pub mod query;
+pub mod search;
+pub mod todo;
 pub mod traits;
 
 #[cfg(not(any(feature = "ollama-rs-llm", feature = "genai-llm")))]
