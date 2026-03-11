@@ -45,6 +45,18 @@ Bad memories (reject these):
 
 Tone: factual, third-person, present tense. Pattern: "[Subject]: [what happened/what to do] — [why/context]". No first person, no vague qualifiers.
 
+## Opportunistic Cleanup
+
+During Phase 1 dedup searches, you will encounter existing memories. If any fail the Quality Gate above, fix them on the spot:
+
+- **Vague or context-dependent** → `update_memory` to make self-contained and specific
+- **Ephemeral or obsolete** (superseded by code changes, no longer relevant) → `delete_memory`
+- **Near-duplicate of a better memory** → `delete_memory` the weaker one
+
+Do NOT search deliberately for bad memories. Only act on what surfaces during normal dedup checks.
+
+Log each cleanup action briefly: `updated <id> (reason)` or `deleted <id> (reason)`.
+
 ## Phase 2 — Categorize and Save
 
 For each item:
@@ -63,6 +75,7 @@ Log each save briefly: scope, type, one-line summary.
 | `search_memories` | Advanced: memories-only scoped search. | `search_memories(query="docker cache", project="penny", limit=5)` |
 | `add_memory` | Save a new memory. | `add_memory(memory="...", project="penny", metadata={"type": "lesson"})` |
 | `update_memory` | Update an existing memory. | `update_memory(memory_id="<uuid>", memory="...")` |
+| `delete_memory` | Delete a low-quality memory. | `delete_memory(memory_id="<uuid>")` |
 | `count_memories` | Count memories. | `count_memories(project="penny")` |
 
 ## Best Practices

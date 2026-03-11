@@ -102,7 +102,7 @@ Mark each search PASS if the expected memory ranks first, WARN if it appears but
 
 ## Phase 6: Cleanup
 
-1. Delete all 4 test memories by ID using `delete_memory(memory_id=<id>)`.
+1. Delete all test memories by ID using `delete_memory(memory_id=<id>)`.
 2. `count_memories(project="__smoke_test__")` -- must equal 0.
 
 IMPORTANT: Execute this phase even if earlier phases failed. Use whatever IDs were collected. If IDs are unknown, use `get_memories(project="__smoke_test__", limit=50)` to find and delete any remaining test memories.
@@ -114,7 +114,103 @@ IMPORTANT: Execute this phase even if earlier phases failed. Use whatever IDs we
 
 These calls validate that the code and standards collections are accessible. Empty results are acceptable.
 
-## Phase 8: Log Check
+## Phase 8: TODO CRUD
+
+Test the per-project TODO list tools using project `__smoke_test__`.
+
+1. **Create** two TODOs:
+   ```
+   add_todo(
+     title="Fix embedding dimension mismatch",
+     description="Derive dimensions from model at startup instead of hardcoding",
+     project="__smoke_test__",
+     priority="high"
+   )
+   ```
+   ```
+   add_todo(
+     title="Add retry logic for Ollama timeouts",
+     project="__smoke_test__",
+     priority="low"
+   )
+   ```
+   Save returned IDs. Both should return a `TodoItem` with `status: "pending"`.
+
+2. **List** TODOs:
+   ```
+   list_todos(project="__smoke_test__")
+   ```
+   Must return 2 items, sorted by priority (high first).
+
+3. **Update** the low-priority TODO:
+   ```
+   update_todo(
+     todo_id=<low priority ID>,
+     priority="medium",
+     description="Add exponential backoff with jitter"
+   )
+   ```
+   Verify returned item has updated priority and description.
+
+4. **Complete** the high-priority TODO:
+   ```
+   complete_todo(todo_id=<high priority ID>)
+   ```
+   Verify returned item has `status: "done"` and `completed_at` is set.
+
+5. **List with filter**:
+   ```
+   list_todos(project="__smoke_test__", status="pending")
+   ```
+   Must return only 1 item (the medium-priority one).
+
+6. **Delete** both TODOs by ID using `delete_todo(todo_id=<id>)`.
+
+7. **Verify cleanup**:
+   ```
+   list_todos(project="__smoke_test__")
+   ```
+   Must return 0 items.
+
+IMPORTANT: Execute this phase even if earlier phases failed. Always delete any TODOs created during testing. If IDs are unknown, use `list_todos(project="__smoke_test__")` to find and delete any remaining test TODOs.
+
+## Phase 9: Unified Search
+
+Test the unified `search` tool that searches across all collections simultaneously.
+
+1. First, create a temporary test memory for search:
+   ```
+   add_memory(
+     memory="Circuit breaker pattern: track consecutive failures per dependency. After threshold, open the breaker and skip calls for a cooldown period. Use AtomicU32 for lock-free failure counting.",
+     project="__smoke_test__",
+     metadata={"type": "lesson"}
+   )
+   ```
+   Wait 10 seconds for async processing.
+
+2. **Search all collections** (no collection filter):
+   ```
+   search(query="circuit breaker failure tracking", project="__smoke_test__", limit=3)
+   ```
+   Verify it returns results and includes the test memory from the `memories` collection. Results should have `collection` field indicating source.
+
+3. **Search with collection filter**:
+   ```
+   search(query="circuit breaker failure tracking", collections=["memories"], project="__smoke_test__", limit=3)
+   ```
+   Verify results only come from the `memories` collection.
+
+4. **Search standards collection** (no project filter needed):
+   ```
+   search(query="input validation OWASP", collections=["standards"], limit=3)
+   ```
+   Verify it returns results from standards or "no data indexed" gracefully.
+
+5. **Cleanup**: Delete the test memory created in step 1. Use `get_memories(project="__smoke_test__", limit=10)` to find it, then `delete_memory`. Verify `count_memories(project="__smoke_test__")` returns 0.
+
+IMPORTANT: Execute this phase even if earlier phases failed. Always delete any memories created during testing. If IDs are unknown, use `get_memories(project="__smoke_test__", limit=50)` to find and delete any remaining test memories.
+
+## Phase 10: Log Check
 
 Check server logs for errors during the test window:
 - If running via Docker: `docker compose logs memcan --tail 100`
@@ -122,7 +218,7 @@ Check server logs for errors during the test window:
 
 Look for lines containing `ERROR` or `WARN`. Report any issues found, or "no errors in logs" if clean.
 
-## Phase 9: Summary
+## Phase 11: Summary
 
 Print a results table:
 
@@ -148,5 +244,16 @@ Print a results table:
 | 6     | Final count               | PASS   | 0 memories        |
 | 7a    | search_code               | PASS   | 3 results         |
 | 7b    | search_standards          | PASS   | No data indexed   |
-| 8     | Log check                 | PASS   | No errors         |
+| 8a    | Add 2 TODOs              | PASS   |                   |
+| 8b    | List TODOs (priority)     | PASS   | High first        |
+| 8c    | Update TODO               | PASS   |                   |
+| 8d    | Complete TODO             | PASS   | completed_at set  |
+| 8e    | List pending only         | PASS   | 1 item            |
+| 8f    | Delete TODOs              | PASS   |                   |
+| 8g    | Verify TODO cleanup       | PASS   | 0 items           |
+| 9a    | Unified search (all)      | PASS   | Multi-collection  |
+| 9b    | Unified search (filtered) | PASS   | Memories only     |
+| 9c    | Unified search (standards)| PASS   |                   |
+| 9d    | Unified search cleanup    | PASS   | 0 memories        |
+| 10    | Log check                 | PASS   | No errors         |
 ```
