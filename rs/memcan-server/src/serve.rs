@@ -41,6 +41,7 @@ use memcan_core::{
         CODE_TABLE, MEMORIES_TABLE, Pipeline, PipelineGuard, PipelineProgress, STANDARDS_TABLE,
     },
     prompts::FACT_EXTRACTION_HOOK_PROMPT,
+    search,
     traits::{EmbeddingProvider, LlmProvider, VectorStore},
 };
 
@@ -182,6 +183,26 @@ pub struct SearchCodeParams {
     pub tech_stack: Option<String>,
     pub file_path: Option<String>,
     pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UnifiedSearchParams {
+    /// The search query.
+    pub query: String,
+    /// Collections to search. Omit to search all (memories, standards, code).
+    pub collections: Option<Vec<String>>,
+    pub project: Option<String>,
+    pub user_id: Option<String>,
+    /// Per-collection result limit (default 5, max 100).
+    pub limit: Option<u32>,
+    /// Filter standards by type (security, coding, cve, guideline, accessibility).
+    pub standard_type: Option<String>,
+    /// Filter standards by ID (e.g., "owasp-cheatsheets").
+    pub standard_id: Option<String>,
+    /// Filter code by tech stack.
+    pub tech_stack: Option<String>,
+    /// Filter code by file path (substring match).
+    pub file_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -467,7 +488,9 @@ impl MemcanService {
         )]))
     }
 
-    #[tool(description = "Semantic search across stored memories.")]
+    #[tool(
+        description = "Search memories with user/project scope filtering. For general search across all knowledge, prefer the unified 'search' tool."
+    )]
     async fn search_memories(
         &self,
         Parameters(params): Parameters<SearchMemoriesParams>,
@@ -708,7 +731,9 @@ impl MemcanService {
         )]))
     }
 
-    #[tool(description = "Search indexed standards (CWE, OWASP, etc.) by semantic similarity.")]
+    #[tool(
+        description = "Search indexed standards (CWE, OWASP, etc.) with advanced filters. For general search across all knowledge, prefer the unified 'search' tool."
+    )]
     async fn search_standards(
         &self,
         Parameters(params): Parameters<SearchStandardsParams>,
@@ -782,7 +807,9 @@ impl MemcanService {
         )]))
     }
 
-    #[tool(description = "Search indexed code snippets by semantic similarity.")]
+    #[tool(
+        description = "Search indexed code snippets with project/file/stack filters. For general search across all knowledge, prefer the unified 'search' tool."
+    )]
     async fn search_code(
         &self,
         Parameters(params): Parameters<SearchCodeParams>,
@@ -839,6 +866,44 @@ impl MemcanService {
             format_code_results(&results)
         };
 
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&output).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(
+        description = "Search across all knowledge (memories, code, standards) in one query. Use this as the default search tool. Results are merged by relevance score. Optionally filter by collection or apply collection-specific filters."
+    )]
+    async fn search(
+        &self,
+        Parameters(params): Parameters<UnifiedSearchParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        info!(query = %params.query, "unified search");
+
+        let core_params = search::UnifiedSearchParams {
+            query: params.query,
+            collections: params.collections,
+            project: params.project,
+            user_id: params.user_id,
+            limit: params.limit,
+            standard_type: params.standard_type,
+            standard_id: params.standard_id,
+            tech_stack: params.tech_stack,
+            file_path: params.file_path,
+        };
+
+        let results = search::unified_search(
+            &core_params,
+            self.state.store.as_ref(),
+            self.state.embedder.as_ref(),
+            &self.state.config.default_user_id,
+        )
+        .await
+        .map_err(|e| ErrorData::internal_error(format!("unified search failed: {e}"), None))?;
+
+        let output = serde_json::json!({
+            "results": results,
+        });
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string(&output).unwrap_or_default(),
         )]))
