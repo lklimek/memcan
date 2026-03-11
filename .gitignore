@@ -41,3 +41,4 @@ Thumbs.db
 *.report.json
 report.json
 .claude/scheduled_tasks.lock
+settings.local.json

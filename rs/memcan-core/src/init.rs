@@ -32,6 +32,13 @@ impl MemcanContext {
         })
     }
 
+    /// Initialize the LLM provider, checking model availability.
+    /// Call this only in code paths that require LLM (serve, index_standards).
+    pub async fn init_llm(&self) -> Result<()> {
+        let (provider, _model) = create_llm_provider(&self.settings);
+        provider.init().await
+    }
+
     /// Load settings and create embedder only (no store).
     ///
     /// Useful for commands like `--download-model` that only need the

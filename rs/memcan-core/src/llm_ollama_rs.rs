@@ -81,7 +81,7 @@ impl OllamaRsLlmProvider {
 ///
 /// Validates that the scheme is `http` or `https`. Falls back to
 /// `http://localhost:11434` with a warning on unparseable input.
-fn parse_host_port(host: &str) -> (String, u16) {
+pub(crate) fn parse_host_port(host: &str) -> (String, u16) {
     let host = host.trim_end_matches('/');
 
     if let Ok(url) = reqwest::Url::parse(host) {
@@ -191,6 +191,37 @@ impl LlmProvider for OllamaRsLlmProvider {
         Ok(text)
     }
 
+    async fn init(&self) -> Result<()> {
+        let model_name = &self.default_model;
+
+        match self.client.show_model_info(model_name.to_string()).await {
+            Ok(_) => {
+                tracing::info!(model = %model_name, "LLM model available");
+                return Ok(());
+            }
+            Err(e) => {
+                let err_str = e.to_string().to_lowercase();
+                if err_str.contains("not found") || err_str.contains("404") {
+                    tracing::info!(model = %model_name, "LLM model not found locally, pulling");
+                } else {
+                    return Err(MemcanError::Other(format!(
+                        "failed to check Ollama model '{model_name}': {e}"
+                    )));
+                }
+            }
+        }
+
+        self.client
+            .pull_model(model_name.to_string(), false)
+            .await
+            .map_err(|e| {
+                MemcanError::Other(format!("failed to pull Ollama model '{model_name}': {e}"))
+            })?;
+
+        tracing::info!(model = %model_name, "LLM model pulled successfully");
+        Ok(())
+    }
+
     async fn context_window(&self, model: &str) -> Option<usize> {
         let model_name = strip_ollama_prefix(model).to_string();
         tracing::trace!(model = %model_name, "ollama-rs: querying context window");
@@ -263,5 +294,78 @@ mod tests {
         let (host, port) = parse_host_port("http://myserver");
         assert_eq!(host, "http://myserver");
         assert_eq!(port, 11434);
+    }
+
+    /// Helper: create a provider pointing at the given base URL.
+    fn provider_at(base_url: &str, model: &str) -> OllamaRsLlmProvider {
+        let settings = Settings {
+            llm_model: model.into(),
+            ollama_host: Some(base_url.to_string()),
+            ..Settings::default()
+        };
+        OllamaRsLlmProvider::from_settings(&settings)
+    }
+
+    #[tokio::test]
+    async fn test_init_model_available() {
+        use crate::traits::LlmProvider;
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/show")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"modelfile":"","parameters":"","template":"","model_info":{}}"#)
+            .create_async()
+            .await;
+
+        let provider = provider_at(&server.url(), "test-model");
+        let result = provider.init().await;
+
+        assert!(result.is_ok(), "init should succeed when model exists");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "ollama-rs pull_model expects streaming NDJSON that is hard to mock reliably"]
+    async fn test_init_model_not_found_pulls() {
+        use crate::traits::LlmProvider;
+
+        let mut server = mockito::Server::new_async().await;
+        let show_mock = server
+            .mock("POST", "/api/show")
+            .with_status(404)
+            .with_body(r#"{"error":"model 'test-model' not found"}"#)
+            .create_async()
+            .await;
+        let pull_mock = server
+            .mock("POST", "/api/pull")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("{\"status\": \"success\"}\n")
+            .create_async()
+            .await;
+
+        let provider = provider_at(&server.url(), "test-model");
+        let result = provider.init().await;
+
+        assert!(result.is_ok(), "init should succeed after pulling model");
+        show_mock.assert_async().await;
+        pull_mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_init_connection_error_no_pull() {
+        use crate::traits::LlmProvider;
+
+        let provider = provider_at("http://127.0.0.1:1", "test-model");
+        let result = provider.init().await;
+
+        assert!(result.is_err(), "init should fail on connection error");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("failed to check Ollama model"),
+            "error should indicate check failure, got: {err_msg}"
+        );
     }
 }

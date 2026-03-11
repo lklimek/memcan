@@ -365,7 +365,7 @@ impl VectorStore for LanceDbStore {
             query = query.only_if(f);
         }
         let batches = query
-            .select(Select::columns(&["id", "payload"]))
+            .select(Select::columns(&["id", "payload", "_distance"]))
             .execute()
             .await
             .context("vector search execute failed")?;
