@@ -40,7 +40,9 @@ Reusable library. All domain logic lives here. Must not depend on transport, CLI
 | `ollama` | Ollama model resolution helpers |
 | `pipeline` | Memory add pipeline (LLM fact extraction, dedup, store) |
 | `query` | User ID resolution, SQL sanitization helpers |
-| `indexing::code` | Language-specific symbol extraction, incremental code indexing |
+| `search` | Unified cross-collection search (memories, standards, code) |
+| `health` | Dependency circuit breaker (Ollama, LanceDB, Embedding) |
+| `indexing::code` | Language-specific symbol extraction, LLM descriptions, incremental code indexing |
 | `indexing::standards` | Markdown chunking, LLM metadata extraction |
 | `indexing::batch` | Shared batch embedding + upsert helper |
 | `config` | `Settings` loading from env/files |
