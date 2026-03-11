@@ -177,6 +177,16 @@ If the user selects "None", remove all existing hooks whose `command` contains `
 
 ### 5. Verify
 
+**Server version check** (run before the summary):
+
+1. Read the expected version from `.claude-plugin/plugin.json` (`version` field).
+2. Fetch running server version: `curl -sf "$MEMCAN_URL/health"` — if that returns 401/403, retry with `-H "Authorization: Bearer $MEMCAN_API_KEY"`. Extract the `version` field from the JSON response.
+3. Compare. If they differ:
+   - Warn: "Plugin expects vX.Y.Z but server reports vA.B.C — new MCP tools may be missing."
+   - If Docker Compose is available, auto-fix: locate the `docker-compose.yml` (check `~/.config/memcan/` then current dir), run `docker compose pull && docker compose up -d`, wait for the health check to pass, then re-fetch `/health` to confirm the version now matches.
+   - If Docker is not available, tell the user to rebuild the server binary.
+4. If the server is unreachable, skip — the MCP connectivity check below will catch it.
+
 Print a summary:
 - CLI installed and on PATH (`memcan`)
 - `.env` exists at `~/.config/memcan/.env` with `MEMCAN_URL` and `MEMCAN_API_KEY` configured

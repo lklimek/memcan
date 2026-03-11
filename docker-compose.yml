@@ -66,6 +66,11 @@ services:
       - "traefik.http.middlewares.memcan-auth.plugin.traefik-api-token-middleware.tokens=${MEMCAN_API_KEY}"
       - "traefik.http.middlewares.memcan-auth.plugin.traefik-api-token-middleware.removeheadersonsuccess=false"
       - "traefik.http.routers.memcan.middlewares=memcan-ipallow@docker,memcan-auth@docker"
+      - "traefik.http.routers.memcan-health.rule=Path(`/health`)"
+      - "traefik.http.routers.memcan-health.entrypoints=memcan"
+      - "traefik.http.routers.memcan-health.service=memcan"
+      - "traefik.http.routers.memcan-health.middlewares=memcan-ipallow@docker"
+      - "traefik.http.routers.memcan-health.priority=100"
     stop_grace_period: 30s
     restart: unless-stopped
     healthcheck:

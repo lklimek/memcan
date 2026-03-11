@@ -1502,6 +1502,7 @@ async fn health_handler(
     };
     axum::response::Json(serde_json::json!({
         "status": overall,
+        "version": env!("CARGO_PKG_VERSION"),
         "dependencies": deps,
     }))
 }
