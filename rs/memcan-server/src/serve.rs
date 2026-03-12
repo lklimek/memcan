@@ -121,11 +121,51 @@ struct SharedState {
 
 // --- Tool parameter structs ---
 
+/// Deserialize a JSON map that may arrive as either a proper object or a
+/// stringified JSON object (common when LLMs double-encode metadata).
+fn deserialize_string_or_map<'de, D>(
+    deserializer: D,
+) -> Result<Option<HashMap<String, serde_json::Value>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let value: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(serde_json::Value::Object(map)) => Ok(Some(map.into_iter().collect())),
+        Some(serde_json::Value::String(s)) => {
+            if s.len() > 64 * 1024 {
+                return Err(D::Error::custom("metadata string exceeds 64 KB limit"));
+            }
+            let parsed: serde_json::Value = serde_json::from_str(&s).map_err(D::Error::custom)?;
+            match parsed {
+                serde_json::Value::Object(map) => Ok(Some(map.into_iter().collect())),
+                _ => Err(D::Error::custom("metadata string must contain a JSON map")),
+            }
+        }
+        Some(other) => {
+            let label = match &other {
+                serde_json::Value::Null => "null",
+                serde_json::Value::Bool(_) => "bool",
+                serde_json::Value::Number(_) => "number",
+                serde_json::Value::Array(_) => "array",
+                _ => "unknown",
+            };
+            Err(D::Error::custom(format!(
+                "expected map or string, got {label}"
+            )))
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AddMemoryParams {
     pub memory: String,
     pub project: Option<String>,
     pub user_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_string_or_map")]
     pub metadata: Option<HashMap<String, serde_json::Value>>,
 }
 
@@ -1628,6 +1668,84 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn add_memory_params_metadata_as_object() {
+        let json = r#"{"memory": "test", "metadata": {"type": "lesson"}}"#;
+        let params: AddMemoryParams = serde_json::from_str(json).unwrap();
+        let meta = params.metadata.unwrap();
+        assert_eq!(meta["type"], serde_json::Value::String("lesson".into()));
+    }
+
+    #[test]
+    fn add_memory_params_metadata_as_string() {
+        let json = r#"{"memory": "test", "metadata": "{\"type\": \"lesson\"}"}"#;
+        let params: AddMemoryParams = serde_json::from_str(json).unwrap();
+        let meta = params.metadata.unwrap();
+        assert_eq!(meta["type"], serde_json::Value::String("lesson".into()));
+    }
+
+    #[test]
+    fn add_memory_params_metadata_missing() {
+        let json = r#"{"memory": "test"}"#;
+        let params: AddMemoryParams = serde_json::from_str(json).unwrap();
+        assert!(params.metadata.is_none());
+    }
+
+    #[test]
+    fn add_memory_params_metadata_null() {
+        let json = r#"{"memory": "test", "metadata": null}"#;
+        let params: AddMemoryParams = serde_json::from_str(json).unwrap();
+        assert!(params.metadata.is_none());
+    }
+
+    #[test]
+    fn add_memory_params_metadata_empty_string() {
+        let json = r#"{"memory": "test", "metadata": ""}"#;
+        let result: Result<AddMemoryParams, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn add_memory_params_metadata_non_map_json_string() {
+        let json = r#"{"memory": "test", "metadata": "[1,2,3]"}"#;
+        let result: Result<AddMemoryParams, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn add_memory_params_metadata_invalid_json_string() {
+        let json = r#"{"memory": "test", "metadata": "not json"}"#;
+        let result: Result<AddMemoryParams, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn add_memory_params_metadata_direct_number() {
+        let json = r#"{"memory": "test", "metadata": 42}"#;
+        let result: Result<AddMemoryParams, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn add_memory_params_metadata_direct_array() {
+        let json = r#"{"memory": "test", "metadata": [1,2,3]}"#;
+        let result: Result<AddMemoryParams, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn add_memory_params_metadata_oversized_string() {
+        let big = "a".repeat(64 * 1024 + 1);
+        let json = format!(r#"{{"memory": "test", "metadata": "{}"}}"#, big);
+        let result: Result<AddMemoryParams, _> = serde_json::from_str(&json);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("64 KB"),
+            "error should mention size limit: {err}"
+        );
+    }
 
     #[test]
     fn pending_task_guard_decrements_on_drop() {
