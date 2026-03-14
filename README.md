@@ -125,6 +125,24 @@ OLLAMA_API_KEY=your-token-here
 
 > **Cloud LLM:** Only Ollama is currently supported. If you need a different LLM provider, [open an issue](https://github.com/lklimek/memcan/issues).
 
+## Deprecated Features
+
+### Auto-Hooks (SubagentStop / PreCompact)
+
+**Status:** Removed in v0.35
+**Alternative:** Use the `lessons-learned` skill for deliberate memory extraction.
+
+The automatic extraction hooks (`SubagentStop` and `PreCompact` events calling `memcan extract`) have been removed due to severe quality issues:
+
+- **Raw output storage**: The hooks captured entire agent outputs — conversation transcripts, research reports, TODO list renders — as "memories" instead of distilling actionable facts
+- **Massive bloat**: In one project, 437 auto-hook memories consumed 760KB (95% of total storage). Three individual memories exceeded 50KB each, with the largest at 220KB (an entire TODO list dump stored verbatim)
+- **Context overflow**: When `search` or `recall` returned these bloated memories, they consumed the entire context window, making Claude Code unusable
+- **Low signal-to-noise**: The vast majority of auto-hook memories were ephemeral junk — commit hashes, temp file paths, test pass counts, file rename notifications
+
+The `memcan extract` CLI binary remains available for use by the `lessons-learned` skill, which provides deliberate, quality-controlled extraction with human oversight.
+
+To clean up existing auto-hook memories, use `memcan-server purge-memories --source auto-hook` (planned capability — not yet implemented) or delete them individually via `memcan delete`.
+
 ## License
 
 MIT

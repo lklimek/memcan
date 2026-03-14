@@ -115,65 +115,22 @@ Use the MemCan MCP server to store and recall knowledge across sessions.
 - Search before adding to avoid duplicates
 ```
 
-### 4. Configure Hooks
+### 4. Clean Up Deprecated Hooks
 
-Use `AskUserQuestion` to ask which hooks to install. Default: **None**.
+Auto-hooks (`SubagentStop` and `PreCompact` calling `memcan extract`) are deprecated. They captured raw agent output — entire transcripts, README files, TODO dumps — instead of distilled facts, resulting in low-quality junk memories. Use the `lessons-learned` skill for deliberate, quality-controlled memory extraction instead.
 
-Options:
-- **lessons-learned (recommended)** — `SubagentStop` hook. Runs `memcan extract` after each agent task completes, automatically capturing learnings from the conversation. Best approach for persistent memory — fully automatic, zero effort.
-- **pre-compact** — `PreCompact` hook. Runs `memcan extract` before context compaction to save knowledge that would otherwise be lost.
-- **Both** — install both hooks above.
-- **None** (default) — skip hook installation.
+Scan both the user-level and any project-level `settings.json` files for lingering deprecated hooks:
 
-If the user selects any hooks, merge them into the project's `.claude/settings.json` under the `hooks` key. Read the existing file first (or start with `{}`). Each selected hook adds an entry:
+1. Check `~/.claude/settings.json`
+2. Check `.claude/settings.json` in the current working directory (if it exists and differs from the user-level file)
 
-SubagentStop (lessons-learned):
-```json
-{
-  "hooks": {
-    "SubagentStop": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "memcan extract",
-            "async": true,
-            "timeout": 120
-          }
-        ]
-      }
-    ]
-  }
-}
-```
+For each file found, read it and inspect all hook events. For each event, remove any hook entry whose `command` contains `memcan extract`. Do not remove non-memcan hooks, and do not remove the `SessionStart` check hook (`command -v memcan`).
 
-PreCompact:
-```json
-{
-  "hooks": {
-    "PreCompact": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "memcan extract",
-            "async": true,
-            "timeout": 120
-          }
-        ]
-      }
-    ]
-  }
-}
-```
+If any hooks were removed from a file, write the updated JSON back and report: "Removed deprecated `memcan extract` hook(s) from `<path>`. Auto-hooks are deprecated — use the `lessons-learned` skill for manual extraction."
 
-Merge into existing hooks — do not overwrite other hook entries. Use `python3` or `jq` for JSON manipulation. Create `.claude/` directory if needed.
+If no deprecated hooks were found in a file, silently skip it (no output needed).
 
-**Cleanup unselected hooks:** After installing selected hooks, scan all hook events (`SubagentStop`, `PreCompact`) for entries whose `command` contains `memcan`. Remove any that were NOT selected by the user. This ensures switching from "Both" to "lessons-learned" removes the stale `PreCompact` memcan hook. Do not remove non-memcan hooks.
-
-If the user selects "None", remove all existing hooks whose `command` contains `memcan` across all events. Do not remove non-memcan hooks.
+Use `python3` or `jq` for JSON manipulation. This step is safe to run multiple times — if no deprecated hooks exist, it is a no-op.
 
 ### 5. Verify
 
@@ -192,7 +149,7 @@ Print a summary:
 - `.env` exists at `~/.config/memcan/.env` with `MEMCAN_URL` and `MEMCAN_API_KEY` configured
 - Claude Code settings at `~/.claude/settings.json` has `MEMCAN_API_KEY` and `MEMCAN_URL` in `env` block
 - User rule exists at `~/.claude/rules/memcan.md`
-- Hooks: list which hooks were installed (or "none") and their target `.claude/settings.json` path
+- Hooks: report whether any deprecated `memcan extract` hooks were removed, or confirm none were found
 - MCP server is connected (test: call `search(query="test")` — success = connected, failure or tool unavailable = not connected)
 
 Security warnings (show only when applicable):

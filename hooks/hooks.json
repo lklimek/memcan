@@ -1,5 +1,5 @@
 {
-  "description": "Setup check on session start; auto-extract learnings on agent stop and pre-compact",
+  "description": "Setup check on session start",
   "hooks": {
     "SessionStart": [
       {
@@ -9,32 +9,6 @@
             "type": "command",
             "command": "command -v memcan >/dev/null 2>&1 || echo 'memcan CLI not found. Install: cargo install memcan'",
             "timeout": 5
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "memcan extract",
-            "async": true,
-            "timeout": 120
-          }
-        ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "memcan extract",
-            "async": true,
-            "timeout": 120
           }
         ]
       }
