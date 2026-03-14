@@ -18,7 +18,6 @@ rs/                              # All Rust source code
 Cargo.toml                       # Workspace root
 Dockerfile                       # Multi-stage build for memcan-server
 .claude-plugin/                  # Claude Code plugin manifest
-hooks/                           # Event hooks (SessionStart only; auto-hooks removed in v0.35)
 skills/                          # Plugin skills
 .github/workflows/               # CI + Release workflows
 docker-compose.yml               # Traefik + memcan + optional Ollama
@@ -33,7 +32,7 @@ Reusable library. All domain logic lives here. Must not depend on transport, CLI
 
 | Module | Responsibility |
 |---|---|
-| `traits` | `VectorStore`, `EmbeddingProvider`, `LlmProvider` abstractions |
+| `traits` | `VectorStore`, `EmbeddingProvider`, `LlmProvider`, `TableSchema` abstractions |
 | `lancedb_store` | LanceDB implementation of `VectorStore` |
 | `embed` | fastembed implementation of `EmbeddingProvider` |
 | `llm` | genai implementation of `LlmProvider` |
@@ -45,11 +44,12 @@ Reusable library. All domain logic lives here. Must not depend on transport, CLI
 | `health` | Dependency circuit breaker (Ollama, LanceDB, Embedding) |
 | `indexing::code` | Language-specific symbol extraction, LLM descriptions, incremental code indexing |
 | `indexing::standards` | Markdown chunking, LLM metadata extraction |
-| `indexing::batch` | Shared batch embedding + upsert helper |
+| `schema` | Memcan-specific `TableSchema` implementation with filterable columns |
+| `typed_table` | Strongly-typed LanceDB table handle (`TypedTable<S>`) |
 | `config` | `Settings` loading from env/files |
 | `init` | `MemcanContext` bootstrap (wires all components) |
 | `prompts` | LLM prompt templates |
-| `error` | Error types and `Result` aliases |
+| `error` | Error types (`MemcanError`, `VectorStoreError`) and `Result` aliases |
 
 ### memcan-server (binary)
 
@@ -206,6 +206,6 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 
 ## Deprecated Features
 
-### Auto-Hooks (removed in v0.35)
+### Hooks (removed)
 
-The `SubagentStop` and `PreCompact` hooks that automatically ran `memcan extract` are deprecated and removed from `hooks.json`. Use the `lessons-learned` skill for deliberate memory extraction instead. See README.md for details.
+All plugin hooks have been removed. The `hooks/` directory no longer exists. The `SubagentStop` and `PreCompact` auto-hooks were removed in v0.35 due to quality issues, and the remaining `SessionStart` check hook was removed as it provided no real value. Use the `lessons-learned` skill for deliberate memory extraction instead.

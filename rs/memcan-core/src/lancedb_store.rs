@@ -15,8 +15,32 @@ use lancedb::{Connection, Table, connect};
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
-use crate::error::{MemcanError, Result, ResultExt};
-use crate::traits::{SearchResult, VectorPoint, VectorStore};
+use crate::error::{MemcanError, Result, ResultExt, VectorStoreError};
+use crate::traits::{SearchResult, TableSchema, VectorPoint, VectorStore};
+
+// Re-import for typed_table() factory method.
+use crate::typed_table::TypedTable;
+
+/// Classify a raw LanceDB error, detecting stale handles and missing tables.
+pub(crate) fn classify_lancedb_error(table_name: &str, err: lancedb::Error) -> VectorStoreError {
+    let msg = err.to_string();
+    if msg.contains("not found") || msg.contains("does not exist") {
+        VectorStoreError::StaleHandle {
+            table: table_name.to_string(),
+            reason: msg,
+        }
+    } else {
+        VectorStoreError::Store(err)
+    }
+}
+
+/// Build a SQL `id IN (...)` filter with single-quote escaping.
+pub(crate) fn build_id_filter<'a>(ids: impl Iterator<Item = &'a str>) -> String {
+    let escaped: Vec<String> = ids
+        .map(|id| format!("'{}'", id.replace('\'', "''")))
+        .collect();
+    format!("id IN ({})", escaped.join(", "))
+}
 
 /// LanceDB-backed vector store.
 ///
@@ -50,42 +74,40 @@ impl LanceDbStore {
         })
     }
 
-    /// Build the Arrow schema for a table with the given vector dimensionality.
-    ///
-    /// The schema includes filterable columns extracted from the JSON payload
-    /// so that LanceDB SQL WHERE filters can reference them directly.
-    fn table_schema(dims: usize) -> Arc<Schema> {
-        Arc::new(Schema::new(vec![
+    /// Build the Arrow schema for a table with the given vector dimensionality
+    /// and extra filterable columns from the provided [`TableSchema`].
+    fn build_arrow_schema(
+        dims: usize,
+        table_schema: &dyn TableSchema,
+    ) -> std::result::Result<Arc<Schema>, VectorStoreError> {
+        let dims_i32 = i32::try_from(dims).map_err(|_| VectorStoreError::SchemaMismatch {
+            table: "<schema>".into(),
+            detail: format!("dims {dims} exceeds i32::MAX"),
+        })?;
+        let mut fields = vec![
             Field::new("id", DataType::Utf8, false),
             Field::new(
                 "vector",
                 DataType::FixedSizeList(
                     Arc::new(Field::new("item", DataType::Float32, true)),
-                    dims as i32,
+                    dims_i32,
                 ),
                 false,
             ),
             Field::new("payload", DataType::LargeUtf8, false),
-            Field::new("user_id", DataType::Utf8, true),
-            Field::new("project", DataType::Utf8, true),
-            Field::new("standard_type", DataType::Utf8, true),
-            Field::new("standard_id", DataType::Utf8, true),
-            Field::new("tech_stack", DataType::Utf8, true),
-            Field::new("file_path", DataType::Utf8, true),
-            Field::new("content_hash", DataType::Utf8, true),
-            Field::new("status", DataType::Utf8, true),
-            Field::new("priority", DataType::Utf8, true),
-        ]))
-    }
-
-    /// Extract a string field from a JSON value, returning `None` if absent or non-string.
-    fn json_opt_str<'a>(payload: &'a serde_json::Value, key: &str) -> Option<&'a str> {
-        payload.get(key).and_then(|v| v.as_str())
+        ];
+        fields.extend(table_schema.extra_fields());
+        Ok(Arc::new(Schema::new(fields)))
     }
 
     /// Convert VectorPoints into a RecordBatch for upsert.
-    fn points_to_batch(points: &[VectorPoint], dims: usize) -> Result<RecordBatch> {
-        let schema = Self::table_schema(dims);
+    pub(crate) fn points_to_batch(
+        points: &[VectorPoint],
+        dims: usize,
+        table_schema: &dyn TableSchema,
+    ) -> Result<RecordBatch> {
+        let schema = Self::build_arrow_schema(dims, table_schema)
+            .map_err(|e| MemcanError::Config(e.to_string()))?;
         let n = points.len();
 
         // id
@@ -103,9 +125,11 @@ impl LanceDbStore {
             }
             floats.extend_from_slice(&p.vector);
         }
+        let dims_i32 = i32::try_from(dims)
+            .map_err(|_| MemcanError::Config(format!("dims {dims} exceeds i32::MAX")))?;
         let values = Float32Array::from(floats);
         let field = Arc::new(Field::new("item", DataType::Float32, true));
-        let vector_array = FixedSizeListArray::new(field, dims as i32, Arc::new(values), None);
+        let vector_array = FixedSizeListArray::new(field, dims_i32, Arc::new(values), None);
 
         // payload (LargeUtf8)
         let payloads: Vec<String> = points
@@ -115,61 +139,39 @@ impl LanceDbStore {
         let payload_refs: Vec<&str> = payloads.iter().map(|s| s.as_str()).collect();
         let payload_array = LargeStringArray::from(payload_refs);
 
-        // Filterable columns extracted from payload
-        let user_ids: Vec<Option<&str>> = points
-            .iter()
-            .map(|p| Self::json_opt_str(&p.payload, "user_id"))
-            .collect();
-        let projects: Vec<Option<&str>> = points
-            .iter()
-            .map(|p| Self::json_opt_str(&p.payload, "project"))
-            .collect();
-        let standard_types: Vec<Option<&str>> = points
-            .iter()
-            .map(|p| Self::json_opt_str(&p.payload, "standard_type"))
-            .collect();
-        let standard_ids: Vec<Option<&str>> = points
-            .iter()
-            .map(|p| Self::json_opt_str(&p.payload, "standard_id"))
-            .collect();
-        let tech_stacks: Vec<Option<&str>> = points
-            .iter()
-            .map(|p| Self::json_opt_str(&p.payload, "tech_stack"))
-            .collect();
-        let file_paths: Vec<Option<&str>> = points
-            .iter()
-            .map(|p| Self::json_opt_str(&p.payload, "file_path"))
-            .collect();
-        let content_hashes: Vec<Option<&str>> = points
-            .iter()
-            .map(|p| Self::json_opt_str(&p.payload, "content_hash"))
-            .collect();
-        let statuses: Vec<Option<&str>> = points
-            .iter()
-            .map(|p| Self::json_opt_str(&p.payload, "status"))
-            .collect();
-        let priorities: Vec<Option<&str>> = points
-            .iter()
-            .map(|p| Self::json_opt_str(&p.payload, "priority"))
-            .collect();
+        let mut arrays: Vec<ArrayRef> = vec![
+            Arc::new(id_array),
+            Arc::new(vector_array),
+            Arc::new(payload_array),
+        ];
 
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(id_array) as ArrayRef,
-                Arc::new(vector_array) as ArrayRef,
-                Arc::new(payload_array) as ArrayRef,
-                Arc::new(StringArray::from(user_ids)) as ArrayRef,
-                Arc::new(StringArray::from(projects)) as ArrayRef,
-                Arc::new(StringArray::from(standard_types)) as ArrayRef,
-                Arc::new(StringArray::from(standard_ids)) as ArrayRef,
-                Arc::new(StringArray::from(tech_stacks)) as ArrayRef,
-                Arc::new(StringArray::from(file_paths)) as ArrayRef,
-                Arc::new(StringArray::from(content_hashes)) as ArrayRef,
-                Arc::new(StringArray::from(statuses)) as ArrayRef,
-                Arc::new(StringArray::from(priorities)) as ArrayRef,
-            ],
-        )?;
+        // Extra filterable columns from TableSchema
+        let extra_fields = table_schema.extra_fields();
+        if !extra_fields.is_empty() {
+            let mut columns: Vec<Vec<Option<String>>> = Vec::with_capacity(points.len());
+            for p in points {
+                let cols = table_schema.extract_columns(&p.payload);
+                if cols.len() != extra_fields.len() {
+                    return Err(MemcanError::Config(format!(
+                        "extract_columns returned {} values but extra_fields has {} for point '{}'",
+                        cols.len(),
+                        extra_fields.len(),
+                        p.id,
+                    )));
+                }
+                columns.push(cols);
+            }
+
+            for col_idx in 0..extra_fields.len() {
+                let col_values: Vec<Option<&str>> = columns
+                    .iter()
+                    .map(|row| row.get(col_idx).and_then(|v| v.as_deref()))
+                    .collect();
+                arrays.push(Arc::new(StringArray::from(col_values)) as ArrayRef);
+            }
+        }
+
+        let batch = RecordBatch::try_new(schema, arrays)?;
         Ok(batch)
     }
 
@@ -196,7 +198,7 @@ impl LanceDbStore {
     }
 
     /// Extract SearchResults from a RecordBatch with optional distance column.
-    fn batch_to_results(batch: &RecordBatch, has_distance: bool) -> Vec<SearchResult> {
+    pub(crate) fn batch_to_results(batch: &RecordBatch, has_distance: bool) -> Vec<SearchResult> {
         let id_col = batch
             .column_by_name("id")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>());
@@ -266,11 +268,41 @@ impl LanceDbStore {
             .await
             .context("failed to list table names")
     }
+
+    /// Open (or create) a typed table handle.
+    ///
+    /// Ensures the table exists with the correct schema, then returns a
+    /// [`TypedTable`] bound to the given [`TableSchema`].
+    pub async fn typed_table<S: TableSchema>(
+        &self,
+        name: &str,
+        schema: S,
+        dims: usize,
+    ) -> std::result::Result<TypedTable<S>, VectorStoreError> {
+        self.ensure_table(name, dims, &schema).await.map_err(|e| {
+            VectorStoreError::SchemaMismatch {
+                table: name.to_string(),
+                detail: e.to_string(),
+            }
+        })?;
+        let table = self
+            .conn
+            .open_table(name)
+            .execute()
+            .await
+            .map_err(|e| classify_lancedb_error(name, e))?;
+        Ok(TypedTable::new(name.into(), table, schema, dims))
+    }
 }
 
 #[async_trait]
 impl VectorStore for LanceDbStore {
-    async fn ensure_table(&self, name: &str, dims: usize) -> Result<()> {
+    async fn ensure_table(
+        &self,
+        name: &str,
+        dims: usize,
+        table_schema: &dyn TableSchema,
+    ) -> Result<()> {
         let _guard = self.create_lock.lock().await;
         let names = self.conn.table_names().execute().await?;
         if names.contains(&name.to_string()) {
@@ -287,14 +319,15 @@ impl VectorStore for LanceDbStore {
                 )));
             }
 
-            // Migrate: add status/priority columns if missing.
+            // Migrate: add columns listed in migration_columns() if missing.
             let schema = tbl.schema().await?;
             let field_names: Vec<&str> =
                 schema.fields().iter().map(|f| f.name().as_str()).collect();
-            let missing: Vec<(String, String)> = ["status", "priority"]
-                .iter()
-                .filter(|col| !field_names.contains(*col))
-                .map(|col| (col.to_string(), "CAST(NULL AS STRING)".to_string()))
+            let missing: Vec<(String, String)> = table_schema
+                .migration_columns()
+                .into_iter()
+                .filter(|col| !field_names.contains(&col.as_str()))
+                .map(|col| (col, "CAST(NULL AS STRING)".to_string()))
                 .collect();
             if !missing.is_empty() {
                 let col_names: Vec<&str> = missing.iter().map(|(n, _)| n.as_str()).collect();
@@ -305,15 +338,14 @@ impl VectorStore for LanceDbStore {
                 );
                 tbl.add_columns(NewColumnTransform::SqlExpressions(missing), None)
                     .await
-                    .with_context(|| {
-                        format!("failed to add status/priority columns to table {name}")
-                    })?;
+                    .with_context(|| format!("failed to add missing columns to table {name}"))?;
             }
 
             return Ok(());
         }
         debug!(name, dims, "creating table");
-        let schema = Self::table_schema(dims);
+        let schema = Self::build_arrow_schema(dims, table_schema)
+            .map_err(|e| MemcanError::Config(e.to_string()))?;
         let batches = RecordBatchIterator::new(vec![], schema.clone());
         self.conn
             .create_table(name, Box::new(batches))
@@ -323,28 +355,30 @@ impl VectorStore for LanceDbStore {
         Ok(())
     }
 
-    async fn upsert(&self, table: &str, points: &[VectorPoint]) -> Result<()> {
+    /// **Deprecated:** use [`TypedTable`] via [`typed_table()`](Self::typed_table).
+    async fn upsert(
+        &self,
+        table: &str,
+        points: &[VectorPoint],
+        table_schema: &dyn TableSchema,
+    ) -> Result<()> {
         if points.is_empty() {
             return Ok(());
         }
         let tbl = self.open_table(table).await?;
         let dims = self.infer_dims(&tbl).await?;
 
-        // Delete existing rows with matching IDs (upsert = delete + add).
-        let id_list: Vec<String> = points
-            .iter()
-            .map(|p| format!("'{}'", p.id.replace('\'', "''")))
-            .collect();
-        let filter = format!("id IN ({})", id_list.join(", "));
+        let filter = build_id_filter(points.iter().map(|p| p.id.as_str()));
         let _ = tbl.delete(&filter).await; // ignore error if no rows match
 
-        let batch = Self::points_to_batch(points, dims)?;
+        let batch = Self::points_to_batch(points, dims, table_schema)?;
         let schema = batch.schema();
         let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
         tbl.add(Box::new(batches)).execute().await?;
         Ok(())
     }
 
+    /// **Deprecated:** use [`TypedTable`] via [`typed_table()`](Self::typed_table).
     async fn search(
         &self,
         table: &str,
@@ -378,6 +412,7 @@ impl VectorStore for LanceDbStore {
         Ok(results)
     }
 
+    /// **Deprecated:** use [`TypedTable`] via [`typed_table()`](Self::typed_table).
     async fn scroll(
         &self,
         table: &str,
@@ -408,6 +443,7 @@ impl VectorStore for LanceDbStore {
         Ok(results)
     }
 
+    /// **Deprecated:** use [`TypedTable`] via [`typed_table()`](Self::typed_table).
     async fn count(&self, table: &str, filter: Option<&str>) -> Result<usize> {
         let tbl = self.open_table(table).await?;
         let mut query = tbl.query();
@@ -425,20 +461,18 @@ impl VectorStore for LanceDbStore {
         Ok(total)
     }
 
+    /// **Deprecated:** use [`TypedTable`] via [`typed_table()`](Self::typed_table).
     async fn delete(&self, table: &str, ids: &[String]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
         let tbl = self.open_table(table).await?;
-        let id_list: Vec<String> = ids
-            .iter()
-            .map(|id| format!("'{}'", id.replace('\'', "''")))
-            .collect();
-        let filter = format!("id IN ({})", id_list.join(", "));
+        let filter = build_id_filter(ids.iter().map(|id| id.as_str()));
         tbl.delete(&filter).await?;
         Ok(())
     }
 
+    /// **Deprecated:** use [`TypedTable`] via [`typed_table()`](Self::typed_table).
     async fn delete_by_filter(&self, table: &str, filter: &str) -> Result<usize> {
         let before = self.count(table, Some(filter)).await?;
         if before > 0 {
@@ -448,15 +482,12 @@ impl VectorStore for LanceDbStore {
         Ok(before)
     }
 
+    /// **Deprecated:** use [`TypedTable`] via [`typed_table()`](Self::typed_table).
     async fn get(&self, table: &str, ids: &[String]) -> Result<Vec<SearchResult>> {
         if ids.is_empty() {
             return Ok(vec![]);
         }
-        let id_list: Vec<String> = ids
-            .iter()
-            .map(|id| format!("'{}'", id.replace('\'', "''")))
-            .collect();
-        let filter = format!("id IN ({})", id_list.join(", "));
+        let filter = build_id_filter(ids.iter().map(|id| id.as_str()));
         self.scroll(table, Some(&filter), ids.len(), 0).await
     }
 }
@@ -464,10 +495,13 @@ impl VectorStore for LanceDbStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::MemcanTableSchema;
+    use crate::traits::MinimalTableSchema;
 
     #[test]
     fn test_schema_creation() {
-        let schema = LanceDbStore::table_schema(768);
+        let ts = MemcanTableSchema;
+        let schema = LanceDbStore::build_arrow_schema(768, &ts).unwrap();
         assert_eq!(schema.fields().len(), 12);
         assert_eq!(schema.field(0).name(), "id");
         assert_eq!(schema.field(1).name(), "vector");
@@ -489,24 +523,41 @@ mod tests {
     }
 
     #[test]
-    fn test_json_opt_str() {
-        let v = serde_json::json!({"user_id": "alice", "count": 42});
-        assert_eq!(LanceDbStore::json_opt_str(&v, "user_id"), Some("alice"));
-        assert_eq!(LanceDbStore::json_opt_str(&v, "missing"), None);
-        assert_eq!(LanceDbStore::json_opt_str(&v, "count"), None);
+    fn test_minimal_schema_creation() {
+        let ts = MinimalTableSchema;
+        let schema = LanceDbStore::build_arrow_schema(384, &ts).unwrap();
+        assert_eq!(schema.fields().len(), 3);
+        assert_eq!(schema.field(0).name(), "id");
+        assert_eq!(schema.field(1).name(), "vector");
+        assert_eq!(schema.field(2).name(), "payload");
     }
 
     #[test]
     fn test_points_to_batch() {
         let dims = 4;
+        let ts = MemcanTableSchema;
         let points = vec![VectorPoint {
             id: "test-1".into(),
             vector: vec![1.0, 2.0, 3.0, 4.0],
             payload: serde_json::json!({"user_id": "bob", "data": "hello"}),
         }];
-        let batch = LanceDbStore::points_to_batch(&points, dims).unwrap();
+        let batch = LanceDbStore::points_to_batch(&points, dims, &ts).unwrap();
         assert_eq!(batch.num_rows(), 1);
         assert_eq!(batch.num_columns(), 12);
+    }
+
+    #[test]
+    fn test_points_to_batch_minimal() {
+        let dims = 4;
+        let ts = MinimalTableSchema;
+        let points = vec![VectorPoint {
+            id: "test-1".into(),
+            vector: vec![1.0, 2.0, 3.0, 4.0],
+            payload: serde_json::json!({"key": "value"}),
+        }];
+        let batch = LanceDbStore::points_to_batch(&points, dims, &ts).unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        assert_eq!(batch.num_columns(), 3);
     }
 
     #[tokio::test]
@@ -514,14 +565,15 @@ mod tests {
         let tmp = tempfile::tempdir().expect("create tempdir");
         let path = tmp.path().to_str().expect("tempdir path");
         let store = LanceDbStore::open(path).await.expect("open lancedb");
+        let ts = MinimalTableSchema;
 
         store
-            .ensure_table("test-dims", 384)
+            .ensure_table("test-dims", 384, &ts)
             .await
             .expect("create table with 384 dims");
 
         let err = store
-            .ensure_table("test-dims", 1024)
+            .ensure_table("test-dims", 1024, &ts)
             .await
             .expect_err("should fail with dimension mismatch");
 
@@ -540,18 +592,20 @@ mod tests {
     #[test]
     fn test_points_to_batch_dimension_mismatch() {
         let dims = 4;
+        let ts = MinimalTableSchema;
         let points = vec![VectorPoint {
             id: "test-1".into(),
             vector: vec![1.0, 2.0, 3.0], // only 3, expected 4
             payload: serde_json::json!({}),
         }];
-        let result = LanceDbStore::points_to_batch(&points, dims);
+        let result = LanceDbStore::points_to_batch(&points, dims, &ts);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_points_to_batch_extracts_status_and_priority() {
         let dims = 4;
+        let ts = MemcanTableSchema;
         let points = vec![VectorPoint {
             id: "todo-1".into(),
             vector: vec![1.0, 2.0, 3.0, 4.0],
@@ -561,7 +615,7 @@ mod tests {
                 "project": "test",
             }),
         }];
-        let batch = LanceDbStore::points_to_batch(&points, dims).unwrap();
+        let batch = LanceDbStore::points_to_batch(&points, dims, &ts).unwrap();
         let status_col = batch
             .column_by_name("status")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>())
@@ -585,10 +639,7 @@ mod tests {
             Field::new("id", DataType::Utf8, false),
             Field::new(
                 "vector",
-                DataType::FixedSizeList(
-                    Arc::new(Field::new("item", DataType::Float32, true)),
-                    dims as i32,
-                ),
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
                 false,
             ),
             Field::new("payload", DataType::LargeUtf8, false),
@@ -610,8 +661,9 @@ mod tests {
 
         // Now open via LanceDbStore and ensure_table should migrate.
         let store = LanceDbStore::open(path).await.expect("open");
+        let ts = MemcanTableSchema;
         store
-            .ensure_table("migrate_test", dims)
+            .ensure_table("migrate_test", dims, &ts)
             .await
             .expect("ensure_table should migrate");
 

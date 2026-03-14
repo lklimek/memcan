@@ -5,14 +5,16 @@ use tracing::info;
 use memcan_core::error::{MemcanError, Result as MemcanResult};
 use memcan_core::indexing::code::{IndexCodeParams, drop_code, index_code};
 use memcan_core::init::{MemcanContext, create_llm_provider};
+use memcan_core::schema::MemcanTableSchema;
 
 use crate::IndexCodeArgs;
 
 pub async fn run(args: &IndexCodeArgs) -> MemcanResult<()> {
     let ctx = MemcanContext::init().await?;
+    let ts = MemcanTableSchema;
 
     if args.drop {
-        drop_code(&args.project, &ctx.store, ctx.settings.embed_dims).await?;
+        drop_code(&args.project, &ctx.store, &ts, ctx.settings.embed_dims).await?;
         return Ok(());
     }
 
@@ -33,6 +35,7 @@ pub async fn run(args: &IndexCodeArgs) -> MemcanResult<()> {
         &params,
         &ctx.store,
         &ctx.embedder,
+        &ts,
         llm.as_ref(),
         &llm_model,
         ctx.settings.embed_dims,

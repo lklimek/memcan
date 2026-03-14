@@ -8,6 +8,7 @@
     }
   },
   "enabledPlugins": {
-    "claudius@lklimek": true
+    "claudius@lklimek": true,
+    "plugin-dev@claude-plugins-official": true
   }
 }

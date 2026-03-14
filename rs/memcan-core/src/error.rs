@@ -55,6 +55,13 @@ pub enum MemcanError {
     #[error("dependency '{dependency}' unavailable: {message}")]
     DependencyUnavailable { dependency: String, message: String },
 
+    // -- Vector store ---------------------------------------------------------
+    #[error("vector store error: {source}")]
+    VectorStore {
+        #[from]
+        source: VectorStoreError,
+    },
+
     // -- Generic (replaces bail!/anyhow!) ------------------------------------
     #[error("{0}")]
     Other(String),
@@ -109,6 +116,32 @@ impl From<lancedb::Error> for MemcanError {
             source: e,
         }
     }
+}
+
+// -- VectorStoreError --------------------------------------------------------
+
+/// Error type for [`crate::typed_table::TypedTable`] and vector-store
+/// operations.  All public methods on `TypedTable` and the `typed_table()`
+/// factory on `LanceDbStore` return this.
+#[derive(Debug, thiserror::Error)]
+pub enum VectorStoreError {
+    #[error("stale table handle for '{table}': {reason}")]
+    StaleHandle { table: String, reason: String },
+
+    #[error("table '{0}' not found")]
+    TableNotFound(String),
+
+    #[error("embedding failed: {0}")]
+    Embedding(String),
+
+    #[error("schema mismatch on table '{table}': {detail}")]
+    SchemaMismatch { table: String, detail: String },
+
+    #[error("lancedb error: {0}")]
+    Store(#[from] lancedb::Error),
+
+    #[error("serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
 }
 
 // -- Helper trait: .context() analog for Result<T, E> -----------------------

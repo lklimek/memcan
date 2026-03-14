@@ -19,7 +19,8 @@ use crate::error::{MemcanError, Result, ResultExt};
 use crate::pipeline::CODE_TABLE;
 use crate::prompts::CODE_DESCRIPTION_PROMPT;
 use crate::traits::{
-    EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, VectorPoint, VectorStore,
+    EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, TableSchema, VectorPoint,
+    VectorStore,
 };
 
 const UUID_NAMESPACE: Uuid = Uuid::from_bytes([
@@ -382,6 +383,7 @@ fn collect_files(project_dir: &Path) -> Vec<PathBuf> {
 async fn flush_batch(
     embedder: &dyn EmbeddingProvider,
     store: &dyn VectorStore,
+    table_schema: &dyn TableSchema,
     table: &str,
     batch: &mut Vec<(VectorPoint, String)>,
 ) -> Result<usize> {
@@ -402,13 +404,20 @@ async fn flush_batch(
         .collect();
 
     let count = points.len();
-    store.upsert(table, &points).await?;
+    store.upsert(table, &points, table_schema).await?;
     Ok(count)
 }
 
 /// Drop all indexed code for a given project.
-pub async fn drop_code(project: &str, store: &dyn VectorStore, embed_dims: usize) -> Result<usize> {
-    store.ensure_table(CODE_TABLE, embed_dims).await?;
+pub async fn drop_code(
+    project: &str,
+    store: &dyn VectorStore,
+    table_schema: &dyn TableSchema,
+    embed_dims: usize,
+) -> Result<usize> {
+    store
+        .ensure_table(CODE_TABLE, embed_dims, table_schema)
+        .await?;
     let filter = format!("project = '{}'", project.replace('\'', "''"));
     let deleted = store.delete_by_filter(CODE_TABLE, &filter).await?;
     info!(deleted, project, "Dropped indexed data");
@@ -450,6 +459,7 @@ pub async fn index_code(
     params: &IndexCodeParams,
     store: &dyn VectorStore,
     embedder: &dyn EmbeddingProvider,
+    table_schema: &dyn TableSchema,
     llm: &dyn LlmProvider,
     llm_model: &str,
     embed_dims: usize,
@@ -468,7 +478,9 @@ pub async fn index_code(
         )));
     }
 
-    store.ensure_table(CODE_TABLE, embed_dims).await?;
+    store
+        .ensure_table(CODE_TABLE, embed_dims, table_schema)
+        .await?;
 
     let git_hash = git_short_hash(&project_dir);
     let now = Utc::now().to_rfc3339();
@@ -644,7 +656,7 @@ pub async fn index_code(
             batch.push((point, embed_text));
 
             if batch.len() >= BATCH_SIZE {
-                match flush_batch(embedder, store, CODE_TABLE, &mut batch).await {
+                match flush_batch(embedder, store, table_schema, CODE_TABLE, &mut batch).await {
                     Ok(n) => {
                         total_upserted += n;
                         info!(upserted = total_upserted, "Progress");
@@ -659,7 +671,7 @@ pub async fn index_code(
         }
     }
 
-    match flush_batch(embedder, store, CODE_TABLE, &mut batch).await {
+    match flush_batch(embedder, store, table_schema, CODE_TABLE, &mut batch).await {
         Ok(n) => total_upserted += n,
         Err(e) => {
             warn!(error = %e, "Final batch embedding failed");

@@ -9,8 +9,10 @@ use async_trait::async_trait;
 use memcan_core::error::{MemcanError, Result};
 use memcan_core::lancedb_store::LanceDbStore;
 use memcan_core::pipeline::{MEMORIES_TABLE, Pipeline, PipelineGuard, PipelineStep};
+use memcan_core::schema::MemcanTableSchema;
 use memcan_core::traits::{
-    EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, VectorPoint, VectorStore,
+    EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, MinimalTableSchema, Role, VectorPoint,
+    VectorStore,
 };
 use tempfile::tempdir;
 
@@ -153,6 +155,11 @@ async fn temp_store() -> (tempfile::TempDir, LanceDbStore) {
     (tmp, store)
 }
 
+/// Shared table schema for memcan tests.
+fn memcan_schema() -> Arc<MemcanTableSchema> {
+    Arc::new(MemcanTableSchema)
+}
+
 /// Helper: create a Pipeline with the given mocks.
 fn make_pipeline(
     store: Arc<dyn VectorStore>,
@@ -160,7 +167,15 @@ fn make_pipeline(
     llm: Arc<dyn LlmProvider>,
     distill: bool,
 ) -> Pipeline {
-    Pipeline::new(store, embedder, llm, "test-llm", MEMORIES_TABLE, distill)
+    Pipeline::new(
+        store,
+        embedder,
+        llm,
+        "test-llm",
+        MEMORIES_TABLE,
+        memcan_schema(),
+        distill,
+    )
 }
 
 // -- Test 1: mock embed -------------------------------------------------------
@@ -209,8 +224,9 @@ async fn test_memory_pipeline_mock() {
     ]);
 
     let (_tmp, store) = temp_store().await;
+    let ts = MemcanTableSchema;
     store
-        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS, &ts)
         .await
         .expect("create table");
 
@@ -247,8 +263,9 @@ async fn test_memory_pipeline_mock() {
 #[tokio::test]
 async fn test_store_and_search() {
     let (_tmp, store) = temp_store().await;
+    let ts = MemcanTableSchema;
     store
-        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS, &ts)
         .await
         .expect("create table");
 
@@ -268,6 +285,7 @@ async fn test_store_and_search() {
                 vector: test_vector(),
                 payload: payload.clone(),
             }],
+            &ts,
         )
         .await
         .expect("upsert");
@@ -300,8 +318,9 @@ async fn test_dedup() {
     ]);
 
     let (_tmp, store) = temp_store().await;
+    let ts = MemcanTableSchema;
     store
-        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS, &ts)
         .await
         .expect("create table");
 
@@ -365,16 +384,17 @@ fn test_config_load() {
 #[tokio::test]
 async fn test_lancedb_crud() {
     let (_tmp, store) = temp_store().await;
+    let ts = MinimalTableSchema;
 
     let table_name = "test-crud";
 
     store
-        .ensure_table(table_name, TEST_DIMS)
+        .ensure_table(table_name, TEST_DIMS, &ts)
         .await
         .expect("create table");
 
     store
-        .ensure_table(table_name, TEST_DIMS)
+        .ensure_table(table_name, TEST_DIMS, &ts)
         .await
         .expect("create table again");
 
@@ -393,7 +413,10 @@ async fn test_lancedb_crud() {
             payload: serde_json::json!({"data": "second record", "user_id": "u2"}),
         },
     ];
-    store.upsert(table_name, &points).await.expect("upsert");
+    store
+        .upsert(table_name, &points, &ts)
+        .await
+        .expect("upsert");
 
     let count = store.count(table_name, None).await.expect("count");
     assert_eq!(count, 2, "Should have 2 records");
@@ -418,7 +441,7 @@ async fn test_lancedb_crud() {
         payload: serde_json::json!({"data": "updated first record", "user_id": "u1"}),
     };
     store
-        .upsert(table_name, &[updated_point])
+        .upsert(table_name, &[updated_point], &ts)
         .await
         .expect("upsert update");
 
@@ -464,8 +487,9 @@ async fn test_pipeline_falls_back_on_llm_error() {
     let llm = FailingLlm;
 
     let (_tmp, store) = temp_store().await;
+    let ts = MemcanTableSchema;
     store
-        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS, &ts)
         .await
         .expect("create table");
 
@@ -511,8 +535,9 @@ async fn test_malformed_llm_json_handled_gracefully() {
     let embedder = MockEmbedder::new();
 
     let (_tmp, store) = temp_store().await;
+    let ts = MemcanTableSchema;
     store
-        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS, &ts)
         .await
         .expect("create table");
 
@@ -553,8 +578,9 @@ async fn test_non_llm_error_propagates() {
     let llm = FailingLlm;
 
     let (_tmp, store) = temp_store().await;
+    let ts = MemcanTableSchema;
     store
-        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS, &ts)
         .await
         .expect("create table");
 
@@ -585,8 +611,9 @@ async fn test_pipeline_no_distill_no_warnings() {
     let llm = FailingLlm; // should not be called
 
     let (_tmp, store) = temp_store().await;
+    let ts = MemcanTableSchema;
     store
-        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS, &ts)
         .await
         .expect("create table");
 
@@ -649,8 +676,9 @@ async fn test_pipeline_dedup_failure_warning() {
     let llm = ExtractOkDedupFailLlm;
 
     let (_tmp, store) = temp_store().await;
+    let ts = MemcanTableSchema;
     store
-        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS, &ts)
         .await
         .expect("create table");
 
@@ -694,8 +722,9 @@ async fn test_pipeline_clean_path_no_warnings() {
     ]);
 
     let (_tmp, store) = temp_store().await;
+    let ts = MemcanTableSchema;
     store
-        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS, &ts)
         .await
         .expect("create table");
 
@@ -735,8 +764,9 @@ async fn test_progress_final_state_distill() {
     ]);
 
     let (_tmp, store) = temp_store().await;
+    let ts = MemcanTableSchema;
     store
-        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS, &ts)
         .await
         .expect("create table");
 
@@ -770,8 +800,9 @@ async fn test_progress_failed_state() {
     let llm = FailingLlm;
 
     let (_tmp, store) = temp_store().await;
+    let ts = MemcanTableSchema;
     store
-        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS, &ts)
         .await
         .expect("create table");
 
@@ -804,8 +835,9 @@ async fn test_progress_degraded_on_llm_fallback() {
     let llm = FailingLlm;
 
     let (_tmp, store) = temp_store().await;
+    let ts = MemcanTableSchema;
     store
-        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS, &ts)
         .await
         .expect("create table");
 
@@ -838,8 +870,9 @@ async fn test_progress_no_distill() {
     let llm = FailingLlm; // should not be called
 
     let (_tmp, store) = temp_store().await;
+    let ts = MemcanTableSchema;
     store
-        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS, &ts)
         .await
         .expect("create table");
 
@@ -872,8 +905,9 @@ async fn test_pipeline_guard_auto_fails_on_drop() {
     let llm = FailingLlm;
 
     let (_tmp, store) = temp_store().await;
+    let ts = MemcanTableSchema;
     store
-        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS, &ts)
         .await
         .expect("create table");
 
@@ -912,8 +946,9 @@ async fn test_pipeline_guard_no_auto_fail_after_complete() {
     let llm = FailingLlm;
 
     let (_tmp, store) = temp_store().await;
+    let ts = MemcanTableSchema;
     store
-        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS, &ts)
         .await
         .expect("create table");
 
@@ -948,8 +983,9 @@ async fn test_pipeline_guard_no_auto_fail_after_explicit_fail() {
     let llm = FailingLlm;
 
     let (_tmp, store) = temp_store().await;
+    let ts = MemcanTableSchema;
     store
-        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS, &ts)
         .await
         .expect("create table");
 
@@ -989,8 +1025,9 @@ async fn test_pipeline_guard_deref_access() {
     ]);
 
     let (_tmp, store) = temp_store().await;
+    let ts = MemcanTableSchema;
     store
-        .ensure_table(MEMORIES_TABLE, TEST_DIMS)
+        .ensure_table(MEMORIES_TABLE, TEST_DIMS, &ts)
         .await
         .expect("create table");
 

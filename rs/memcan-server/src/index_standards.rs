@@ -7,14 +7,16 @@ use memcan_core::indexing::standards::{
     IndexStandardsParams, VALID_TYPES, drop_standards, index_standards,
 };
 use memcan_core::init::{MemcanContext, create_llm_provider};
+use memcan_core::schema::MemcanTableSchema;
 
 use crate::IndexStandardsArgs;
 
 pub async fn run(args: &IndexStandardsArgs) -> MemcanResult<()> {
     let ctx = MemcanContext::init().await?;
+    let ts = MemcanTableSchema;
 
     if args.drop {
-        drop_standards(&args.standard_id, &ctx.store, ctx.settings.embed_dims).await?;
+        drop_standards(&args.standard_id, &ctx.store, &ts, ctx.settings.embed_dims).await?;
         return Ok(());
     }
 
@@ -61,6 +63,7 @@ pub async fn run(args: &IndexStandardsArgs) -> MemcanResult<()> {
         &params,
         &ctx.store,
         &ctx.embedder,
+        &ts,
         llm.as_ref(),
         model,
         ctx.settings.embed_dims,

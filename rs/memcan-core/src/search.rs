@@ -273,7 +273,7 @@ pub async fn unified_search(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::{SearchResult, VectorPoint};
+    use crate::traits::{SearchResult, TableSchema, VectorPoint};
     use async_trait::async_trait;
     use std::sync::Mutex;
 
@@ -310,10 +310,20 @@ mod tests {
 
     #[async_trait]
     impl VectorStore for MockStore {
-        async fn ensure_table(&self, _name: &str, _dims: usize) -> Result<()> {
+        async fn ensure_table(
+            &self,
+            _name: &str,
+            _dims: usize,
+            _schema: &dyn TableSchema,
+        ) -> Result<()> {
             Ok(())
         }
-        async fn upsert(&self, _table: &str, _points: &[VectorPoint]) -> Result<()> {
+        async fn upsert(
+            &self,
+            _table: &str,
+            _points: &[VectorPoint],
+            _schema: &dyn TableSchema,
+        ) -> Result<()> {
             Ok(())
         }
         async fn search(

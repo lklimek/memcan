@@ -42,6 +42,7 @@ use memcan_core::{
     },
     prompts::FACT_EXTRACTION_HOOK_PROMPT,
     query::{resolve_user_id, sanitize_eq, sanitize_like},
+    schema::MemcanTableSchema,
     search,
     todo::{self, TODOS_TABLE},
     traits::{EmbeddingProvider, LlmProvider, VectorStore},
@@ -480,6 +481,7 @@ impl MemcanService {
             Arc::clone(&self.state.llm),
             self.state.llm_model.clone(),
             MEMORIES_TABLE,
+            Arc::new(MemcanTableSchema),
             self.state.config.distill_memories,
         );
         let pipeline = if is_hook {
@@ -711,6 +713,7 @@ impl MemcanService {
             Arc::clone(&self.state.llm),
             self.state.llm_model.clone(),
             MEMORIES_TABLE,
+            Arc::new(MemcanTableSchema),
             false,
         );
         let progress = pipeline.progress();
@@ -1116,6 +1119,7 @@ impl MemcanService {
                 &core_params,
                 store.as_ref(),
                 embedder.as_ref(),
+                &MemcanTableSchema,
                 llm.as_ref(),
                 &llm_model,
                 embed_dims,
@@ -1182,6 +1186,7 @@ impl MemcanService {
         let deleted = standards_indexing::drop_standards(
             &params.standard_id,
             self.state.store.as_ref(),
+            &MemcanTableSchema,
             self.state.config.embed_dims,
         )
         .await
@@ -1224,6 +1229,7 @@ impl MemcanService {
         let item = todo::add_todo(
             self.state.store.as_ref(),
             self.state.embedder.as_ref(),
+            &MemcanTableSchema,
             core_params,
         )
         .await
@@ -1301,6 +1307,7 @@ impl MemcanService {
         let item = todo::update_todo(
             self.state.store.as_ref(),
             self.state.embedder.as_ref(),
+            &MemcanTableSchema,
             &params.todo_id,
             updates,
         )
@@ -1337,6 +1344,7 @@ impl MemcanService {
         let item = todo::complete_todo(
             self.state.store.as_ref(),
             self.state.embedder.as_ref(),
+            &MemcanTableSchema,
             &params.todo_id,
         )
         .await
@@ -1559,10 +1567,11 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
     let (llm, llm_model) = create_llm_provider(&ctx.settings);
 
     let dims = ctx.settings.embed_dims;
-    ctx.store.ensure_table(MEMORIES_TABLE, dims).await?;
-    ctx.store.ensure_table(STANDARDS_TABLE, dims).await?;
-    ctx.store.ensure_table(CODE_TABLE, dims).await?;
-    ctx.store.ensure_table(TODOS_TABLE, dims).await?;
+    let ts = MemcanTableSchema;
+    ctx.store.ensure_table(MEMORIES_TABLE, dims, &ts).await?;
+    ctx.store.ensure_table(STANDARDS_TABLE, dims, &ts).await?;
+    ctx.store.ensure_table(CODE_TABLE, dims, &ts).await?;
+    ctx.store.ensure_table(TODOS_TABLE, dims, &ts).await?;
 
     info!("Tables ensured: {MEMORIES_TABLE}, {STANDARDS_TABLE}, {CODE_TABLE}, {TODOS_TABLE}");
 
