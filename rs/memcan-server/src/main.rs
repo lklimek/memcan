@@ -9,6 +9,7 @@ mod import_triaged;
 mod index_code;
 mod index_standards;
 mod migrate;
+mod purge_memories;
 mod serve;
 mod test_classification;
 
@@ -45,6 +46,9 @@ enum Command {
 
     /// Download the configured embedding model and exit.
     DownloadModel(DownloadModelArgs),
+
+    /// Purge memories matching a source (and optionally project) filter.
+    PurgeMemories(PurgeMemoriesArgs),
 
     /// Generate shell completions.
     Completions(CompletionsArgs),
@@ -154,6 +158,21 @@ pub struct ImportTriagedArgs {
 }
 
 #[derive(Parser)]
+pub struct PurgeMemoriesArgs {
+    /// Value of the `source` field to purge (e.g. `auto-hook`).
+    #[arg(long)]
+    pub source: String,
+
+    /// Restrict purge to a specific project (matches `user_id = 'project:<p>'`).
+    #[arg(long)]
+    pub project: Option<String>,
+
+    /// Count matching records without deleting.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Parser)]
 pub struct TestClassificationArgs {
     /// Path to fact-extraction prompt .md file.
     #[arg(long)]
@@ -221,6 +240,10 @@ async fn main() -> Result<(), MemcanError> {
         Some(Command::ImportTriaged(args)) => {
             setup_tracing(false);
             import_triaged::run(&args).await
+        }
+        Some(Command::PurgeMemories(args)) => {
+            setup_tracing(false);
+            purge_memories::run(&args).await
         }
         Some(Command::TestClassification(args)) => {
             setup_tracing(false);

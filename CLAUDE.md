@@ -18,7 +18,7 @@ rs/                              # All Rust source code
 Cargo.toml                       # Workspace root
 Dockerfile                       # Multi-stage build for memcan-server
 .claude-plugin/                  # Claude Code plugin manifest
-hooks/                           # Event hooks (SubagentStop, PreCompact)
+hooks/                           # Event hooks (SessionStart only; auto-hooks removed in v0.35)
 skills/                          # Plugin skills
 .github/workflows/               # CI + Release workflows
 docker-compose.yml               # Traefik + memcan + optional Ollama
@@ -75,6 +75,7 @@ memcan-server index-standards <file> --standard-id <id> --standard-type <t> [--d
 memcan-server migrate <file> [--dry-run]
 memcan-server import-triaged <file> [--dry-run]
 memcan-server test-classification --prompt <f> --model <m>
+memcan-server purge-memories --source <s> [--project <p>] [--dry-run]
 memcan-server download-model [--model <name>]
 memcan-server completions <shell>
 ```
@@ -84,7 +85,7 @@ memcan-server completions <shell>
 ```
 memcan add <memory> [--project <p>]
 memcan search <query> [--project <p>] [--limit <n>]
-memcan extract                        # Hook handler: reads stdin, POSTs to server
+memcan extract                        # Hook handler: reads stdin, POSTs to server (NOTE: auto-hooks deprecated, use lessons-learned skill)
 memcan status [operation_id]
 memcan count [--project <p>]
 memcan index-standards <file> --standard-id <id> --standard-type <t> [--version <v>] [--lang <l>] [--url <u>] [--wait]
@@ -202,3 +203,9 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 | `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth (sent as `Authorization: Bearer $key`) |
 
 > **Note:** The genai crate does **not** read `OLLAMA_HOST` or `OLLAMA_API_KEY` from environment — MemCan reads them via `Settings` and passes them to the genai client via `ServiceTargetResolver`.
+
+## Deprecated Features
+
+### Auto-Hooks (removed in v0.35)
+
+The `SubagentStop` and `PreCompact` hooks that automatically ran `memcan extract` are deprecated and removed from `hooks.json`. Use the `lessons-learned` skill for deliberate memory extraction instead. See README.md for details.
