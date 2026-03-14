@@ -31,6 +31,10 @@ pub mod schema;
 pub mod search;
 pub mod todo;
 pub mod traits;
+pub mod typed_table;
+
+pub use error::VectorStoreError;
+pub use typed_table::TypedTable;
 
 #[cfg(not(any(feature = "ollama-rs-llm", feature = "genai-llm")))]
 compile_error!("At least one LLM feature must be enabled: ollama-rs-llm or genai-llm");

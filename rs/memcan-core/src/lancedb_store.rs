@@ -15,8 +15,11 @@ use lancedb::{Connection, Table, connect};
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
-use crate::error::{MemcanError, Result, ResultExt};
+use crate::error::{MemcanError, Result, ResultExt, VectorStoreError};
 use crate::traits::{SearchResult, TableSchema, VectorPoint, VectorStore};
+
+// Re-import for typed_table() factory method.
+use crate::typed_table::TypedTable;
 
 /// LanceDB-backed vector store.
 ///
@@ -70,7 +73,7 @@ impl LanceDbStore {
     }
 
     /// Convert VectorPoints into a RecordBatch for upsert.
-    fn points_to_batch(
+    pub(crate) fn points_to_batch(
         points: &[VectorPoint],
         dims: usize,
         table_schema: &dyn TableSchema,
@@ -155,7 +158,7 @@ impl LanceDbStore {
     }
 
     /// Extract SearchResults from a RecordBatch with optional distance column.
-    fn batch_to_results(batch: &RecordBatch, has_distance: bool) -> Vec<SearchResult> {
+    pub(crate) fn batch_to_results(batch: &RecordBatch, has_distance: bool) -> Vec<SearchResult> {
         let id_col = batch
             .column_by_name("id")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>());
@@ -225,6 +228,28 @@ impl LanceDbStore {
             .await
             .context("failed to list table names")
     }
+
+    /// Open (or create) a typed table handle.
+    ///
+    /// Ensures the table exists with the correct schema, then returns a
+    /// [`TypedTable`] bound to the given [`TableSchema`].
+    pub async fn typed_table<S: TableSchema>(
+        &self,
+        name: &str,
+        schema: S,
+        dims: usize,
+    ) -> std::result::Result<TypedTable<S>, VectorStoreError> {
+        self.ensure_table(name, dims, &schema).await?;
+        let table = self.conn.open_table(name).execute().await.map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("not found") || msg.contains("does not exist") {
+                VectorStoreError::TableNotFound(name.to_string())
+            } else {
+                VectorStoreError::Store(e)
+            }
+        })?;
+        Ok(TypedTable::new(name.into(), table, schema, dims))
+    }
 }
 
 #[async_trait]
@@ -286,6 +311,7 @@ impl VectorStore for LanceDbStore {
         Ok(())
     }
 
+    /// **Deprecated:** use [`TypedTable`] via [`typed_table()`](Self::typed_table).
     async fn upsert(
         &self,
         table: &str,
@@ -313,6 +339,7 @@ impl VectorStore for LanceDbStore {
         Ok(())
     }
 
+    /// **Deprecated:** use [`TypedTable`] via [`typed_table()`](Self::typed_table).
     async fn search(
         &self,
         table: &str,
@@ -346,6 +373,7 @@ impl VectorStore for LanceDbStore {
         Ok(results)
     }
 
+    /// **Deprecated:** use [`TypedTable`] via [`typed_table()`](Self::typed_table).
     async fn scroll(
         &self,
         table: &str,
@@ -376,6 +404,7 @@ impl VectorStore for LanceDbStore {
         Ok(results)
     }
 
+    /// **Deprecated:** use [`TypedTable`] via [`typed_table()`](Self::typed_table).
     async fn count(&self, table: &str, filter: Option<&str>) -> Result<usize> {
         let tbl = self.open_table(table).await?;
         let mut query = tbl.query();
@@ -393,6 +422,7 @@ impl VectorStore for LanceDbStore {
         Ok(total)
     }
 
+    /// **Deprecated:** use [`TypedTable`] via [`typed_table()`](Self::typed_table).
     async fn delete(&self, table: &str, ids: &[String]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
@@ -407,6 +437,7 @@ impl VectorStore for LanceDbStore {
         Ok(())
     }
 
+    /// **Deprecated:** use [`TypedTable`] via [`typed_table()`](Self::typed_table).
     async fn delete_by_filter(&self, table: &str, filter: &str) -> Result<usize> {
         let before = self.count(table, Some(filter)).await?;
         if before > 0 {
@@ -416,6 +447,7 @@ impl VectorStore for LanceDbStore {
         Ok(before)
     }
 
+    /// **Deprecated:** use [`TypedTable`] via [`typed_table()`](Self::typed_table).
     async fn get(&self, table: &str, ids: &[String]) -> Result<Vec<SearchResult>> {
         if ids.is_empty() {
             return Ok(vec![]);
