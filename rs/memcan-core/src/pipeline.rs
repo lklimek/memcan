@@ -17,7 +17,8 @@ use uuid::Uuid;
 use crate::error::{Result, ResultExt};
 use crate::prompts::{FACT_EXTRACTION_PROMPT, MEMORY_UPDATE_PROMPT, render_prompt};
 use crate::traits::{
-    EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, VectorPoint, VectorStore,
+    EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, TableSchema, VectorPoint,
+    VectorStore,
 };
 
 /// Table name for user memories.
@@ -290,6 +291,7 @@ pub struct Pipeline {
     llm: Arc<dyn LlmProvider>,
     llm_model: String,
     table_name: String,
+    table_schema: Arc<dyn TableSchema>,
     distill: bool,
     extraction_prompt: Option<String>,
     progress: Arc<Mutex<PipelineProgress>>,
@@ -303,6 +305,7 @@ impl Pipeline {
         llm: Arc<dyn LlmProvider>,
         llm_model: impl Into<String>,
         table_name: impl Into<String>,
+        table_schema: Arc<dyn TableSchema>,
         distill: bool,
     ) -> Self {
         Self {
@@ -311,6 +314,7 @@ impl Pipeline {
             llm,
             llm_model: llm_model.into(),
             table_name: table_name.into(),
+            table_schema,
             distill,
             extraction_prompt: None,
             progress: Arc::new(Mutex::new(PipelineProgress::default())),
@@ -460,7 +464,9 @@ impl Pipeline {
             vector: vectors[0].clone(),
             payload,
         };
-        self.store.upsert(&self.table_name, &[point]).await?;
+        self.store
+            .upsert(&self.table_name, &[point], self.table_schema.as_ref())
+            .await?;
         Ok(())
     }
 
@@ -496,7 +502,9 @@ impl Pipeline {
             payload,
         };
         self.start_step(PipelineStep::Storing);
-        self.store.upsert(&self.table_name, &[point]).await?;
+        self.store
+            .upsert(&self.table_name, &[point], self.table_schema.as_ref())
+            .await?;
         Ok(())
     }
 
@@ -656,7 +664,9 @@ impl Pipeline {
                             vector: add_vector,
                             payload,
                         };
-                        self.store.upsert(&self.table_name, &[point]).await?;
+                        self.store
+                            .upsert(&self.table_name, &[point], self.table_schema.as_ref())
+                            .await?;
                     }
                     EventType::Update => {
                         if let Some(memory_id) = &event.memory_id {
@@ -699,7 +709,9 @@ impl Pipeline {
                                 vector: new_vectors[0].clone(),
                                 payload,
                             };
-                            self.store.upsert(&self.table_name, &[point]).await?;
+                            self.store
+                                .upsert(&self.table_name, &[point], self.table_schema.as_ref())
+                                .await?;
                         } else {
                             warn!("UPDATE event missing memory_id, skipping");
                         }

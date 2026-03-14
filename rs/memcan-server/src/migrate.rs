@@ -6,6 +6,7 @@ use tracing::info;
 use memcan_core::error::{MemcanError, Result as MemcanResult, ResultExt};
 use memcan_core::init::MemcanContext;
 use memcan_core::pipeline::MEMORIES_TABLE;
+use memcan_core::schema::MemcanTableSchema;
 use memcan_core::traits::{EmbeddingProvider, VectorPoint, VectorStore};
 
 use crate::MigrateArgs;
@@ -65,8 +66,9 @@ pub async fn run(args: &MigrateArgs) -> MemcanResult<()> {
     }
 
     let ctx = MemcanContext::init().await?;
+    let ts = MemcanTableSchema;
     ctx.store
-        .ensure_table(MEMORIES_TABLE, ctx.settings.embed_dims)
+        .ensure_table(MEMORIES_TABLE, ctx.settings.embed_dims, &ts)
         .await?;
 
     let texts: Vec<String> = records.iter().map(|r| r.data.clone()).collect();
@@ -123,7 +125,7 @@ pub async fn run(args: &MigrateArgs) -> MemcanResult<()> {
             })
             .collect();
 
-        ctx.store.upsert(MEMORIES_TABLE, &points).await?;
+        ctx.store.upsert(MEMORIES_TABLE, &points, &ts).await?;
         total_upserted += points.len();
         info!(
             progress = total_upserted,

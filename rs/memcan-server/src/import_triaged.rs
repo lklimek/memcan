@@ -13,6 +13,7 @@ use memcan_core::embed::FastEmbedProvider;
 use memcan_core::error::{MemcanError, Result as MemcanResult, ResultExt};
 use memcan_core::lancedb_store::LanceDbStore;
 use memcan_core::pipeline::{MEMORIES_TABLE, md5_hex};
+use memcan_core::schema::MemcanTableSchema;
 use memcan_core::traits::{EmbeddingProvider, VectorPoint, VectorStore};
 
 use crate::ImportTriagedArgs;
@@ -110,9 +111,11 @@ pub async fn run(args: &ImportTriagedArgs) -> MemcanResult<()> {
     settings.ensure_log_dir()?;
     let embedder = FastEmbedProvider::from_settings(&settings)?;
 
+    let ts = MemcanTableSchema;
     let store = if !args.dry_run {
         let s = LanceDbStore::open(&settings.lancedb_path).await?;
-        s.ensure_table(MEMORIES_TABLE, settings.embed_dims).await?;
+        s.ensure_table(MEMORIES_TABLE, settings.embed_dims, &ts)
+            .await?;
         Some(s)
     } else {
         None
@@ -182,7 +185,7 @@ pub async fn run(args: &ImportTriagedArgs) -> MemcanResult<()> {
                 payload: serde_json::Value::Object(payload),
             };
 
-            store.upsert(MEMORIES_TABLE, &[point]).await?;
+            store.upsert(MEMORIES_TABLE, &[point], &ts).await?;
             println!(
                 "  Imported {} -> {}: {}",
                 finding.id, user_id, finding.title

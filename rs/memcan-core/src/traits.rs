@@ -1,3 +1,4 @@
+use arrow_schema::Field;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -19,16 +20,70 @@ pub struct VectorPoint {
     pub payload: serde_json::Value,
 }
 
+/// Defines the Arrow schema and column extraction logic for a LanceDB table.
+///
+/// Every LanceDB table has three mandatory columns (`id`, `vector`, `payload`).
+/// A `TableSchema` adds zero or more *filterable* columns whose values are
+/// extracted from the JSON payload at upsert time so that LanceDB SQL WHERE
+/// filters can reference them directly.
+///
+/// Implementations live in the consumer crate (memcan-server provides
+/// `MemcanTableSchema`; penny will provide its own).
+pub trait TableSchema: Send + Sync {
+    /// Extra Arrow fields beyond the mandatory `id`, `vector`, `payload`.
+    fn extra_fields(&self) -> Vec<Field>;
+
+    /// Extract filterable column values from one payload, in the same order as
+    /// [`extra_fields`](Self::extra_fields). Each entry becomes one Arrow
+    /// `StringArray` cell (nullable).
+    fn extract_columns(&self, payload: &serde_json::Value) -> Vec<Option<String>>;
+
+    /// Column names that should be auto-added (as nullable STRING) when
+    /// opening a table whose schema is missing them. Used for online
+    /// migration of older tables.
+    fn migration_columns(&self) -> Vec<String> {
+        vec![]
+    }
+}
+
+/// A [`TableSchema`] with no extra columns beyond `id`, `vector`, `payload`.
+///
+/// Suitable for consumers that only need basic vector search without
+/// filterable metadata columns.
+pub struct MinimalTableSchema;
+
+impl TableSchema for MinimalTableSchema {
+    fn extra_fields(&self) -> Vec<Field> {
+        vec![]
+    }
+
+    fn extract_columns(&self, _payload: &serde_json::Value) -> Vec<Option<String>> {
+        vec![]
+    }
+}
+
 /// Abstraction over a vector database (LanceDB, Qdrant, etc.).
 #[async_trait]
 pub trait VectorStore: Send + Sync {
     /// Ensure a table (collection) exists with the given dimensionality.
     ///
+    /// The `schema` parameter defines extra filterable columns and migration
+    /// logic. Pass [`MinimalTableSchema`] for a bare `id + vector + payload`
+    /// table, or a domain-specific implementation for richer filtering.
+    ///
     /// Idempotent: calling on an existing table is a no-op.
-    async fn ensure_table(&self, name: &str, dims: usize) -> Result<()>;
+    async fn ensure_table(&self, name: &str, dims: usize, schema: &dyn TableSchema) -> Result<()>;
 
     /// Insert or update points. Existing IDs are overwritten.
-    async fn upsert(&self, table: &str, points: &[VectorPoint]) -> Result<()>;
+    ///
+    /// The `schema` parameter must match the one used in
+    /// [`ensure_table`](Self::ensure_table).
+    async fn upsert(
+        &self,
+        table: &str,
+        points: &[VectorPoint],
+        schema: &dyn TableSchema,
+    ) -> Result<()>;
 
     /// Nearest-neighbor search returning up to `limit` results.
     ///
@@ -160,5 +215,14 @@ mod tests {
         assert_eq!(Role::System.to_string(), "system");
         assert_eq!(Role::User.to_string(), "user");
         assert_eq!(Role::Assistant.to_string(), "assistant");
+    }
+
+    #[test]
+    fn test_minimal_table_schema() {
+        let schema = MinimalTableSchema;
+        assert!(schema.extra_fields().is_empty());
+        let payload = serde_json::json!({"key": "value"});
+        assert!(schema.extract_columns(&payload).is_empty());
+        assert!(schema.migration_columns().is_empty());
     }
 }

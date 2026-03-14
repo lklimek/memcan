@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::error::Result;
 use crate::query::sanitize_eq;
-use crate::traits::{EmbeddingProvider, SearchResult, VectorPoint, VectorStore};
+use crate::traits::{EmbeddingProvider, SearchResult, TableSchema, VectorPoint, VectorStore};
 
 pub const TODOS_TABLE: &str = "memcan_todos";
 
@@ -141,6 +141,7 @@ fn priority_rank(p: &str) -> u8 {
 pub async fn add_todo(
     store: &dyn VectorStore,
     embedder: &dyn EmbeddingProvider,
+    table_schema: &dyn TableSchema,
     params: AddTodoParams,
 ) -> Result<TodoItem> {
     let priority = params.priority.as_deref().unwrap_or("medium");
@@ -166,7 +167,7 @@ pub async fn add_todo(
         vector: vectors[0].clone(),
         payload,
     };
-    store.upsert(TODOS_TABLE, &[point]).await?;
+    store.upsert(TODOS_TABLE, &[point], table_schema).await?;
     Ok(item)
 }
 
@@ -202,6 +203,7 @@ pub async fn list_todos(
 pub async fn update_todo(
     store: &dyn VectorStore,
     embedder: &dyn EmbeddingProvider,
+    table_schema: &dyn TableSchema,
     todo_id: &str,
     updates: UpdateTodoFields,
 ) -> Result<TodoItem> {
@@ -262,18 +264,20 @@ pub async fn update_todo(
         vector,
         payload,
     };
-    store.upsert(TODOS_TABLE, &[point]).await?;
+    store.upsert(TODOS_TABLE, &[point], table_schema).await?;
     Ok(item)
 }
 
 pub async fn complete_todo(
     store: &dyn VectorStore,
     embedder: &dyn EmbeddingProvider,
+    table_schema: &dyn TableSchema,
     todo_id: &str,
 ) -> Result<TodoItem> {
     update_todo(
         store,
         embedder,
+        table_schema,
         todo_id,
         UpdateTodoFields {
             status: Some("done".to_string()),

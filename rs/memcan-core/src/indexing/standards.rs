@@ -15,7 +15,8 @@ use crate::error::{MemcanError, Result, ResultExt};
 use crate::pipeline::{STANDARDS_TABLE, chunk_content, resolve_context_budget};
 use crate::prompts::{METADATA_EXTRACTION_PROMPT, render_prompt};
 use crate::traits::{
-    EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, VectorPoint, VectorStore,
+    EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, TableSchema, VectorPoint,
+    VectorStore,
 };
 
 /// Accepted standard types for validation.
@@ -283,6 +284,7 @@ pub async fn index_standards(
     params: &IndexStandardsParams,
     store: &dyn VectorStore,
     embedder: &dyn EmbeddingProvider,
+    table_schema: &dyn TableSchema,
     llm: &dyn LlmProvider,
     llm_model: &str,
     embed_dims: usize,
@@ -298,7 +300,9 @@ pub async fn index_standards(
     let (doc_title, chunks) = chunk_markdown(&params.content);
     info!(count = chunks.len(), doc_title = %doc_title, "Parsed markdown chunks");
 
-    store.ensure_table(STANDARDS_TABLE, embed_dims).await?;
+    store
+        .ensure_table(STANDARDS_TABLE, embed_dims, table_schema)
+        .await?;
 
     let budget = resolve_context_budget(llm, llm_model).await;
     let now = Utc::now().to_rfc3339();
@@ -408,7 +412,7 @@ pub async fn index_standards(
             payload: serde_json::Value::Object(payload),
         };
 
-        if let Err(e) = store.upsert(STANDARDS_TABLE, &[point]).await {
+        if let Err(e) = store.upsert(STANDARDS_TABLE, &[point], table_schema).await {
             tracing::error!(chunk_index, error = %e, "Upsert failed");
             errors.push(IndexChunkError {
                 chunk_index,
@@ -440,9 +444,12 @@ pub async fn index_standards(
 pub async fn drop_standards(
     standard_id: &str,
     store: &dyn VectorStore,
+    table_schema: &dyn TableSchema,
     embed_dims: usize,
 ) -> Result<usize> {
-    store.ensure_table(STANDARDS_TABLE, embed_dims).await?;
+    store
+        .ensure_table(STANDARDS_TABLE, embed_dims, table_schema)
+        .await?;
     let filter = format!("standard_id = '{}'", standard_id.replace('\'', "''"));
     let count = store.count(STANDARDS_TABLE, Some(&filter)).await?;
     if count == 0 {
