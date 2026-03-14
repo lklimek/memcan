@@ -53,15 +53,18 @@ impl<S: TableSchema> TypedTable<S> {
             return Ok(());
         }
 
-        let id_list: Vec<String> = points
-            .iter()
-            .map(|p| format!("'{}'", p.id.replace('\'', "''")))
-            .collect();
-        let filter = format!("id IN ({})", id_list.join(", "));
-        let _ = self.inner.delete(&filter).await;
+        let filter = crate::lancedb_store::build_id_filter(points.iter().map(|p| p.id.as_str()));
+        if let Err(e) = self.inner.delete(&filter).await {
+            tracing::warn!(table = %self.name, error = %e, "pre-upsert delete failed, duplicates may occur");
+        }
 
-        let batch = LanceDbStore::points_to_batch(points, self.dims, &self.schema)
-            .map_err(VectorStoreError::Memcan)?;
+        let batch =
+            LanceDbStore::points_to_batch(points, self.dims, &self.schema).map_err(|e| {
+                VectorStoreError::SchemaMismatch {
+                    table: self.name.clone(),
+                    detail: e.to_string(),
+                }
+            })?;
         let schema = batch.schema();
         let batches = arrow_array::RecordBatchIterator::new(vec![Ok(batch)], schema);
         self.inner
@@ -168,16 +171,37 @@ impl<S: TableSchema> TypedTable<S> {
         Ok(results)
     }
 
+    /// Retrieve specific records by their IDs.
+    pub async fn get(&self, ids: &[String]) -> Result<Vec<SearchResult>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let filter = crate::lancedb_store::build_id_filter(ids.iter().map(|id| id.as_str()));
+        self.scroll(Some(&filter), ids.len(), 0).await
+    }
+
+    /// Delete records by their IDs.
+    pub async fn delete_by_ids(&self, ids: &[String]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let filter = crate::lancedb_store::build_id_filter(ids.iter().map(|id| id.as_str()));
+        self.delete(&filter).await
+    }
+
     /// Classify a raw LanceDB error, detecting stale handles.
     fn classify_error(&self, err: lancedb::Error) -> VectorStoreError {
-        let msg = err.to_string();
-        if msg.contains("not found") || msg.contains("does not exist") {
-            VectorStoreError::StaleHandle {
-                table: self.name.clone(),
-                reason: msg,
-            }
-        } else {
-            VectorStoreError::Store(err)
+        crate::lancedb_store::classify_lancedb_error(&self.name, err)
+    }
+}
+
+impl<S: TableSchema + Clone> Clone for TypedTable<S> {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            inner: self.inner.clone(),
+            schema: self.schema.clone(),
+            dims: self.dims,
         }
     }
 }
@@ -262,6 +286,8 @@ mod tests {
             .expect("search");
         assert!(!results.is_empty());
         assert_eq!(results[0].id, "x");
+        assert!(results[0].score > 0.0, "search score should be positive");
+        assert_eq!(results[0].payload["val"], "x");
     }
 
     #[tokio::test]

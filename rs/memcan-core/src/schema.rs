@@ -12,6 +12,7 @@ use crate::traits::TableSchema;
 ///
 /// All memcan tables (memories, standards, code, todos) share this schema.
 /// The extra columns are extracted from the JSON payload at upsert time.
+#[derive(Clone)]
 pub struct MemcanTableSchema;
 
 impl MemcanTableSchema {

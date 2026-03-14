@@ -34,6 +34,8 @@ pub mod traits;
 pub mod typed_table;
 
 pub use error::VectorStoreError;
+pub use schema::MemcanTableSchema;
+pub use traits::{MinimalTableSchema, TableSchema};
 pub use typed_table::TypedTable;
 
 #[cfg(not(any(feature = "ollama-rs-llm", feature = "genai-llm")))]

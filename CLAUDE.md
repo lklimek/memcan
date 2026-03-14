@@ -33,7 +33,7 @@ Reusable library. All domain logic lives here. Must not depend on transport, CLI
 
 | Module | Responsibility |
 |---|---|
-| `traits` | `VectorStore`, `EmbeddingProvider`, `LlmProvider` abstractions |
+| `traits` | `VectorStore`, `EmbeddingProvider`, `LlmProvider`, `TableSchema` abstractions |
 | `lancedb_store` | LanceDB implementation of `VectorStore` |
 | `embed` | fastembed implementation of `EmbeddingProvider` |
 | `llm` | genai implementation of `LlmProvider` |
@@ -45,11 +45,12 @@ Reusable library. All domain logic lives here. Must not depend on transport, CLI
 | `health` | Dependency circuit breaker (Ollama, LanceDB, Embedding) |
 | `indexing::code` | Language-specific symbol extraction, LLM descriptions, incremental code indexing |
 | `indexing::standards` | Markdown chunking, LLM metadata extraction |
-| `indexing::batch` | Shared batch embedding + upsert helper |
+| `schema` | Memcan-specific `TableSchema` implementation with filterable columns |
+| `typed_table` | Strongly-typed LanceDB table handle (`TypedTable<S>`) |
 | `config` | `Settings` loading from env/files |
 | `init` | `MemcanContext` bootstrap (wires all components) |
 | `prompts` | LLM prompt templates |
-| `error` | Error types and `Result` aliases |
+| `error` | Error types (`MemcanError`, `VectorStoreError`) and `Result` aliases |
 
 ### memcan-server (binary)
 

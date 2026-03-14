@@ -55,6 +55,13 @@ pub enum MemcanError {
     #[error("dependency '{dependency}' unavailable: {message}")]
     DependencyUnavailable { dependency: String, message: String },
 
+    // -- Vector store ---------------------------------------------------------
+    #[error("vector store error: {source}")]
+    VectorStore {
+        #[from]
+        source: VectorStoreError,
+    },
+
     // -- Generic (replaces bail!/anyhow!) ------------------------------------
     #[error("{0}")]
     Other(String),
@@ -135,39 +142,6 @@ pub enum VectorStoreError {
 
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
-
-    #[error("memcan error: {0}")]
-    Memcan(#[from] MemcanError),
-}
-
-impl From<VectorStoreError> for MemcanError {
-    fn from(e: VectorStoreError) -> Self {
-        match e {
-            VectorStoreError::StaleHandle { table, reason } => MemcanError::LanceDb {
-                context: format!("stale handle for table '{table}'"),
-                source: lancedb::Error::Runtime { message: reason },
-            },
-            VectorStoreError::TableNotFound(name) => {
-                MemcanError::Other(format!("table '{name}' not found"))
-            }
-            VectorStoreError::Embedding(detail) => MemcanError::Embedding {
-                context: "vector store".into(),
-                detail,
-            },
-            VectorStoreError::SchemaMismatch { table, detail } => {
-                MemcanError::Config(format!("schema mismatch on table '{table}': {detail}"))
-            }
-            VectorStoreError::Store(e) => MemcanError::LanceDb {
-                context: "LanceDB error".into(),
-                source: e,
-            },
-            VectorStoreError::Serialization(e) => MemcanError::Json {
-                context: "vector store serialization".into(),
-                source: e,
-            },
-            VectorStoreError::Memcan(e) => e,
-        }
-    }
 }
 
 // -- Helper trait: .context() analog for Result<T, E> -----------------------

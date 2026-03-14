@@ -27,8 +27,11 @@ pub struct VectorPoint {
 /// extracted from the JSON payload at upsert time so that LanceDB SQL WHERE
 /// filters can reference them directly.
 ///
-/// Implementations live in the consumer crate (memcan-server provides
-/// `MemcanTableSchema`; penny will provide its own).
+/// The default implementation is [`MemcanTableSchema`](crate::schema::MemcanTableSchema)
+/// in the `schema` module.
+///
+/// Methods take `&self` to support runtime polymorphism via `Arc<dyn TableSchema>`.
+/// Implementations are typically zero-sized types (ZSTs).
 pub trait TableSchema: Send + Sync {
     /// Extra Arrow fields beyond the mandatory `id`, `vector`, `payload`.
     fn extra_fields(&self) -> Vec<Field>;
@@ -50,6 +53,7 @@ pub trait TableSchema: Send + Sync {
 ///
 /// Suitable for consumers that only need basic vector search without
 /// filterable metadata columns.
+#[derive(Clone)]
 pub struct MinimalTableSchema;
 
 impl TableSchema for MinimalTableSchema {
@@ -78,6 +82,8 @@ pub trait VectorStore: Send + Sync {
     ///
     /// The `schema` parameter must match the one used in
     /// [`ensure_table`](Self::ensure_table).
+    ///
+    /// **Deprecated:** Use [`TypedTable::upsert`] instead.
     async fn upsert(
         &self,
         table: &str,
@@ -88,6 +94,8 @@ pub trait VectorStore: Send + Sync {
     /// Nearest-neighbor search returning up to `limit` results.
     ///
     /// Optionally filters results with a SQL WHERE clause.
+    ///
+    /// **Deprecated:** Use [`TypedTable::search`] instead.
     async fn search(
         &self,
         table: &str,
@@ -98,6 +106,8 @@ pub trait VectorStore: Send + Sync {
     ) -> Result<Vec<SearchResult>>;
 
     /// List records with optional SQL filter (no vector search).
+    ///
+    /// **Deprecated:** Use [`TypedTable::scroll`] instead.
     async fn scroll(
         &self,
         table: &str,
@@ -107,15 +117,23 @@ pub trait VectorStore: Send + Sync {
     ) -> Result<Vec<SearchResult>>;
 
     /// Count records matching an optional SQL filter.
+    ///
+    /// **Deprecated:** Use [`TypedTable::count`] instead.
     async fn count(&self, table: &str, filter: Option<&str>) -> Result<usize>;
 
     /// Delete records by their IDs.
+    ///
+    /// **Deprecated:** Use [`TypedTable::delete_by_ids`] instead.
     async fn delete(&self, table: &str, ids: &[String]) -> Result<()>;
 
     /// Delete all records matching a SQL filter. Returns number deleted.
+    ///
+    /// **Deprecated:** Use [`TypedTable::delete`] instead.
     async fn delete_by_filter(&self, table: &str, filter: &str) -> Result<usize>;
 
     /// Retrieve specific records by their IDs.
+    ///
+    /// **Deprecated:** Use [`TypedTable::get`] instead.
     async fn get(&self, table: &str, ids: &[String]) -> Result<Vec<SearchResult>>;
 }
 
