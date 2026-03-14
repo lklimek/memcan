@@ -29,7 +29,7 @@ cd ~/.config/memcan/server && docker compose up -d
 MemCan uses a two-component architecture:
 
 - **Server** (`memcan-server`) — long-lived HTTP MCP server handling embeddings, LLM, and storage. Runs as a Docker container or system service on port 8191 (internal), fronted by Traefik on port 8190.
-- **CLI** (`memcan`) — thin HTTP client for hooks. Installed by `/setup-memcan`. No fastembed/LanceDB deps.
+- **CLI** (`memcan`) — thin HTTP client. Installed by `/setup-memcan`. No fastembed/LanceDB deps.
 
 The Claude Code plugin connects to the server via HTTP MCP transport (Streamable HTTP).
 

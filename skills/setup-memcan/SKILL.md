@@ -13,7 +13,7 @@ Configures the MemCan environment. The plugin and MCP server are already install
 
 MemCan uses a two-component architecture:
 - **Server** (`memcan-server serve`) — long-lived HTTP MCP server handling embeddings, LLM, and storage. Runs as a Docker container or system service.
-- **CLI** (`memcan`) — thin HTTP client for hooks. Installed via `setup.sh` or `cargo install memcan`.
+- **CLI** (`memcan`) — thin HTTP client. Installed via `setup.sh` or `cargo install memcan`.
 
 The Claude Code plugin connects to the server via HTTP MCP transport (configured in `.mcp.json`).
 
@@ -117,16 +117,16 @@ Use the MemCan MCP server to store and recall knowledge across sessions.
 
 ### 4. Clean Up Deprecated Hooks
 
-Auto-hooks (`SubagentStop` and `PreCompact` calling `memcan extract`) are deprecated. They captured raw agent output — entire transcripts, README files, TODO dumps — instead of distilled facts, resulting in low-quality junk memories. Use the `lessons-learned` skill for deliberate, quality-controlled memory extraction instead.
+Auto-hooks (`SubagentStop` and `PreCompact` calling `memcan extract`) are deprecated. They captured raw agent output instead of distilled facts. Use the `lessons-learned` skill for deliberate, quality-controlled memory extraction instead.
 
 Scan both the user-level and any project-level `settings.json` files for lingering deprecated hooks:
 
 1. Check `~/.claude/settings.json`
 2. Check `.claude/settings.json` in the current working directory (if it exists and differs from the user-level file)
 
-For each file found, read it and inspect all hook events. For each event, remove any hook entry whose `command` contains `memcan extract`. Do not remove non-memcan hooks, and do not remove the `SessionStart` check hook (`command -v memcan`).
+For each file found, read it and inspect all hook events. For each event, remove any hook entry whose `command` contains `memcan extract` or `command -v memcan`. Do not remove non-memcan hooks.
 
-If any hooks were removed from a file, write the updated JSON back and report: "Removed deprecated `memcan extract` hook(s) from `<path>`. Auto-hooks are deprecated — use the `lessons-learned` skill for manual extraction."
+If any hooks were removed from a file, write the updated JSON back and report: "Removed deprecated memcan hook(s) from `<path>`. Use the `lessons-learned` skill for manual extraction."
 
 If no deprecated hooks were found in a file, silently skip it (no output needed).
 
@@ -149,7 +149,7 @@ Print a summary:
 - `.env` exists at `~/.config/memcan/.env` with `MEMCAN_URL` and `MEMCAN_API_KEY` configured
 - Claude Code settings at `~/.claude/settings.json` has `MEMCAN_API_KEY` and `MEMCAN_URL` in `env` block
 - User rule exists at `~/.claude/rules/memcan.md`
-- Hooks: report whether any deprecated `memcan extract` hooks were removed, or confirm none were found
+- Hooks: report whether any deprecated memcan hooks were removed, or confirm none were found
 - MCP server is connected (test: call `search(query="test")` — success = connected, failure or tool unavailable = not connected)
 
 Security warnings (show only when applicable):

@@ -42,7 +42,7 @@ cargo build --release --workspace
 
 Binaries are placed in `target/release/`:
 - `memcan-server` — fat server (MCP HTTP/stdio server + all admin subcommands)
-- `memcan` — thin HTTP client for hooks and manual operations
+- `memcan` — thin HTTP client for manual operations
 
 Start the server (requires local Ollama):
 

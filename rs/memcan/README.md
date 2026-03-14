@@ -2,7 +2,7 @@
 
 Persistent memory CLI for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — store and recall learnings, decisions, and preferences across sessions.
 
-`memcan` is the thin CLI client that communicates with the [MemCan MCP server](https://github.com/lklimek/memcan). Used by Claude Code plugin hooks for automatic memory extraction.
+`memcan` is the thin CLI client that communicates with the [MemCan MCP server](https://github.com/lklimek/memcan).
 
 ## Install
 
@@ -19,7 +19,7 @@ memcan add "Axum .layer() order: last added = outermost middleware" --project my
 # Search memories
 memcan search "middleware ordering" --project my-app
 
-# Extract memories from conversation (used by hooks, reads stdin)
+# Extract memories from conversation (reads stdin)
 memcan extract
 
 # Check server status

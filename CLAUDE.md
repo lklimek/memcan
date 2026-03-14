@@ -18,7 +18,6 @@ rs/                              # All Rust source code
 Cargo.toml                       # Workspace root
 Dockerfile                       # Multi-stage build for memcan-server
 .claude-plugin/                  # Claude Code plugin manifest
-hooks/                           # Event hooks (SessionStart only; auto-hooks removed in v0.35)
 skills/                          # Plugin skills
 .github/workflows/               # CI + Release workflows
 docker-compose.yml               # Traefik + memcan + optional Ollama
@@ -207,6 +206,6 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 
 ## Deprecated Features
 
-### Auto-Hooks (removed in v0.35)
+### Hooks (removed)
 
-The `SubagentStop` and `PreCompact` hooks that automatically ran `memcan extract` are deprecated and removed from `hooks.json`. Use the `lessons-learned` skill for deliberate memory extraction instead. See README.md for details.
+All plugin hooks have been removed. The `hooks/` directory no longer exists. The `SubagentStop` and `PreCompact` auto-hooks were removed in v0.35 due to quality issues, and the remaining `SessionStart` check hook was removed as it provided no real value. Use the `lessons-learned` skill for deliberate memory extraction instead.
