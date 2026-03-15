@@ -28,7 +28,7 @@ use rmcp::{
 use serde::Deserialize;
 use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use memcan_core::{
@@ -1574,6 +1574,13 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
     ctx.store.ensure_table(TODOS_TABLE, dims, &ts).await?;
 
     info!("Tables ensured: {MEMORIES_TABLE}, {STANDARDS_TABLE}, {CODE_TABLE}, {TODOS_TABLE}");
+
+    info!("Pruning old version backlog on startup");
+    for table_name in &[MEMORIES_TABLE, STANDARDS_TABLE, CODE_TABLE, TODOS_TABLE] {
+        if let Err(e) = ctx.store.compact_table(table_name).await {
+            warn!(table = table_name, "startup prune failed: {e}");
+        }
+    }
 
     let listen_addr = args
         .listen

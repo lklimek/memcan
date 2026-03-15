@@ -15,6 +15,8 @@ use lancedb::{Connection, Table, connect};
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
+use lancedb::table::OptimizeAction;
+
 use crate::error::{MemcanError, Result, ResultExt, VectorStoreError};
 use crate::traits::{SearchResult, TableSchema, VectorPoint, VectorStore};
 
@@ -184,6 +186,57 @@ impl LanceDbStore {
             .with_context(|| format!("failed to open table {name}"))
     }
 
+    /// Configure Lance's built-in auto-cleanup hook on a table.
+    ///
+    /// Runs on every commit: prunes versions older than 1 day every 20 commits,
+    /// keeping at least 5 recent versions.
+    async fn ensure_auto_cleanup(table: &Table) {
+        let Some(native) = table.as_native() else {
+            warn!("table is not a NativeTable; skipping auto-cleanup config");
+            return;
+        };
+        if let Err(e) = native
+            .update_config([
+                ("lance.auto_cleanup.interval".to_string(), "20".to_string()),
+                (
+                    "lance.auto_cleanup.older_than".to_string(),
+                    "1d".to_string(),
+                ),
+                (
+                    "lance.auto_cleanup.retain_versions".to_string(),
+                    "5".to_string(),
+                ),
+            ])
+            .await
+        {
+            warn!("failed to set auto-cleanup config: {e}");
+        } else {
+            tracing::debug!(
+                table = table.name(),
+                "lance auto-cleanup configured: interval=20, older_than=1d, retain=5"
+            );
+        }
+    }
+
+    /// Prune old versions from a single table (one-time cleanup for existing backlog).
+    pub async fn compact_table(&self, table_name: &str) -> Result<()> {
+        let table = self
+            .conn
+            .open_table(table_name)
+            .execute()
+            .await
+            .with_context(|| format!("failed to open table {table_name} for compaction"))?;
+        table
+            .optimize(OptimizeAction::Prune {
+                older_than: Some(chrono::Duration::days(1)),
+                delete_unverified: Some(false),
+                error_if_tagged_old_versions: Some(false),
+            })
+            .await
+            .with_context(|| format!("failed to prune table {table_name}"))?;
+        Ok(())
+    }
+
     /// Infer vector dimensionality from an existing table's schema.
     async fn infer_dims(&self, table: &Table) -> Result<usize> {
         let schema = table.schema().await?;
@@ -341,17 +394,20 @@ impl VectorStore for LanceDbStore {
                     .with_context(|| format!("failed to add missing columns to table {name}"))?;
             }
 
+            Self::ensure_auto_cleanup(&tbl).await;
             return Ok(());
         }
         debug!(name, dims, "creating table");
         let schema = Self::build_arrow_schema(dims, table_schema)
             .map_err(|e| MemcanError::Config(e.to_string()))?;
         let batches = RecordBatchIterator::new(vec![], schema.clone());
-        self.conn
+        let tbl = self
+            .conn
             .create_table(name, Box::new(batches))
             .execute()
             .await
             .with_context(|| format!("failed to create table {name}"))?;
+        Self::ensure_auto_cleanup(&tbl).await;
         Ok(())
     }
 
