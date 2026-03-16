@@ -12,7 +12,7 @@
 
 services:
   traefik:
-    image: traefik:v3.3.6
+    image: traefik:v3
     command:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
@@ -81,7 +81,7 @@ services:
       start_period: 120s
 
   ollama:
-    image: ollama/ollama:0.6.2
+    image: ollama/ollama:latest
     profiles: [ollama]
     # CPU mode by default. For GPU acceleration, add:
     #   runtime: nvidia
