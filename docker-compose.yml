@@ -59,7 +59,7 @@ services:
       - "traefik.http.routers.memcan.rule=PathPrefix(`/`)"
       - "traefik.http.routers.memcan.entrypoints=memcan"
       - "traefik.http.services.memcan.loadbalancer.server.port=8191"
-      - "traefik.http.middlewares.memcan-ipallow.ipallowlist.sourcerange=127.0.0.1/32,::1/128,10.29.0.0/16"
+      - "traefik.http.middlewares.memcan-ipallow.ipallowlist.sourcerange=${TRAEFIK_IP_ALLOWLIST:-127.0.0.1/32,::1/128}"
       - "traefik.http.middlewares.memcan-auth.plugin.traefik-api-token-middleware.authenticationheader=false"
       - "traefik.http.middlewares.memcan-auth.plugin.traefik-api-token-middleware.bearerheader=true"
       - "traefik.http.middlewares.memcan-auth.plugin.traefik-api-token-middleware.bearerheadername=Authorization"
@@ -112,7 +112,7 @@ services:
       - "traefik.http.routers.ollama.entrypoints=ollama"
       - "traefik.http.services.ollama.loadbalancer.server.port=11434"
       # Middlewares: IP allowlist + bearer token auth (both required)
-      - "traefik.http.middlewares.ollama-ipallow.ipallowlist.sourcerange=127.0.0.1/32,::1/128,10.29.0.0/16"
+      - "traefik.http.middlewares.ollama-ipallow.ipallowlist.sourcerange=${TRAEFIK_IP_ALLOWLIST:-127.0.0.1/32,::1/128}"
       - "traefik.http.middlewares.ollama-auth.plugin.traefik-api-token-middleware.authenticationheader=false"
       - "traefik.http.middlewares.ollama-auth.plugin.traefik-api-token-middleware.bearerheader=true"
       - "traefik.http.middlewares.ollama-auth.plugin.traefik-api-token-middleware.bearerheadername=Authorization"
@@ -141,7 +141,7 @@ services:
       - "traefik.http.routers.webui.entrypoints=webui"
       - "traefik.http.services.webui.loadbalancer.server.port=8080"
       # IP allowlist only (open-webui handles its own auth)
-      - "traefik.http.middlewares.webui-ipallow.ipallowlist.sourcerange=127.0.0.1/32,::1/128,10.29.0.0/16"
+      - "traefik.http.middlewares.webui-ipallow.ipallowlist.sourcerange=${TRAEFIK_IP_ALLOWLIST:-127.0.0.1/32,::1/128}"
       - "traefik.http.routers.webui.middlewares=webui-ipallow@docker"
     restart: unless-stopped
 
