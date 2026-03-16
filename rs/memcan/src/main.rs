@@ -211,7 +211,15 @@ async fn send_import_batch(client: &client::McpClient, batch: &[String]) -> (u64
         Ok(result) => {
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&result) {
                 let imported = parsed.get("imported").and_then(|v| v.as_u64()).unwrap_or(0);
-                let errors = parsed.get("errors").and_then(|v| v.as_u64()).unwrap_or(0);
+                let error_arr = parsed.get("errors").and_then(|v| v.as_array());
+                let errors = error_arr.map(|a| a.len() as u64).unwrap_or(0);
+                if let Some(arr) = error_arr {
+                    for err in arr {
+                        if let Some(msg) = err.as_str() {
+                            eprintln!("  import error: {msg}");
+                        }
+                    }
+                }
                 (imported, errors)
             } else {
                 (0, batch.len() as u64)
@@ -368,14 +376,25 @@ async fn main() {
                         }
                         match c.call_tool("export_collection", tool_args).await {
                             Ok(result) => {
-                                let lines: Vec<&str> =
-                                    result.lines().filter(|l| !l.trim().is_empty()).collect();
-                                let count = lines.len() as u32;
-                                for line in &lines {
-                                    if let Err(e) = writeln!(writer, "{line}") {
-                                        eprintln!("Error writing output: {e}");
+                                let parsed: serde_json::Value = match serde_json::from_str(&result)
+                                {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        eprintln!("Error parsing server response: {e}");
                                         std::process::exit(1);
                                     }
+                                };
+                                let data =
+                                    parsed.get("data").and_then(|v| v.as_str()).unwrap_or("");
+                                let count =
+                                    parsed.get("count").and_then(|v| v.as_u64()).unwrap_or(0)
+                                        as u32;
+
+                                if !data.is_empty()
+                                    && let Err(e) = writeln!(writer, "{data}")
+                                {
+                                    eprintln!("Error writing output: {e}");
+                                    std::process::exit(1);
                                 }
                                 total += count;
                                 if count < args.page_size {

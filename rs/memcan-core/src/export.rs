@@ -74,6 +74,7 @@ pub async fn export_collection(
                 _ => serde_json::Map::new(),
             };
             payload.remove("vector");
+            strip_reserved_keys(&mut payload);
 
             let record = ExportRecord {
                 _collection: collection.clone(),
@@ -93,6 +94,17 @@ pub async fn export_collection(
     Ok(ExportStats { count })
 }
 
+/// Keys reserved by `ExportRecord` struct fields — must not appear in payload.
+const RESERVED_KEYS: &[&str] = &["id", "_collection"];
+
+/// Remove struct-level field names from a payload map to prevent
+/// `serde(flatten)` from producing duplicate JSON keys.
+pub fn strip_reserved_keys(payload: &mut serde_json::Map<String, serde_json::Value>) {
+    for key in RESERVED_KEYS {
+        payload.remove(*key);
+    }
+}
+
 /// Serialize an `ExportRecord` to a JSONL line.
 pub fn record_to_jsonl(record: &ExportRecord) -> Result<String> {
     serde_json::to_string(record).map_err(|e| MemcanError::Json {
@@ -102,11 +114,16 @@ pub fn record_to_jsonl(record: &ExportRecord) -> Result<String> {
 }
 
 /// Parse a JSONL line into an `ExportRecord`.
+///
+/// After deserialization, strips reserved keys (`id`, `_collection`) from the
+/// payload map so they don't duplicate the struct-level fields.
 pub fn jsonl_to_record(line: &str) -> Result<ExportRecord> {
-    serde_json::from_str(line).map_err(|e| MemcanError::Json {
+    let mut record: ExportRecord = serde_json::from_str(line).map_err(|e| MemcanError::Json {
         context: "parsing JSONL line".into(),
         source: e,
-    })
+    })?;
+    strip_reserved_keys(&mut record.payload);
+    Ok(record)
 }
 
 #[cfg(test)]
@@ -325,6 +342,57 @@ mod tests {
 
         assert_eq!(stats.count, 3);
         assert_eq!(records.len(), 3);
+    }
+
+    #[test]
+    fn test_roundtrip_with_reserved_keys_in_payload() {
+        let mut payload = serde_json::Map::new();
+        payload.insert("data".into(), serde_json::Value::String("hello".into()));
+        payload.insert("id".into(), serde_json::Value::String("payload-id".into()));
+        payload.insert(
+            "_collection".into(),
+            serde_json::Value::String("stale".into()),
+        );
+
+        strip_reserved_keys(&mut payload);
+        let record = ExportRecord {
+            _collection: "memories".into(),
+            id: "struct-id".into(),
+            payload,
+        };
+
+        let line = record_to_jsonl(&record).unwrap();
+        let parsed = jsonl_to_record(&line).unwrap();
+        assert_eq!(parsed.id, "struct-id");
+        assert_eq!(parsed._collection, "memories");
+        assert!(!parsed.payload.contains_key("id"));
+        assert!(!parsed.payload.contains_key("_collection"));
+        assert_eq!(
+            parsed.payload.get("data").unwrap().as_str().unwrap(),
+            "hello"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_export_collection_strips_reserved_keys() {
+        let results = vec![SearchResult {
+            id: "r1".into(),
+            score: 0.0,
+            payload: serde_json::json!({"data": "hi", "id": "conflict", "_collection": "conflict"}),
+        }];
+        let store = MockStore::new(vec![results]);
+        let mut records = Vec::new();
+        export_collection(&store, MEMORIES_TABLE, None, 100, &mut |r| {
+            records.push(r);
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(records[0].id, "r1");
+        assert_eq!(records[0]._collection, "memories");
+        assert!(!records[0].payload.contains_key("id"));
+        assert!(!records[0].payload.contains_key("_collection"));
     }
 
     #[tokio::test]

@@ -14,7 +14,7 @@ Architecture: Three-crate workspace — reusable library (`memcan-core`), MCP se
 rs/                              # All Rust source code
   memcan-core/                  # Reusable library
   memcan-server/                # MCP server binary + admin CLI wrappers
-  memcan/                       # Thin CLI client (HTTP only, no core dep)
+  memcan/                       # Thin CLI client (HTTP only, no core dep, includes walk.rs for directory traversal)
 Cargo.toml                       # Workspace root
 Dockerfile                       # Multi-stage build for memcan-server
 .claude-plugin/                  # Claude Code plugin manifest
@@ -42,7 +42,10 @@ Reusable library. All domain logic lives here. Must not depend on transport, CLI
 | `search` | Unified cross-collection search (memories, standards, code, todos) |
 | `todo` | Per-project TODO list CRUD operations |
 | `health` | Dependency circuit breaker (Ollama, LanceDB, Embedding) |
+| `export` | Collection export to JSONL format (paginated scroll, no vectors) |
+| `import` | JSONL import with re-embedding (no LLM processing) |
 | `indexing::code` | Language-specific symbol extraction, LLM descriptions, incremental code indexing |
+| `indexing::code_files` | Batch file-level code indexing from raw source content |
 | `indexing::standards` | Markdown chunking, LLM metadata extraction |
 | `schema` | Memcan-specific `TableSchema` implementation with filterable columns |
 | `typed_table` | Strongly-typed LanceDB table handle (`TypedTable<S>`) |
@@ -70,6 +73,7 @@ HTTP client only. No `memcan-core` dependency. Communicates exclusively through 
 
 ```
 memcan-server serve [--stdio] [--listen ADDR]   # MCP server (default subcommand)
+memcan-server export <collection> [-o <file>] [--filter <sql>]
 memcan-server index-code <dir> --project <name> [--tech-stack <s>] [--drop]
 memcan-server index-standards <file> --standard-id <id> --standard-type <t> [--drop]
 memcan-server migrate <file> [--dry-run]
@@ -90,6 +94,9 @@ memcan status [operation_id]
 memcan count [--project <p>]
 memcan index-standards <file> --standard-id <id> --standard-type <t> [--version <v>] [--lang <l>] [--url <u>] [--wait]
 memcan index-standards --drop --standard-id <id>
+memcan export <collection> [-o <file>] [--filter <sql>] [--page-size <n>]
+memcan import <file> [--batch-size <n>]
+memcan index-code <dir> --project <p> [--tech-stack <s>] [--batch-size <n>] [--wait]
 ```
 
 ## MCP Tools
@@ -114,6 +121,9 @@ Server exposes these MCP tools (via HTTP at `/mcp`):
 | `update_todo` | Update a TODO item's fields |
 | `complete_todo` | Mark a TODO item as done |
 | `delete_todo` | Delete a TODO item by ID |
+| `export_collection` | Export a collection as JSONL (paginated, no vectors) |
+| `_import_records` | Import JSONL records: embed + upsert (internal/hidden) |
+| `index_code_files` | Index source code files: symbol extraction + LLM + embedding |
 | `get_queue_status` | Poll async operation progress |
 
 ## Versioning

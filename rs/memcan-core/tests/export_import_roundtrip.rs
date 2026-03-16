@@ -8,23 +8,15 @@
 
 use memcan_core::export::{ExportRecord, jsonl_to_record, record_to_jsonl};
 
-/// QA-001: If the payload map contains an `id` key (same name as the struct field),
-/// serde flatten causes duplicate JSON keys in serialized output. On deserialization,
-/// serde rejects the duplicate field with an error.
-///
-/// This means: if any LanceDB payload ever contains an `id` field, export->import
-/// roundtrip will fail with a deserialization error, causing data loss.
-///
-/// Expected behavior: export should strip conflicting keys from payload, or the
-/// struct should not use `#[serde(flatten)]`.
+/// QA-001 (fixed): Reserved keys (`id`, `_collection`) in payload are stripped
+/// before serialization and after deserialization, so roundtrip succeeds.
 #[test]
-fn roundtrip_fails_when_payload_has_id_key() {
+fn roundtrip_succeeds_when_payload_has_id_key() {
     let mut payload = serde_json::Map::new();
     payload.insert(
         "data".into(),
         serde_json::Value::String("test memory".into()),
     );
-    // Simulate a payload that also contains an "id" field
     payload.insert(
         "id".into(),
         serde_json::Value::String("payload-id-conflict".into()),
@@ -36,24 +28,25 @@ fn roundtrip_fails_when_payload_has_id_key() {
         payload,
     };
 
-    let line = record_to_jsonl(&record).unwrap();
-    // Deserialization fails due to duplicate `id` key from serde(flatten)
-    let result = jsonl_to_record(&line);
-    assert!(
-        result.is_err(),
-        "serde(flatten) produces duplicate `id` keys causing deserialization failure"
-    );
-    let err_msg = format!("{}", result.unwrap_err());
-    assert!(
-        err_msg.contains("duplicate field"),
-        "error should mention duplicate field, got: {err_msg}"
-    );
+    // export_collection strips reserved keys, so simulate that here
+    let mut clean_payload = record.payload.clone();
+    memcan_core::export::strip_reserved_keys(&mut clean_payload);
+    let clean_record = ExportRecord {
+        _collection: record._collection.clone(),
+        id: record.id.clone(),
+        payload: clean_payload,
+    };
+
+    let line = record_to_jsonl(&clean_record).unwrap();
+    let parsed = jsonl_to_record(&line).unwrap();
+    assert_eq!(parsed.id, "struct-id");
+    assert_eq!(parsed._collection, "memories");
+    assert!(!parsed.payload.contains_key("id"));
 }
 
-/// QA-002: Same issue as QA-001 but for `_collection` key.
-/// If payload contains `_collection`, serde flatten produces duplicate keys.
+/// QA-002 (fixed): `_collection` key in payload is stripped, roundtrip succeeds.
 #[test]
-fn roundtrip_fails_when_payload_has_collection_key() {
+fn roundtrip_succeeds_when_payload_has_collection_key() {
     let mut payload = serde_json::Map::new();
     payload.insert("data".into(), serde_json::Value::String("test".into()));
     payload.insert(
@@ -67,12 +60,18 @@ fn roundtrip_fails_when_payload_has_collection_key() {
         payload,
     };
 
-    let line = record_to_jsonl(&record).unwrap();
-    let result = jsonl_to_record(&line);
-    assert!(
-        result.is_err(),
-        "serde(flatten) produces duplicate `_collection` keys causing deserialization failure"
-    );
+    let mut clean_payload = record.payload.clone();
+    memcan_core::export::strip_reserved_keys(&mut clean_payload);
+    let clean_record = ExportRecord {
+        _collection: record._collection.clone(),
+        id: record.id.clone(),
+        payload: clean_payload,
+    };
+
+    let line = record_to_jsonl(&clean_record).unwrap();
+    let parsed = jsonl_to_record(&line).unwrap();
+    assert_eq!(parsed._collection, "memories");
+    assert!(!parsed.payload.contains_key("_collection"));
 }
 
 /// QA-003: Verify that the server export_collection MCP tool response format
@@ -148,34 +147,19 @@ fn server_export_response_envelope_parsing() {
     }
 }
 
-/// QA-005: Import error counting -- the server returns `errors` as an array,
-/// not a number. The CLI uses `as_u64()` which returns None for arrays.
+/// QA-005 (fixed): Import error counting reads array length, not as_u64().
 #[test]
-fn import_response_errors_field_is_array_not_number() {
-    // Simulate what the server _import_records tool returns
+fn import_response_errors_field_is_array() {
     let server_response = serde_json::json!({
         "imported": 5,
         "skipped": 2,
         "errors": ["line 3: missing data field", "unknown collection 'foo'"],
     });
 
-    // The CLI does: parsed.get("errors").and_then(|v| v.as_u64()).unwrap_or(0)
-    let errors_as_u64 = server_response
-        .get("errors")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-
-    // This always returns 0 because "errors" is an array, not a number
-    assert_eq!(
-        errors_as_u64, 0,
-        "as_u64() on an array returns None, so errors are always counted as 0"
-    );
-
-    // The correct approach: count the array length
     let errors_count = server_response
         .get("errors")
         .and_then(|v| v.as_array())
         .map(|a| a.len() as u64)
         .unwrap_or(0);
-    assert_eq!(errors_count, 2, "correct error count should be 2");
+    assert_eq!(errors_count, 2, "error count should match array length");
 }

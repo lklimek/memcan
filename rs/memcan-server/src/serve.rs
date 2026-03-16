@@ -1497,25 +1497,35 @@ impl MemcanService {
         let limit = params.limit.unwrap_or(1000).clamp(1, 10000) as usize;
         let offset = params.offset.unwrap_or(0) as usize;
 
+        // Single-page scroll at the requested offset (MCP tool does not
+        // paginate internally — the caller controls offset/limit).
         let results = self
             .state
             .store
-            .scroll(table, params.filter.as_deref(), limit, offset)
+            .scroll(
+                table,
+                // Filter is passed as-is to LanceDB SQL. This is intentional —
+                // the MCP tool is admin-level and LanceDB is local-only.
+                params.filter.as_deref(),
+                limit,
+                offset,
+            )
             .await
             .map_err(|e| ErrorData::internal_error(format!("scroll failed: {e}"), None))?;
 
-        let collection_name = export::table_to_collection(table).to_string();
         let mut lines = Vec::with_capacity(results.len());
-        for result in &results {
-            let mut payload = match &result.payload {
+        let collection_name = export::table_to_collection(table).to_string();
+        for sr in &results {
+            let mut payload = match &sr.payload {
                 serde_json::Value::Object(map) => map.clone(),
                 _ => serde_json::Map::new(),
             };
             payload.remove("vector");
+            export::strip_reserved_keys(&mut payload);
 
             let record = export::ExportRecord {
                 _collection: collection_name.clone(),
-                id: result.id.clone(),
+                id: sr.id.clone(),
                 payload,
             };
             let line = export::record_to_jsonl(&record)
