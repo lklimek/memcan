@@ -1,6 +1,13 @@
 ---
 name: lessons-learned
 description: "Extract and save learnings from conversation. Invoke at session start, before presenting plan, after notable events, before decisions, when changing plan, and as the final task when all work is complete."
+allowed-tools:
+  - mcp__plugin_memcan_brain__search
+  - mcp__plugin_memcan_brain__search_memories
+  - mcp__plugin_memcan_brain__add_memory
+  - mcp__plugin_memcan_brain__update_memory
+  - mcp__plugin_memcan_brain__delete_memory
+  - mcp__plugin_memcan_brain__count_memories
 ---
 
 # Lessons Learned
@@ -69,14 +76,14 @@ Log each save briefly: scope, type, one-line summary.
 
 ## MCP Tools
 
-| Tool | Use | Example |
-|------|-----|---------|
-| `search` | **Default.** Dedup check across all collections. | `search(query="docker cache", project="penny")` |
-| `search_memories` | Advanced: memories-only scoped search. | `search_memories(query="docker cache", project="penny", limit=5)` |
-| `add_memory` | Save a new memory. | `add_memory(memory="...", project="penny", metadata={"type": "lesson"})` |
-| `update_memory` | Update an existing memory. | `update_memory(memory_id="<uuid>", memory="...")` |
-| `delete_memory` | Delete a low-quality memory. | `delete_memory(memory_id="<uuid>")` |
-| `count_memories` | Count memories. | `count_memories(project="penny")` |
+| Tool | Params | Use |
+|------|--------|-----|
+| `search` | `query: str, project?: str, collections?: [str], limit?: int` | Dedup check across all collections. |
+| `search_memories` | `query: str, project?: str, limit?: int` | Memories-only scoped search. |
+| `add_memory` | `memory: str, project?: str, metadata?: {type, source, ...}` | Save a new memory. |
+| `update_memory` | `memory_id: str, memory: str` | Update an existing memory. |
+| `delete_memory` | `memory_id: str` | Delete a low-quality memory. |
+| `count_memories` | `project?: str` | Count memories for a scope. |
 
 ## Best Practices
 
