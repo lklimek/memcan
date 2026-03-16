@@ -1560,7 +1560,11 @@ async fn health_handler(
 pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
     let ctx = MemcanContext::init().await?;
     setup_logging(&ctx.settings.log_file);
-    ctx.init_llm().await?;
+    if ctx.settings.distill_memories {
+        ctx.init_llm().await?;
+    } else {
+        info!("Skipping LLM init (DISTILL_MEMORIES=false)");
+    }
 
     info!("Loading config: lancedb_path={}", ctx.settings.lancedb_path);
 
