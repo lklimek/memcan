@@ -28,7 +28,7 @@ const UUID_NAMESPACE: Uuid = Uuid::from_bytes([
 ]);
 
 const CHUNK_LINES: usize = 100;
-const BATCH_SIZE: usize = 20;
+pub(crate) const BATCH_SIZE: usize = 20;
 const MAX_WALK_DEPTH: usize = 50;
 
 const SKIP_DIRS: &[&str] = &[
@@ -60,12 +60,12 @@ pub struct IndexCodeResult {
     pub deleted: usize,
 }
 
-struct Symbol {
-    text: String,
-    symbol_name: String,
-    start_line: usize,
-    end_line: usize,
-    chunk_type: String,
+pub(crate) struct Symbol {
+    pub(crate) text: String,
+    pub(crate) symbol_name: String,
+    pub(crate) start_line: usize,
+    pub(crate) end_line: usize,
+    pub(crate) chunk_type: String,
 }
 
 struct LangPatterns {
@@ -84,7 +84,7 @@ fn lang_extensions() -> &'static HashMap<&'static str, &'static [&'static str]> 
     })
 }
 
-fn ext_to_lang(ext: &str) -> Option<&'static str> {
+pub(crate) fn ext_to_lang(ext: &str) -> Option<&'static str> {
     for (lang, exts) in lang_extensions() {
         if exts.contains(&ext) {
             return Some(lang);
@@ -207,7 +207,7 @@ pub fn extract_symbols(source: &str, lang: &str) -> Vec<(String, String, usize, 
         .collect()
 }
 
-fn extract_symbols_regex(source: &str, lang: &str) -> Vec<Symbol> {
+pub(crate) fn extract_symbols_regex(source: &str, lang: &str) -> Vec<Symbol> {
     let lines: Vec<&str> = source.lines().collect();
     if lines.is_empty() {
         return Vec::new();
@@ -276,7 +276,7 @@ fn extract_symbols_regex(source: &str, lang: &str) -> Vec<Symbol> {
     symbols
 }
 
-fn chunk_fallback(source: &str) -> Vec<Symbol> {
+pub(crate) fn chunk_fallback(source: &str) -> Vec<Symbol> {
     let lines: Vec<&str> = source.lines().collect();
     let mut chunks = Vec::new();
 
@@ -309,18 +309,23 @@ fn git_short_hash(project_dir: &Path) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn content_hash(text: &str) -> String {
+pub(crate) fn content_hash(text: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(text.as_bytes());
     format!("{:x}", hasher.finalize())
 }
 
-fn point_id(project: &str, file_path: &str, symbol_name: &str, start_line: usize) -> String {
+pub(crate) fn point_id(
+    project: &str,
+    file_path: &str,
+    symbol_name: &str,
+    start_line: usize,
+) -> String {
     let key = format!("{}:{}:{}:{}", project, file_path, symbol_name, start_line);
     Uuid::new_v5(&UUID_NAMESPACE, key.as_bytes()).to_string()
 }
 
-fn context_line(file_path: &str, lang: &str, tech_stack: &str) -> String {
+pub(crate) fn context_line(file_path: &str, lang: &str, tech_stack: &str) -> String {
     format!(
         "# file: {} | lang: {} | stack: {}",
         file_path, lang, tech_stack
@@ -380,7 +385,7 @@ fn collect_files(project_dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-async fn flush_batch(
+pub(crate) async fn flush_batch(
     embedder: &dyn EmbeddingProvider,
     store: &dyn VectorStore,
     table_schema: &dyn TableSchema,
@@ -424,7 +429,7 @@ pub async fn drop_code(
     Ok(deleted)
 }
 
-async fn generate_description(
+pub(crate) async fn generate_description(
     code: &str,
     llm: &dyn LlmProvider,
     llm_model: &str,

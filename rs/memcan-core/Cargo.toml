@@ -33,6 +33,7 @@ reqwest = { workspace = true }
 sha2 = { workspace = true }
 handlebars = "6"
 regex = { workspace = true }
+schemars = { workspace = true }
 
 [dev-dependencies]
 mockito = { workspace = true }

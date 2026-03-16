@@ -4073,6 +4073,7 @@ dependencies = [
  "ollama-rs",
  "regex",
  "reqwest 0.13.2",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "serial_test",

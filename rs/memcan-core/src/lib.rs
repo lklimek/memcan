@@ -15,7 +15,9 @@
 pub mod config;
 pub mod embed;
 pub mod error;
+pub mod export;
 pub mod health;
+pub mod import;
 pub mod indexing;
 pub mod init;
 pub mod lancedb_store;
