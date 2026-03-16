@@ -30,7 +30,7 @@ jobs:
           CURRENT_TAG="${{ github.event.release.tag_name }}"
           # Find the previous release tag (sorted by version, excluding current)
           PREV_TAG=$(git tag --list 'v*' --sort=-version:refname \
-            | grep -v "^${CURRENT_TAG}$" | head -n1)
+            | grep -Fvx "$CURRENT_TAG" | head -n1)
 
           if [ -z "$PREV_TAG" ]; then
             echo "No previous tag found — first release, publishing"
