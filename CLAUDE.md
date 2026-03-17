@@ -89,7 +89,7 @@ memcan-server completions <shell>
 ```
 memcan add <memory> [--project <p>]
 memcan search <query> [--project <p>] [--limit <n>]
-memcan extract                        # Hook handler: reads stdin, POSTs to server (NOTE: auto-hooks deprecated, use lessons-learned skill)
+memcan extract                        # Hook handler: reads stdin, POSTs to server (NOTE: deprecated — use claudius lessons-learned skill)
 memcan status [operation_id]
 memcan count [--project <p>]
 memcan index-standards <file> --standard-id <id> --standard-type <t> [--version <v>] [--lang <l>] [--url <u>] [--wait]
@@ -218,4 +218,4 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 
 ### Hooks (removed)
 
-All plugin hooks have been removed. The `hooks/` directory no longer exists. The `SubagentStop` and `PreCompact` auto-hooks were removed in v0.35 due to quality issues, and the remaining `SessionStart` check hook was removed as it provided no real value. Use the `lessons-learned` skill for deliberate memory extraction instead.
+All plugin hooks have been removed. The `hooks/` directory no longer exists. The `SubagentStop` and `PreCompact` auto-hooks were removed in v0.35 due to quality issues, and the remaining `SessionStart` check hook was removed as it provided no real value. The `lessons-learned` skill has been moved to the [claudius](https://github.com/lklimek/claudius) plugin, which owns classification logic. MemCan skills (`remember`, `recall`) are pure executors.
