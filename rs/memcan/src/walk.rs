@@ -147,6 +147,7 @@ pub fn detect_tech_stack(files: &[WalkedFile]) -> Result<String, String> {
 }
 
 pub fn chunk_into_batches<T>(items: Vec<T>, batch_size: usize) -> Vec<Vec<T>> {
+    let batch_size = batch_size.max(1);
     let mut batches = Vec::new();
     let mut current = Vec::with_capacity(batch_size);
     for item in items {

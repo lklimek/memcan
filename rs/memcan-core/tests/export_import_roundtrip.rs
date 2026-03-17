@@ -93,9 +93,8 @@ fn server_export_response_envelope_parsing() {
     });
     let response_text = serde_json::to_string(&server_response).unwrap();
 
-    // The CLI currently does: result.lines().filter(|l| !l.trim().is_empty())
-    // This treats the entire JSON envelope as lines, which is WRONG.
-    // It should parse the JSON envelope and extract the "data" field.
+    // The CLI must parse the JSON envelope and extract the "data" field,
+    // not naively split the response by lines.
 
     // Correct approach: parse the envelope
     let parsed: serde_json::Value = serde_json::from_str(&response_text).unwrap();

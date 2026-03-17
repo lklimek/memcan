@@ -1482,6 +1482,10 @@ impl MemcanService {
         }
     }
 
+    // QA-004: This tool inlines the scroll + record construction loop rather than
+    // delegating to `memcan_core::export::export_collection`. See export.rs for the mapping.
+    // QA-006: The `filter` param is passed as raw SQL to LanceDB `only_if()` without sanitization.
+    // This is intentional — export is an admin/power-user operation, not a user-facing search.
     #[tool(
         description = "Export a collection as JSONL (text + metadata, no vectors). Paginate with limit/offset for large collections."
     )]
@@ -1492,7 +1496,7 @@ impl MemcanService {
         debug!(tool = "export_collection", collection = %params.collection, "MCP request");
 
         let table = export::collection_to_table(&params.collection)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
         let limit = params.limit.unwrap_or(1000).clamp(1, 10000) as usize;
         let offset = params.offset.unwrap_or(0) as usize;
@@ -1759,6 +1763,8 @@ impl ServerHandler for MemcanService {
     fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
+        // INTENTIONAL: MCP tool pagination is not implemented. The tool list is small (~20 tools)
+        // and no known MCP client uses cursor-based pagination for tools/list.
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + Send + '_ {
         let tools = self
@@ -2130,6 +2136,12 @@ mod tests {
 
         MemcanService::new(state)
     }
+
+    // Note: these tests exercise `tool_router.list_all()` + the `_`-prefix filter directly
+    // rather than calling `service.list_tools()`. Constructing a `RequestContext<RoleServer>`
+    // requires a live MCP transport, which is unavailable in unit tests. Since `list_tools`
+    // contains no logic beyond filtering on the `_` prefix, testing the filter inline is
+    // equivalent and simpler.
 
     #[test]
     fn hidden_tools_excluded_from_list_tools() {

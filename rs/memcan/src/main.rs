@@ -138,7 +138,7 @@ struct ExportArgs {
     filter: Option<String>,
 
     /// Records per page.
-    #[arg(long, default_value = "1000")]
+    #[arg(long, default_value = "1000", value_parser = clap::value_parser!(u32).range(1..))]
     page_size: u32,
 }
 
@@ -148,7 +148,7 @@ struct ImportArgs {
     file: PathBuf,
 
     /// Records per MCP call.
-    #[arg(long, default_value = "50")]
+    #[arg(long, default_value = "50", value_parser = parse_batch_size)]
     batch_size: usize,
 }
 
@@ -170,12 +170,20 @@ struct IndexCodeArgs {
     max_file_size: u64,
 
     /// Files per MCP call.
-    #[arg(long, default_value = "10")]
+    #[arg(long, default_value = "10", value_parser = parse_batch_size)]
     batch_size: usize,
 
     /// Wait for all operations to complete.
     #[arg(long)]
     wait: bool,
+}
+
+fn parse_batch_size(s: &str) -> Result<usize, String> {
+    let n: usize = s.parse().map_err(|_| format!("'{s}' is not a valid number"))?;
+    if n == 0 {
+        return Err("batch_size must be >= 1".to_string());
+    }
+    Ok(n)
 }
 
 pub struct CliConfig {
