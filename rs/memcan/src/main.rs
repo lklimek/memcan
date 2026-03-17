@@ -179,7 +179,9 @@ struct IndexCodeArgs {
 }
 
 fn parse_batch_size(s: &str) -> Result<usize, String> {
-    let n: usize = s.parse().map_err(|_| format!("'{s}' is not a valid number"))?;
+    let n: usize = s
+        .parse()
+        .map_err(|_| format!("'{s}' is not a valid number"))?;
     if n == 0 {
         return Err("batch_size must be >= 1".to_string());
     }
@@ -187,7 +189,9 @@ fn parse_batch_size(s: &str) -> Result<usize, String> {
 }
 
 fn parse_page_size(s: &str) -> Result<u32, String> {
-    let n: u32 = s.parse().map_err(|_| format!("'{s}' is not a valid number"))?;
+    let n: u32 = s
+        .parse()
+        .map_err(|_| format!("'{s}' is not a valid number"))?;
     if n == 0 {
         return Err("page_size must be >= 1".to_string());
     }
