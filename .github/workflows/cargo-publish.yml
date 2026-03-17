@@ -1,5 +1,5 @@
 # Publish the `memcan` crate to crates.io on GitHub release.
-# Reuses CI workflow for checks, then publishes if all pass.
+# Skips publish if no Rust code or dependency changes since the previous release.
 name: Publish to crates.io
 
 on:
@@ -11,13 +11,61 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  check-changes:
+    name: Check for Rust changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      has_rust_changes: ${{ steps.diff.outputs.has_rust_changes }}
+    steps:
+      # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect Rust-relevant changes since previous release
+        id: diff
+        run: |
+          CURRENT_TAG="${{ github.event.release.tag_name }}"
+          # Find the previous release tag (sorted by version, excluding current)
+          PREV_TAG=$(git tag --list 'v*' --sort=-version:refname \
+            | grep -Fvx "$CURRENT_TAG" | head -n1)
+
+          if [ -z "$PREV_TAG" ]; then
+            echo "No previous tag found — first release, publishing"
+            echo "has_rust_changes=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Comparing ${PREV_TAG}..${CURRENT_TAG}"
+
+          # Check for changes in Rust source, manifests, or lockfile
+          CHANGED=$(git diff --name-only "${PREV_TAG}..${CURRENT_TAG}" -- \
+            'rs/**' \
+            'Cargo.toml' \
+            'Cargo.lock' \
+            '.cargo/**')
+
+          if [ -n "$CHANGED" ]; then
+            echo "Rust-relevant changes detected:"
+            echo "$CHANGED"
+            echo "has_rust_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No Rust-relevant changes — skipping publish"
+            echo "has_rust_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
   ci:
     name: CI
+    needs: check-changes
+    if: needs.check-changes.outputs.has_rust_changes == 'true'
     uses: ./.github/workflows/ci.yml
 
   publish:
     name: Publish memcan
-    needs: ci
+    needs: [check-changes, ci]
+    if: needs.check-changes.outputs.has_rust_changes == 'true'
     runs-on: ubuntu-latest
     environment: crates-io
     concurrency:

@@ -34,10 +34,13 @@ Search and retrieve knowledge from past sessions across all collections.
 
 ## MCP Tools
 
-| Tool | Use | Example |
-|------|-----|---------|
-| `search` | Search all collections in one query. | `search(query="docker cache", project="penny")` |
-| `get_memories` | List memories by scope. | `get_memories(project="penny", limit=50)` |
-| `count_memories` | Count memories. | `count_memories(project="penny")` |
-| `update_memory` | Fix a low-quality memory encountered during recall. | `update_memory(memory_id="<uuid>", memory="...")` |
-| `delete_memory` | Remove an obsolete or junk memory encountered during recall. | `delete_memory(memory_id="<uuid>")` |
+| Tool | Params | Use |
+|------|--------|-----|
+| `search` | `query: str, project?: str, collections?: [str], limit?: int` | Search all collections in one query. |
+| `search_memories` | `query: str, project?: str, limit?: int` | Memories-only search. |
+| `search_standards` | `query: str, standard_id?: str, standard_type?: str, limit?: int` | Search indexed standards. |
+| `search_code` | `query: str, file_path?: str, tech_stack?: str, limit?: int` | Search indexed code. |
+| `get_memories` | `project?: str, limit?: int` | List memories by scope. |
+| `count_memories` | `project?: str` | Count memories. |
+| `update_memory` | `memory_id: str, memory: str` | Fix a memory encountered during recall. |
+| `delete_memory` | `memory_id: str` | Remove obsolete memory. |
