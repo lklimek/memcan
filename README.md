@@ -130,7 +130,7 @@ OLLAMA_API_KEY=your-token-here
 ### Auto-Hooks (SubagentStop / PreCompact)
 
 **Status:** Removed in v0.35
-**Alternative:** Use the `lessons-learned` skill for deliberate memory extraction.
+**Alternative:** Use the `lessons-learned` skill (now in the [claudius](https://github.com/lklimek/claudius) plugin) for deliberate memory extraction.
 
 The automatic extraction hooks (`SubagentStop` and `PreCompact` events calling `memcan extract`) have been removed due to severe quality issues:
 
@@ -139,7 +139,7 @@ The automatic extraction hooks (`SubagentStop` and `PreCompact` events calling `
 - **Context overflow**: When `search` or `recall` returned these bloated memories, they consumed the entire context window, making Claude Code unusable
 - **Low signal-to-noise**: The vast majority of auto-hook memories were ephemeral junk — commit hashes, temp file paths, test pass counts, file rename notifications
 
-The `memcan extract` CLI binary remains available for use by the `lessons-learned` skill, which provides deliberate, quality-controlled extraction with human oversight.
+The `memcan extract` CLI binary remains available only for the legacy auto-hook pipeline and manual use; the current `lessons-learned` flow in the [claudius](https://github.com/lklimek/claudius) plugin talks to MemCan via the MCP `add_memory` / `remember` tools and does not call `memcan extract` (memories created by `memcan extract` continue to be tagged with `metadata.source="auto-hook"` and `type="lesson"`).
 
 To clean up existing auto-hook memories, use `memcan-server purge-memories --source auto-hook` (planned capability — not yet implemented) or delete them individually via `memcan delete`.
 

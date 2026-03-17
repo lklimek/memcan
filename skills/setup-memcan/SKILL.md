@@ -117,7 +117,7 @@ Use the MemCan MCP server to store and recall knowledge across sessions.
 
 ### 4. Clean Up Deprecated Hooks
 
-Auto-hooks (`SubagentStop` and `PreCompact` calling `memcan extract`) are deprecated. They captured raw agent output instead of distilled facts. Use the `lessons-learned` skill for deliberate, quality-controlled memory extraction instead.
+Auto-hooks (`SubagentStop` and `PreCompact` calling `memcan extract`) are deprecated. They captured raw agent output instead of distilled facts. Use the `lessons-learned` skill from the [claudius](https://github.com/lklimek/claudius) plugin for deliberate, quality-controlled memory extraction instead.
 
 Scan both the user-level and any project-level `settings.json` files for lingering deprecated hooks:
 
@@ -126,7 +126,7 @@ Scan both the user-level and any project-level `settings.json` files for lingeri
 
 For each file found, read it and inspect all hook events. For each event, remove any hook entry whose `command` contains `memcan extract` or `command -v memcan`. Do not remove non-memcan hooks.
 
-If any hooks were removed from a file, write the updated JSON back and report: "Removed deprecated memcan hook(s) from `<path>`. Use the `lessons-learned` skill for manual extraction."
+If any hooks were removed from a file, write the updated JSON back and report: "Removed deprecated memcan hook(s) from `<path>`. Use the `lessons-learned` skill from the `claudius` plugin for manual extraction."
 
 If no deprecated hooks were found in a file, silently skip it (no output needed).
 
