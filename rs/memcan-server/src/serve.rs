@@ -3,6 +3,7 @@
 //! Dual transport: `--stdio` for backward compat, default is HTTP via axum.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -16,9 +17,12 @@ use lru::LruCache;
 use rmcp::{
     ServerHandler, ServiceExt,
     handler::server::router::tool::ToolRouter,
+    handler::server::tool::ToolCallContext,
     handler::server::wrapper::Parameters,
     model::*,
-    schemars, tool, tool_handler, tool_router,
+    schemars,
+    service::{RequestContext, RoleServer},
+    tool, tool_router,
     transport::io::stdio,
     transport::streamable_http_server::{
         session::local::LocalSessionManager,
@@ -34,7 +38,9 @@ use uuid::Uuid;
 use memcan_core::{
     config::Settings,
     error::MemcanError,
+    export,
     health::{DependencyHealth, DependencyId},
+    import,
     indexing::standards::{self as standards_indexing, VALID_TYPES},
     init::{MemcanContext, create_llm_provider},
     pipeline::{
@@ -316,6 +322,42 @@ pub struct CompleteTodoParams {
 pub struct DeleteTodoParams {
     /// ID of the TODO to delete.
     pub todo_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ExportCollectionParams {
+    /// Collection to export: memories, standards, code, todos.
+    pub collection: String,
+    /// Optional SQL filter expression.
+    pub filter: Option<String>,
+    /// Max records to return (default 1000, max 10000).
+    pub limit: Option<u32>,
+    /// Offset for pagination (default 0).
+    pub offset: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ImportRecordsParams {
+    /// JSONL text — one JSON object per line.
+    pub records: String,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct ToolCodeFileInput {
+    /// Relative file path (e.g. "src/main.rs").
+    pub path: String,
+    /// Full file content.
+    pub content: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct IndexCodeFilesToolParams {
+    /// Source files to index (path + content).
+    pub files: Vec<ToolCodeFileInput>,
+    /// Project name.
+    pub project: String,
+    /// Technology stack label.
+    pub tech_stack: String,
 }
 
 // --- Helpers ---
@@ -1439,11 +1481,263 @@ impl MemcanService {
             Ok(CallToolResult::success(vec![Content::text(json)]))
         }
     }
+
+    // QA-004: This tool inlines the scroll + record construction loop rather than
+    // delegating to `memcan_core::export::export_collection`. See export.rs for the mapping.
+    // QA-006: The `filter` param is passed as raw SQL to LanceDB `only_if()` without sanitization.
+    // This is intentional — export is an admin/power-user operation, not a user-facing search.
+    #[tool(
+        description = "Export a collection as JSONL (text + metadata, no vectors). Paginate with limit/offset for large collections."
+    )]
+    async fn export_collection(
+        &self,
+        Parameters(params): Parameters<ExportCollectionParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "export_collection", collection = %params.collection, "MCP request");
+
+        let table = export::collection_to_table(&params.collection)
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+
+        let limit = params.limit.unwrap_or(1000).clamp(1, 10000) as usize;
+        let offset = params.offset.unwrap_or(0) as usize;
+
+        // Single-page scroll at the requested offset (MCP tool does not
+        // paginate internally — the caller controls offset/limit).
+        let results = self
+            .state
+            .store
+            .scroll(
+                table,
+                // Filter is passed as-is to LanceDB SQL. This is intentional —
+                // the MCP tool is admin-level and LanceDB is local-only.
+                params.filter.as_deref(),
+                limit,
+                offset,
+            )
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("scroll failed: {e}"), None))?;
+
+        let mut lines = Vec::with_capacity(results.len());
+        let collection_name = export::table_to_collection(table).to_string();
+        for sr in &results {
+            let mut payload = match &sr.payload {
+                serde_json::Value::Object(map) => map.clone(),
+                _ => serde_json::Map::new(),
+            };
+            payload.remove("vector");
+            export::strip_reserved_keys(&mut payload);
+
+            let record = export::ExportRecord {
+                _collection: collection_name.clone(),
+                id: sr.id.clone(),
+                payload,
+            };
+            let line = export::record_to_jsonl(&record)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            lines.push(line);
+        }
+
+        let output = lines.join("\n");
+        let response = serde_json::json!({
+            "count": lines.len(),
+            "offset": offset,
+            "data": output,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&response).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(description = "Import JSONL records: embed + upsert, no LLM processing. Internal use.")]
+    async fn _import_records(
+        &self,
+        Parameters(params): Parameters<ImportRecordsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        debug!(
+            tool = "_import_records",
+            len = params.records.len(),
+            "MCP request"
+        );
+
+        let mut records = Vec::new();
+        let mut parse_errors = Vec::new();
+        for (i, line) in params.records.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match export::jsonl_to_record(line) {
+                Ok(r) => records.push(r),
+                Err(e) => parse_errors.push(format!("line {}: {e}", i + 1)),
+            }
+        }
+
+        let result = import::import_records(
+            records,
+            self.state.store.as_ref(),
+            self.state.embedder.as_ref(),
+            &MemcanTableSchema,
+            self.state.config.embed_dims,
+        )
+        .await
+        .map_err(|e| ErrorData::internal_error(format!("import failed: {e}"), None))?;
+
+        let mut errors: Vec<String> = parse_errors;
+        errors.extend(result.errors);
+
+        let response = serde_json::json!({
+            "imported": result.imported,
+            "skipped": result.skipped,
+            "errors": errors,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&response).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(
+        description = "Index source code files: symbol extraction + LLM description + embedding. Requires LLM to be available."
+    )]
+    async fn index_code_files(
+        &self,
+        Parameters(params): Parameters<IndexCodeFilesToolParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        debug!(
+            tool = "index_code_files",
+            project = %params.project,
+            files = params.files.len(),
+            "MCP request"
+        );
+
+        self.state
+            .health
+            .check(DependencyId::Ollama)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let op_id = Uuid::new_v4().to_string();
+        info!(
+            project = %params.project,
+            files = params.files.len(),
+            operation_id = %op_id,
+            "index_code_files: queued"
+        );
+
+        let progress = Arc::new(StdMutex::new(PipelineProgress::default()));
+
+        {
+            let mut cache = self
+                .state
+                .queue_status
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            cache.put(
+                op_id.clone(),
+                QueueEntry {
+                    operation: "index_code_files".into(),
+                    user_id: format!("project:{}", params.project),
+                    progress: Arc::clone(&progress),
+                    queued_at: chrono::Utc::now().to_rfc3339(),
+                },
+            );
+        }
+
+        let task_guard = try_enqueue(&self.state.pending_tasks)?;
+        let store = Arc::clone(&self.state.store);
+        let embedder = Arc::clone(&self.state.embedder);
+        let llm = Arc::clone(&self.state.llm);
+        let llm_model = self.state.llm_model.clone();
+        let embed_dims = self.state.config.embed_dims;
+        let sem = Arc::clone(&self.state.llm_semaphore);
+        let health = Arc::clone(&self.state.health);
+
+        let file_count = params.files.len();
+        let project = params.project.clone();
+
+        let core_files: Vec<memcan_core::indexing::code_files::CodeFileInput> = params
+            .files
+            .into_iter()
+            .map(|f| memcan_core::indexing::code_files::CodeFileInput {
+                path: f.path,
+                content: f.content,
+            })
+            .collect();
+
+        let core_params = memcan_core::indexing::code_files::IndexCodeFilesParams {
+            files: core_files,
+            project: params.project,
+            tech_stack: params.tech_stack,
+        };
+
+        tokio::spawn(async move {
+            let _task_guard = task_guard;
+            let _permit = match sem.acquire().await {
+                Ok(p) => p,
+                Err(_) => {
+                    tracing::warn!("semaphore closed, aborting index_code_files task");
+                    return;
+                }
+            };
+
+            {
+                let mut p = progress.lock().unwrap_or_else(|e| e.into_inner());
+                p.step = memcan_core::pipeline::PipelineStep::Storing;
+            }
+
+            match memcan_core::indexing::code_files::index_code_files(
+                &core_params,
+                store.as_ref(),
+                embedder.as_ref(),
+                &MemcanTableSchema,
+                llm.as_ref(),
+                &llm_model,
+                embed_dims,
+            )
+            .await
+            {
+                Ok(result) => {
+                    let mut p = progress.lock().unwrap_or_else(|e| e.into_inner());
+                    if result.errors > 0 {
+                        p.warnings
+                            .push(format!("{} symbols failed to index", result.errors));
+                        p.step = memcan_core::pipeline::PipelineStep::CompletedDegraded;
+                    } else {
+                        p.step = memcan_core::pipeline::PipelineStep::Completed;
+                    }
+                    p.completed_at = Some(chrono::Utc::now().to_rfc3339());
+                    health.report_success(DependencyId::Ollama);
+                    health.report_success(DependencyId::Embedding);
+                    health.report_success(DependencyId::LanceDb);
+                    info!(
+                        indexed = result.indexed,
+                        skipped = result.skipped,
+                        errors = result.errors,
+                        "index_code_files: finished"
+                    );
+                }
+                Err(e) => {
+                    let mut p = progress.lock().unwrap_or_else(|e| e.into_inner());
+                    p.step = memcan_core::pipeline::PipelineStep::Failed;
+                    p.error = Some(e.to_string());
+                    p.completed_at = Some(chrono::Utc::now().to_rfc3339());
+                    report_error_to_health(&health, &e);
+                    tracing::error!(error = %e, "index_code_files: failed");
+                }
+            }
+        });
+
+        let response = serde_json::json!({
+            "status": "queued",
+            "operation_id": op_id,
+            "message": format!("Indexing {file_count} files for project '{project}'"),
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&response).unwrap_or_default(),
+        )]))
+    }
 }
 
 // --- ServerHandler ---
 
-#[tool_handler]
 impl ServerHandler for MemcanService {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
@@ -1464,6 +1758,35 @@ impl ServerHandler for MemcanService {
                 .into(),
         );
         info
+    }
+
+    fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        // INTENTIONAL: MCP tool pagination is not implemented. The tool list is small (~20 tools)
+        // and no known MCP client uses cursor-based pagination for tools/list.
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + Send + '_ {
+        let tools = self
+            .tool_router
+            .list_all()
+            .into_iter()
+            .filter(|t| !t.name.starts_with('_'))
+            .collect();
+        std::future::ready(Ok(ListToolsResult {
+            tools,
+            next_cursor: None,
+            meta: None,
+        }))
+    }
+
+    fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<CallToolResult, ErrorData>> + Send + '_ {
+        let tcc = ToolCallContext::new(self, request, context);
+        async move { self.tool_router.call(tcc).await }
     }
 }
 
@@ -1688,6 +2011,216 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn make_test_service() -> MemcanService {
+        use memcan_core::health::DependencyHealth;
+        use memcan_core::traits::{
+            EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, SearchResult, TableSchema,
+            VectorPoint, VectorStore,
+        };
+
+        struct MockStore;
+        #[async_trait::async_trait]
+        impl VectorStore for MockStore {
+            async fn ensure_table(
+                &self,
+                _: &str,
+                _: usize,
+                _: &dyn TableSchema,
+            ) -> memcan_core::error::Result<()> {
+                Ok(())
+            }
+            async fn upsert(
+                &self,
+                _: &str,
+                _: &[VectorPoint],
+                _: &dyn TableSchema,
+            ) -> memcan_core::error::Result<()> {
+                Ok(())
+            }
+            async fn search(
+                &self,
+                _: &str,
+                _: &[f32],
+                _: Option<&str>,
+                _: usize,
+                _: usize,
+            ) -> memcan_core::error::Result<Vec<SearchResult>> {
+                Ok(vec![])
+            }
+            async fn scroll(
+                &self,
+                _: &str,
+                _: Option<&str>,
+                _: usize,
+                _: usize,
+            ) -> memcan_core::error::Result<Vec<SearchResult>> {
+                Ok(vec![])
+            }
+            async fn count(&self, _: &str, _: Option<&str>) -> memcan_core::error::Result<usize> {
+                Ok(0)
+            }
+            async fn delete(&self, _: &str, _: &[String]) -> memcan_core::error::Result<()> {
+                Ok(())
+            }
+            async fn delete_by_filter(
+                &self,
+                _: &str,
+                _: &str,
+            ) -> memcan_core::error::Result<usize> {
+                Ok(0)
+            }
+            async fn get(
+                &self,
+                _: &str,
+                _: &[String],
+            ) -> memcan_core::error::Result<Vec<SearchResult>> {
+                Ok(vec![])
+            }
+        }
+
+        struct MockEmbedder;
+        #[async_trait::async_trait]
+        impl EmbeddingProvider for MockEmbedder {
+            async fn embed(&self, texts: &[String]) -> memcan_core::error::Result<Vec<Vec<f32>>> {
+                Ok(texts.iter().map(|_| vec![0.0; 3]).collect())
+            }
+            fn dimensions(&self) -> usize {
+                3
+            }
+        }
+
+        struct MockLlm;
+        #[async_trait::async_trait]
+        impl LlmProvider for MockLlm {
+            async fn chat(
+                &self,
+                _: &str,
+                _: &[LlmMessage],
+                _: Option<LlmOptions>,
+            ) -> memcan_core::error::Result<String> {
+                Ok(String::new())
+            }
+            async fn context_window(&self, _: &str) -> Option<usize> {
+                Some(4096)
+            }
+        }
+
+        let state = Arc::new(SharedState {
+            store: Arc::new(MockStore),
+            embedder: Arc::new(MockEmbedder),
+            llm: Arc::new(MockLlm),
+            config: memcan_core::config::Settings {
+                listen: "127.0.0.1:0".into(),
+                api_key: None,
+                lancedb_path: "/tmp/test".into(),
+                default_user_id: "global".into(),
+                tech_stack: String::new(),
+                distill_memories: false,
+                log_file: String::new(),
+                llm_model: "test".into(),
+                embed_model: "test".into(),
+                embed_dims: 3,
+                ollama_host: None,
+                ollama_api_key: None,
+                url: "http://localhost:8191".into(),
+            },
+            llm_model: "test".into(),
+            queue_status: Arc::new(StdMutex::new(LruCache::new(
+                NonZeroUsize::new(100).unwrap(),
+            ))),
+            llm_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+            pending_tasks: Arc::new(AtomicUsize::new(0)),
+            health: Arc::new(DependencyHealth::with_defaults()),
+        });
+
+        MemcanService::new(state)
+    }
+
+    // Note: these tests exercise `tool_router.list_all()` + the `_`-prefix filter directly
+    // rather than calling `service.list_tools()`. Constructing a `RequestContext<RoleServer>`
+    // requires a live MCP transport, which is unavailable in unit tests. Since `list_tools`
+    // contains no logic beyond filtering on the `_` prefix, testing the filter inline is
+    // equivalent and simpler.
+
+    #[test]
+    fn hidden_tools_excluded_from_list_tools() {
+        let service = make_test_service();
+        let all_tools = service.tool_router.list_all();
+        let has_import = all_tools.iter().any(|t| t.name == "_import_records");
+        assert!(has_import, "tool_router should contain _import_records");
+
+        let visible: Vec<_> = all_tools
+            .into_iter()
+            .filter(|t| !t.name.starts_with('_'))
+            .collect();
+        let has_hidden = visible.iter().any(|t| t.name.starts_with('_'));
+        assert!(
+            !has_hidden,
+            "visible list should not contain _-prefixed tools"
+        );
+    }
+
+    #[test]
+    fn public_tools_present_in_list() {
+        let service = make_test_service();
+        let all_tools = service.tool_router.list_all();
+        let visible: Vec<_> = all_tools
+            .into_iter()
+            .filter(|t| !t.name.starts_with('_'))
+            .collect();
+
+        let names: Vec<&str> = visible.iter().map(|t| t.name.as_ref()).collect();
+        assert!(
+            names.contains(&"export_collection"),
+            "missing export_collection"
+        );
+        assert!(
+            names.contains(&"index_code_files"),
+            "missing index_code_files"
+        );
+        assert!(names.contains(&"add_memory"), "missing add_memory");
+        assert!(names.contains(&"search"), "missing search");
+    }
+
+    #[test]
+    fn export_collection_params_deserialization() {
+        let json = r#"{"collection": "memories"}"#;
+        let params: ExportCollectionParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.collection, "memories");
+        assert!(params.filter.is_none());
+        assert!(params.limit.is_none());
+        assert!(params.offset.is_none());
+    }
+
+    #[test]
+    fn export_collection_params_with_all_fields() {
+        let json =
+            r#"{"collection": "code", "filter": "project = 'test'", "limit": 500, "offset": 100}"#;
+        let params: ExportCollectionParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.collection, "code");
+        assert_eq!(params.filter.unwrap(), "project = 'test'");
+        assert_eq!(params.limit.unwrap(), 500);
+        assert_eq!(params.offset.unwrap(), 100);
+    }
+
+    #[test]
+    fn import_records_params_deserialization() {
+        let json =
+            r#"{"records": "{\"_collection\":\"memories\",\"id\":\"1\",\"data\":\"test\"}\n"}"#;
+        let params: ImportRecordsParams = serde_json::from_str(json).unwrap();
+        assert!(params.records.contains("memories"));
+    }
+
+    #[test]
+    fn index_code_files_params_deserialization() {
+        let json = r#"{"files": [{"path": "src/main.rs", "content": "fn main() {}"}], "project": "test", "tech_stack": "rust"}"#;
+        let params: IndexCodeFilesToolParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.files.len(), 1);
+        assert_eq!(params.files[0].path, "src/main.rs");
+        assert_eq!(params.project, "test");
+        assert_eq!(params.tech_stack, "rust");
+    }
 
     #[test]
     fn add_memory_params_metadata_as_object() {

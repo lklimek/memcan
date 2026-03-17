@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use memcan_core::error::MemcanError;
 
+mod export;
 mod import_triaged;
 mod index_code;
 mod index_standards;
@@ -46,6 +47,9 @@ enum Command {
 
     /// Download the configured embedding model and exit.
     DownloadModel(DownloadModelArgs),
+
+    /// Export a collection as JSONL (no vectors).
+    Export(ExportArgs),
 
     /// Purge memories matching a source (and optionally project) filter.
     PurgeMemories(PurgeMemoriesArgs),
@@ -195,6 +199,20 @@ pub struct DownloadModelArgs {
 }
 
 #[derive(Parser)]
+pub struct ExportArgs {
+    /// Collection to export: memories, standards, code, todos.
+    pub collection: String,
+
+    /// Output file path (stdout if omitted).
+    #[arg(long, short)]
+    pub output: Option<PathBuf>,
+
+    /// Optional SQL filter expression.
+    #[arg(long)]
+    pub filter: Option<String>,
+}
+
+#[derive(Parser)]
 pub struct CompletionsArgs {
     /// Shell to generate completions for.
     pub shell: clap_complete::Shell,
@@ -240,6 +258,10 @@ async fn main() -> Result<(), MemcanError> {
         Some(Command::ImportTriaged(args)) => {
             setup_tracing(false);
             import_triaged::run(&args).await
+        }
+        Some(Command::Export(args)) => {
+            setup_tracing(false);
+            export::run(&args).await
         }
         Some(Command::PurgeMemories(args)) => {
             setup_tracing(false);

@@ -29,3 +29,6 @@ tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
