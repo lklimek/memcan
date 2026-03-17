@@ -138,7 +138,7 @@ struct ExportArgs {
     filter: Option<String>,
 
     /// Records per page.
-    #[arg(long, default_value = "1000", value_parser = clap::value_parser!(u32).range(1..))]
+    #[arg(long, default_value = "1000", value_parser = parse_page_size)]
     page_size: u32,
 }
 
@@ -182,6 +182,14 @@ fn parse_batch_size(s: &str) -> Result<usize, String> {
     let n: usize = s.parse().map_err(|_| format!("'{s}' is not a valid number"))?;
     if n == 0 {
         return Err("batch_size must be >= 1".to_string());
+    }
+    Ok(n)
+}
+
+fn parse_page_size(s: &str) -> Result<u32, String> {
+    let n: u32 = s.parse().map_err(|_| format!("'{s}' is not a valid number"))?;
+    if n == 0 {
+        return Err("page_size must be >= 1".to_string());
     }
     Ok(n)
 }
