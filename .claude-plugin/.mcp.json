@@ -2,10 +2,8 @@
   "mcpServers": {
     "brain": {
       "type": "http",
-      "url": "${MEMCAN_URL:-http://localhost:8190}/mcp",
-      "headers": {
-        "Authorization": "Bearer ${MEMCAN_API_KEY}"
-      }
+      "url": "http://localhost:8190/mcp",
+      "headersHelper": "echo '{\"Authorization\": \"Bearer '\"$MEMCAN_API_KEY\"'\"}'"
     }
   }
 }

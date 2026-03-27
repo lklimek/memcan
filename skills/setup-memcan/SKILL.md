@@ -15,7 +15,7 @@ MemCan uses a two-component architecture:
 - **Server** (`memcan-server serve`) — long-lived HTTP MCP server handling embeddings, LLM, and storage. Runs as a Docker container or system service.
 - **CLI** (`memcan`) — thin HTTP client. Installed via `setup.sh` or `cargo install memcan`.
 
-The Claude Code plugin connects to the server via HTTP MCP transport (configured in `.mcp.json`).
+The Claude Code plugin connects to the server via HTTP MCP transport (configured in `.mcp.json`). Note: the plugin uses `headersHelper` instead of `headers` with `${VAR}` interpolation due to Claude Code bug #11927 (env vars from `settings.json` are not interpolated in plugin `.mcp.json` files). The helper shell command reads `$MEMCAN_API_KEY` from the process environment at runtime.
 
 ## Steps
 
@@ -62,7 +62,7 @@ Perform these steps:
 
 4. **Write `~/.config/memcan/.env`**: Create directory if needed. If the file exists, update `MEMCAN_API_KEY`, `MEMCAN_URL`, and `OLLAMA_API_KEY` (if non-empty) in-place. If creating new, write a template with resolved values and commented defaults for `OLLAMA_HOST`, `LLM_MODEL`, `EMBED_MODEL`, `MEMCAN_LOG_FILE`.
 
-5. **Merge into `~/.claude/settings.json`**: Read existing file (or `{}`), set `.env.MEMCAN_API_KEY` and `.env.MEMCAN_URL`, write back. Use `jq` or `python3` for JSON manipulation.
+5. **Merge into `~/.claude/settings.json`**: Read existing file (or `{}`), set `.env.MEMCAN_API_KEY`, write back. Use `jq` or `python3` for JSON manipulation.
 
 After completing, report status (without revealing secret values):
 - Whether MEMCAN_API_KEY was existing or newly generated
@@ -147,7 +147,7 @@ Use `python3` or `jq` for JSON manipulation. This step is safe to run multiple t
 Print a summary:
 - CLI installed and on PATH (`memcan`)
 - `.env` exists at `~/.config/memcan/.env` with `MEMCAN_URL` and `MEMCAN_API_KEY` configured
-- Claude Code settings at `~/.claude/settings.json` has `MEMCAN_API_KEY` and `MEMCAN_URL` in `env` block
+- Claude Code settings at `~/.claude/settings.json` has `MEMCAN_API_KEY` in `env` block
 - User rule exists at `~/.claude/rules/memcan.md`
 - Hooks: report whether any deprecated memcan hooks were removed, or confirm none were found
 - MCP server is connected (test: call `search(query="test")` — success = connected, failure or tool unavailable = not connected)
