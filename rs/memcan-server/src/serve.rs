@@ -277,6 +277,16 @@ pub struct DropIndexedStandardsParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DeleteCodeRecordsParams {
+    /// Project to scope the delete to (required — prevents an unscoped wipe).
+    pub project: String,
+    /// Optional extra raw-SQL predicate AND-ed with the project filter, e.g.
+    /// `file_path NOT LIKE '%.rs'`. When omitted, every record in `project` is
+    /// deleted. Admin/power-user field — passed to LanceDB unsanitized.
+    pub filter: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AddTodoParams {
     /// Short title of the TODO item.
     pub title: String,
@@ -1237,6 +1247,45 @@ impl MemcanService {
         let response = serde_json::json!({
             "deleted": deleted,
             "standard_id": params.standard_id,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&response).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(
+        description = "Delete code records for a project, optionally narrowed by a raw-SQL filter (e.g. file_path NOT LIKE '%.rs'). The project scope is mandatory. Returns the number of rows deleted."
+    )]
+    async fn delete_code_records(
+        &self,
+        Parameters(params): Parameters<DeleteCodeRecordsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        debug!(
+            tool = "delete_code_records",
+            project = %params.project,
+            filter = ?params.filter,
+            "MCP request"
+        );
+        if params.project.trim().is_empty() {
+            return Err(ErrorData::internal_error("project must not be empty", None));
+        }
+
+        let mut predicate = format!("project = '{}'", sanitize_eq(&params.project));
+        if let Some(extra) = params.filter.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+            predicate = format!("{predicate} AND ({extra})");
+        }
+
+        let deleted = self
+            .state
+            .store
+            .delete_by_filter(CODE_TABLE, &predicate)
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("delete failed: {e}"), None))?;
+
+        let response = serde_json::json!({
+            "deleted": deleted,
+            "project": params.project,
+            "filter": predicate,
         });
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string(&response).unwrap_or_default(),
