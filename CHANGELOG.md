@@ -9,11 +9,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project use
 ### Added
 
 - `index-code`: `--tech-stack` now restricts which file extensions are walked (e.g. `--tech-stack rust` indexes only `.rs`), enabling single-language indexing of mixed-language repos (59f9008)
+- `delete_code_records` MCP tool — project-scoped, optionally filtered delete over the code table (e.g. `file_path NOT LIKE '%.rs'`), returning the number of rows removed; mandatory project scope prevents an unscoped wipe
 
 ### Fixed
 
 - `index-code`: exclude `.claude` worktree directories in the file walker (CLI and core) — prevents indexing stray worktree clones (9cf944c)
 - `index-code`: pace batch submission under the server queue cap and retry on "server busy" instead of silently dropping rejected batches — prevents data loss on large repos (5776d18)
+- `index-code`: an explicit but unrecognized `--tech-stack` now fails loudly with a nonzero exit instead of silently indexing every language
+- `index-code`: tech-stack names and file extensions are matched case-insensitively (`--tech-stack Rust`, `Foo.RS`)
+- `index_code_files`: storage-layer guard rejects paths under skip-dirs (e.g. `.claude`, `target`) even if a client sends them
 
 ## [0.38.0] - 2026-03-17
 
