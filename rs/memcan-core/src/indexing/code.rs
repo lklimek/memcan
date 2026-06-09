@@ -32,16 +32,17 @@ pub(crate) const BATCH_SIZE: usize = 20;
 const MAX_WALK_DEPTH: usize = 50;
 
 const SKIP_DIRS: &[&str] = &[
+    ".claude",
     ".git",
-    "node_modules",
-    "target",
+    ".next",
+    ".tox",
     ".venv",
     "__pycache__",
-    "dist",
     "build",
-    ".next",
+    "dist",
+    "node_modules",
+    "target",
     "vendor",
-    ".tox",
 ];
 
 /// Parameters for indexing a code project.
@@ -737,6 +738,9 @@ mod tests {
         assert!(should_skip(Path::new("node_modules/foo.js")));
         assert!(should_skip(Path::new("src/.git/config")));
         assert!(should_skip(Path::new("target/debug/build")));
+        assert!(should_skip(Path::new(
+            ".claude/worktrees/agent-abc/stray.rs"
+        )));
         assert!(!should_skip(Path::new("src/main.rs")));
         assert!(!should_skip(Path::new("lib/utils.py")));
     }

@@ -7,16 +7,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const SKIP_DIRS: &[&str] = &[
+    ".claude",
     ".git",
-    "node_modules",
-    "target",
+    ".next",
+    ".tox",
     ".venv",
     "__pycache__",
-    "dist",
     "build",
-    ".next",
+    "dist",
+    "node_modules",
+    "target",
     "vendor",
-    ".tox",
 ];
 
 const ALLOWED_EXTENSIONS: &[&str] = &["rs", "py", "go", "ts", "tsx"];
@@ -190,6 +191,16 @@ mod tests {
         fs::create_dir_all(root.join("target")).unwrap();
         fs::write(root.join("target").join("debug.rs"), "// build output").unwrap();
 
+        fs::create_dir_all(root.join(".claude").join("worktrees").join("agent-abc")).unwrap();
+        fs::write(
+            root.join(".claude")
+                .join("worktrees")
+                .join("agent-abc")
+                .join("stray.rs"),
+            "fn stray() {}",
+        )
+        .unwrap();
+
         // Create unsupported extension
         fs::write(root.join("readme.md"), "# Readme").unwrap();
         fs::write(root.join("data.json"), "{}").unwrap();
@@ -227,6 +238,7 @@ mod tests {
                 "should skip node_modules: {p}"
             );
             assert!(!p.starts_with("target/"), "should skip target: {p}");
+            assert!(!p.starts_with(".claude/"), "should skip .claude: {p}");
         }
     }
 
