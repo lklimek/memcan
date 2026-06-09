@@ -264,6 +264,20 @@ const PACING_THRESHOLD: u64 = 16;
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 const RETRY_BUDGET: Duration = Duration::from_secs(900);
 
+/// One MCP tool call. Abstracts [`client::McpClient`] so the pacing/retry
+/// helpers can be unit-tested against a mock.
+trait ToolCaller {
+    async fn call_tool(&self, name: &str, arguments: serde_json::Value) -> Result<String, String>;
+}
+
+impl ToolCaller for client::McpClient {
+    async fn call_tool(&self, name: &str, arguments: serde_json::Value) -> Result<String, String> {
+        client::McpClient::call_tool(self, name, arguments)
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
 /// True if the error is the server's "queue full" rejection (vs. a real failure).
 fn is_server_busy(err: &str) -> bool {
     err.contains("Server busy") && err.contains("operations pending")
@@ -277,7 +291,7 @@ fn backoff_delay(attempt: u32) -> Duration {
 
 /// Reads the global `pending_tasks` count from a no-arg `get_queue_status` call.
 /// Returns `None` if the server is unreachable or the field is absent.
-async fn pending_tasks(client: &client::McpClient) -> Option<u64> {
+async fn pending_tasks(client: &impl ToolCaller) -> Option<u64> {
     let result = client
         .call_tool("get_queue_status", serde_json::json!({}))
         .await
@@ -292,7 +306,7 @@ async fn pending_tasks(client: &client::McpClient) -> Option<u64> {
 ///
 /// Best-effort: if the count can't be read it returns immediately and lets
 /// `submit_batch_with_retry` handle any resulting busy rejection.
-async fn wait_for_capacity(client: &client::McpClient) {
+async fn wait_for_capacity(client: &impl ToolCaller) {
     loop {
         match pending_tasks(client).await {
             Some(n) if n >= PACING_THRESHOLD => {
@@ -309,11 +323,11 @@ async fn wait_for_capacity(client: &client::McpClient) {
 /// exhausted retry budget both return `Err` so the caller can fail loudly —
 /// a batch is never silently dropped.
 async fn submit_batch_with_retry(
-    client: &client::McpClient,
+    client: &impl ToolCaller,
     tool_args: &serde_json::Value,
     batch_label: &str,
 ) -> Result<String, String> {
-    let start = std::time::Instant::now();
+    let start = tokio::time::Instant::now();
     let mut attempt: u32 = 0;
     loop {
         match client
@@ -332,8 +346,7 @@ async fn submit_batch_with_retry(
                     format!("{batch_label}: accepted but server returned no operation_id")
                 });
             }
-            Err(e) => {
-                let msg = e.to_string();
+            Err(msg) => {
                 if !is_server_busy(&msg) {
                     return Err(format!("{batch_label}: {msg}"));
                 }
@@ -862,4 +875,133 @@ mod tests {
     // Server's MAX_PENDING_TASKS is 20; keep a margin so the poll/submit race
     // rarely trips the cap. Compile-time invariant.
     const _: () = assert!(PACING_THRESHOLD < 20);
+
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
+    const BUSY: &str = "Mcp error: -32603: Server busy: 20 operations pending (max 20).";
+
+    /// Replays a scripted queue of `call_tool` results, recording how many calls
+    /// were made. `None` in the queue means "repeat the last scripted result
+    /// forever" (used to simulate a server that stays busy).
+    struct MockCaller {
+        responses: RefCell<VecDeque<Result<String, String>>>,
+        sticky: RefCell<Option<Result<String, String>>>,
+        calls: RefCell<usize>,
+    }
+
+    impl MockCaller {
+        fn scripted(responses: Vec<Result<String, String>>) -> Self {
+            Self {
+                responses: RefCell::new(responses.into()),
+                sticky: RefCell::new(None),
+                calls: RefCell::new(0),
+            }
+        }
+
+        fn always(result: Result<String, String>) -> Self {
+            Self {
+                responses: RefCell::new(VecDeque::new()),
+                sticky: RefCell::new(Some(result)),
+                calls: RefCell::new(0),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            *self.calls.borrow()
+        }
+    }
+
+    impl ToolCaller for MockCaller {
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: serde_json::Value,
+        ) -> Result<String, String> {
+            *self.calls.borrow_mut() += 1;
+            if let Some(next) = self.responses.borrow_mut().pop_front() {
+                return next;
+            }
+            self.sticky
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| Err("no scripted response".into()))
+        }
+    }
+
+    fn ok_op(id: &str) -> Result<String, String> {
+        Ok(format!(r#"{{"operation_id":"{id}"}}"#))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn submit_retries_on_busy_then_succeeds() {
+        let caller =
+            MockCaller::scripted(vec![Err(BUSY.into()), Err(BUSY.into()), ok_op("op-123")]);
+        let args = serde_json::json!({});
+        let result = submit_batch_with_retry(&caller, &args, "Batch 1/5").await;
+        assert_eq!(result.unwrap(), "op-123");
+        assert_eq!(caller.call_count(), 3, "two busy retries then success");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn submit_returns_loud_err_on_non_busy_error() {
+        let caller = MockCaller::scripted(vec![Err("embedding model not found".into())]);
+        let args = serde_json::json!({});
+        let err = submit_batch_with_retry(&caller, &args, "Batch 2/5")
+            .await
+            .unwrap_err();
+        assert!(err.contains("Batch 2/5"), "names the batch: {err}");
+        assert!(err.contains("embedding model not found"));
+        assert_eq!(caller.call_count(), 1, "non-busy errors are not retried");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn submit_fails_loudly_when_budget_exhausted() {
+        let caller = MockCaller::always(Err(BUSY.into()));
+        let args = serde_json::json!({});
+        let err = submit_batch_with_retry(&caller, &args, "Batch 3/5")
+            .await
+            .unwrap_err();
+        assert!(err.contains("Batch 3/5"), "names the batch: {err}");
+        assert!(err.contains("server busy"));
+        assert!(caller.call_count() > 1, "retried before giving up");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn submit_errors_when_no_operation_id() {
+        let caller = MockCaller::scripted(vec![Ok(r#"{"status":"queued"}"#.into())]);
+        let args = serde_json::json!({});
+        let err = submit_batch_with_retry(&caller, &args, "Batch 4/5")
+            .await
+            .unwrap_err();
+        assert!(err.contains("no operation_id"), "got: {err}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_capacity_returns_when_below_threshold() {
+        let caller = MockCaller::scripted(vec![
+            Ok(r#"{"pending_tasks":18}"#.into()),
+            Ok(r#"{"pending_tasks":5}"#.into()),
+        ]);
+        wait_for_capacity(&caller).await;
+        assert_eq!(caller.call_count(), 2, "waited once, then proceeded");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_capacity_returns_immediately_on_error() {
+        let caller = MockCaller::always(Err("connection refused".into()));
+        wait_for_capacity(&caller).await;
+        assert_eq!(caller.call_count(), 1, "unreadable count must not hang");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_capacity_returns_on_missing_field() {
+        let caller = MockCaller::always(Ok(r#"{"operations":[]}"#.into()));
+        wait_for_capacity(&caller).await;
+        assert_eq!(
+            caller.call_count(),
+            1,
+            "missing pending_tasks must not hang"
+        );
+    }
 }

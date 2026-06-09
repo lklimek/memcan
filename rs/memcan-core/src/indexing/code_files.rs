@@ -8,10 +8,12 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tracing::{info, warn};
 
+use std::path::Path;
+
 use crate::error::Result;
 use crate::indexing::code::{
     BATCH_SIZE, chunk_fallback, content_hash, context_line, ext_to_lang, extract_symbols_regex,
-    flush_batch, generate_description, point_id,
+    flush_batch, generate_description, point_id, should_skip,
 };
 use crate::pipeline::CODE_TABLE;
 use crate::traits::{EmbeddingProvider, LlmProvider, TableSchema, VectorPoint, VectorStore};
@@ -62,6 +64,12 @@ pub async fn index_code_files(
     let mut batch: Vec<(VectorPoint, String)> = Vec::new();
 
     for file in &params.files {
+        if should_skip(Path::new(&file.path)) {
+            warn!(path = %file.path, "skipping file under a skip-dir (storage-layer guard)");
+            total_skipped += 1;
+            continue;
+        }
+
         let ext = file
             .path
             .rsplit('.')
@@ -371,6 +379,43 @@ mod tests {
 
         assert_eq!(result.indexed, 1);
         assert_eq!(result.errors, 0);
+        assert_eq!(store.upserted_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_index_code_files_skips_skip_dir_paths() {
+        let store = MockStore::new();
+        let embedder = MockEmbedder { dims: 3 };
+        let llm = MockLlm {
+            response: "desc".into(),
+        };
+        let schema = crate::traits::MinimalTableSchema;
+
+        let params = IndexCodeFilesParams {
+            files: vec![
+                CodeFileInput {
+                    path: ".claude/worktrees/agent-x/stray.rs".into(),
+                    content: "pub fn stray() {}\n".into(),
+                },
+                CodeFileInput {
+                    path: "target/debug/build.rs".into(),
+                    content: "pub fn built() {}\n".into(),
+                },
+                CodeFileInput {
+                    path: "src/real.rs".into(),
+                    content: "pub fn real() {}\n".into(),
+                },
+            ],
+            project: "test-proj".into(),
+            tech_stack: "rust".into(),
+        };
+
+        let result = index_code_files(&params, &store, &embedder, &schema, &llm, "test", 3)
+            .await
+            .unwrap();
+
+        assert_eq!(result.indexed, 1, "only src/real.rs should be indexed");
+        assert_eq!(result.skipped, 2, ".claude and target paths skipped");
         assert_eq!(store.upserted_count(), 1);
     }
 

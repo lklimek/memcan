@@ -104,7 +104,7 @@ fn all_extensions() -> &'static HashSet<&'static str> {
     })
 }
 
-fn should_skip(rel_path: &Path) -> bool {
+pub(crate) fn should_skip(rel_path: &Path) -> bool {
     rel_path
         .components()
         .any(|c| SKIP_DIRS.contains(&c.as_os_str().to_string_lossy().as_ref()))
