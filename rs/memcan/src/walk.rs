@@ -22,8 +22,25 @@ const SKIP_DIRS: &[&str] = &[
 
 const ALLOWED_EXTENSIONS: &[&str] = &["rs", "py", "go", "ts", "tsx"];
 
-pub struct WalkOptions {
+/// Maps an explicit tech stack to the file extensions it permits.
+///
+/// Returns `None` for an unrecognized stack, signalling the caller to fall back
+/// to [`ALLOWED_EXTENSIONS`] (all supported languages).
+fn extensions_for_stack(stack: &str) -> Option<&'static [&'static str]> {
+    match stack {
+        "rust" => Some(&["rs"]),
+        "python" => Some(&["py"]),
+        "go" => Some(&["go"]),
+        "typescript" => Some(&["ts", "tsx"]),
+        _ => None,
+    }
+}
+
+pub struct WalkOptions<'a> {
     pub max_file_size: u64,
+    /// When `Some`, restrict walked files to the extensions of this tech stack.
+    /// When `None`, walk all supported extensions.
+    pub tech_stack: Option<&'a str>,
 }
 
 pub struct WalkedFile {
@@ -35,6 +52,10 @@ pub fn walk_directory(root: &Path, opts: &WalkOptions) -> Result<Vec<WalkedFile>
     let root = root
         .canonicalize()
         .map_err(|e| format!("cannot resolve root directory: {e}"))?;
+    let allowed: &[&str] = match opts.tech_stack {
+        Some(stack) => extensions_for_stack(stack).unwrap_or(ALLOWED_EXTENSIONS),
+        None => ALLOWED_EXTENSIONS,
+    };
     let mut files = Vec::new();
     let mut stack: Vec<PathBuf> = vec![root.clone()];
 
@@ -74,7 +95,7 @@ pub fn walk_directory(root: &Path, opts: &WalkOptions) -> Result<Vec<WalkedFile>
                 Some(e) => e,
                 None => continue,
             };
-            if !ALLOWED_EXTENSIONS.contains(&ext) {
+            if !allowed.contains(&ext) {
                 continue;
             }
 
@@ -213,6 +234,7 @@ mod tests {
         let dir = setup_test_dir();
         let opts = WalkOptions {
             max_file_size: 1_048_576,
+            tech_stack: None,
         };
         let files = walk_directory(dir.path(), &opts).unwrap();
         let paths: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
@@ -227,6 +249,7 @@ mod tests {
         let dir = setup_test_dir();
         let opts = WalkOptions {
             max_file_size: 1_048_576,
+            tech_stack: None,
         };
         let files = walk_directory(dir.path(), &opts).unwrap();
         let paths: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
@@ -247,6 +270,7 @@ mod tests {
         let dir = setup_test_dir();
         let opts = WalkOptions {
             max_file_size: 1_048_576,
+            tech_stack: None,
         };
         let files = walk_directory(dir.path(), &opts).unwrap();
         let paths: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
@@ -261,12 +285,32 @@ mod tests {
         fs::write(dir.path().join("big.rs"), "x".repeat(200)).unwrap();
         fs::write(dir.path().join("small.rs"), "fn f() {}").unwrap();
 
-        let opts = WalkOptions { max_file_size: 100 };
+        let opts = WalkOptions {
+            max_file_size: 100,
+            tech_stack: None,
+        };
         let files = walk_directory(dir.path(), &opts).unwrap();
         let paths: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
 
         assert!(!paths.contains(&"big.rs"));
         assert!(paths.contains(&"small.rs"));
+    }
+
+    #[test]
+    fn walk_restricts_extensions_to_explicit_tech_stack() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.rs"), "fn a() {}").unwrap();
+        fs::write(dir.path().join("b.ts"), "export {}").unwrap();
+
+        let opts = WalkOptions {
+            max_file_size: 1_048_576,
+            tech_stack: Some("rust"),
+        };
+        let files = walk_directory(dir.path(), &opts).unwrap();
+        let paths: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
+
+        assert!(paths.contains(&"a.rs"));
+        assert!(!paths.contains(&"b.ts"), "should skip .ts when stack=rust");
     }
 
     #[test]

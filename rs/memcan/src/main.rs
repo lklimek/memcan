@@ -489,6 +489,7 @@ async fn main() {
             let config = client::load_config();
             let opts = walk::WalkOptions {
                 max_file_size: args.max_file_size,
+                tech_stack: args.tech_stack.as_deref(),
             };
             let files = match walk::walk_directory(&args.dir, &opts) {
                 Ok(f) => f,
