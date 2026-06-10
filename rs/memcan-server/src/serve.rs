@@ -616,12 +616,13 @@ impl MemcanService {
             &params.user_id,
             &self.state.config.default_user_id,
         );
-        info!(query = %params.query, user_id = %uid, limit, "search_memories");
+        let query = params.query;
+        info!(query = %query, user_id = %uid, limit, "search_memories");
 
         let vectors = self
             .state
             .embedder
-            .embed(&[params.query])
+            .embed(std::slice::from_ref(&query))
             .await
             .map_err(|e| ErrorData::internal_error(format!("embedding failed: {e}"), None))?;
 
@@ -632,6 +633,13 @@ impl MemcanService {
             .search(MEMORIES_TABLE, &vectors[0], Some(&filter), limit, 0)
             .await
             .map_err(|e| ErrorData::internal_error(format!("search failed: {e}"), None))?;
+
+        info!(
+            query = %query,
+            results = results.len(),
+            top_score = results.first().map(|r| r.score).unwrap_or(0.0),
+            "search completed"
+        );
 
         let output = format_memory_results(&results);
         Ok(CallToolResult::success(vec![Content::text(
@@ -1043,6 +1051,14 @@ impl MemcanService {
                 ));
             }
         };
+
+        info!(
+            query = %core_params.query,
+            results = results.len(),
+            top_score = results.first().map(|r| r.score).unwrap_or(0.0),
+            collections = ?core_params.collections,
+            "search completed"
+        );
 
         let output = serde_json::json!({
             "results": results,
