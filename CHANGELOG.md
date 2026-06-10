@@ -8,16 +8,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project use
 
 ### Added
 
-- `index-code`: `--tech-stack` now restricts which file extensions are walked (e.g. `--tech-stack rust` indexes only `.rs`), enabling single-language indexing of mixed-language repos (59f9008)
-- `delete_code_records` MCP tool — project-scoped, optionally filtered delete over the code table (e.g. `file_path NOT LIKE '%.rs'`), returning the number of rows removed; mandatory project scope prevents an unscoped wipe
+- `delete_code_records` MCP tool — project-scoped delete over the code table, optionally narrowed by a validated `extension` or exact `file_path_exact` (no caller-supplied SQL reaches the predicate), returning the number of rows removed; the mandatory project scope prevents an unscoped wipe, and the tool is refused when the server runs without `MEMCAN_API_KEY` (#20)
+
+### Changed
+
+- `memcan index-code` (thin CLI): an explicit `--tech-stack` now restricts walked extensions to that stack and fails with a nonzero exit on unrecognized values (previously a free-form label); names are matched case-insensitively and stored canonically lowercase. Omitting it preserves auto-detection. The `memcan-server index-code` admin path is unchanged — it indexes all supported languages and treats `--tech-stack` as a metadata label (#20)
 
 ### Fixed
 
-- `index-code`: exclude `.claude` worktree directories in the file walker (CLI and core) — prevents indexing stray worktree clones (9cf944c)
-- `index-code`: pace batch submission under the server queue cap and retry on "server busy" instead of silently dropping rejected batches — prevents data loss on large repos (5776d18)
-- `index-code`: an explicit but unrecognized `--tech-stack` now fails loudly with a nonzero exit instead of silently indexing every language
-- `index-code`: tech-stack names and file extensions are matched case-insensitively (`--tech-stack Rust`, `Foo.RS`)
-- `index_code_files`: storage-layer guard rejects paths under skip-dirs (e.g. `.claude`, `target`) even if a client sends them
+- `index-code`: exclude `.claude` worktree directories in the file walker (CLI and core) — prevents indexing stray worktree clones (#20)
+- `index-code`: pace batch submission under the server queue cap and retry on "server busy" instead of silently dropping rejected batches — prevents data loss on large repos (#20)
+- `index-code`: file extensions are matched case-insensitively (`Foo.RS` is indexed as Rust, not as an unknown-language fallback) (#20)
+- `index_code_files`: storage-layer guard skips paths under skip-dirs (e.g. `.claude`, `target`) — counted in `skipped` and logged — even if a client sends them; absolute paths are skipped too (#20)
+
+### Security
+
+- Bump `rustls-webpki` to 0.103.13 — clears RUSTSEC-2026-0098, RUSTSEC-2026-0099, RUSTSEC-2026-0104 (#20)
 
 ## [0.38.0] - 2026-03-17
 

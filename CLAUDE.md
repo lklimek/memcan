@@ -124,6 +124,7 @@ Server exposes these MCP tools (via HTTP at `/mcp`):
 | `export_collection` | Export a collection as JSONL (paginated, no vectors) |
 | `_import_records` | Import JSONL records: embed + upsert (internal/hidden) |
 | `index_code_files` | Index source code files: symbol extraction + LLM + embedding |
+| `delete_code_records` | Delete code records for a project, optionally narrowed by a validated `extension` or exact `file_path_exact` (no raw SQL); requires `MEMCAN_API_KEY` |
 | `get_queue_status` | Poll async operation progress |
 
 ## Versioning
@@ -201,7 +202,7 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 | Variable | Default | Description |
 |---|---|---|
 | `MEMCAN_LISTEN` | `127.0.0.1:8191` | Server bind address (Docker overrides to `0.0.0.0:8191`) |
-| `MEMCAN_API_KEY` | *(none)* | Bearer token auth for MCP API |
+| `MEMCAN_API_KEY` | *(none)* | Bearer token auth for MCP API. Required to use destructive tools (`delete_code_records` is refused when unset). |
 | `MEMCAN_URL` | `http://localhost:8190` | Server URL for thin clients (`memcan`) |
 | `MEMCAN_LOG_FILE` | *(none = stdout)* | Log file path (renamed from `LOG_FILE`) |
 | `LANCEDB_PATH` | `~/.local/share/memcan/lancedb` | LanceDB storage directory |
