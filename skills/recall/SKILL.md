@@ -18,11 +18,19 @@ Search and retrieve knowledge from past sessions across all collections.
 
 ## Procedure
 
-1. **Determine query** -- extract the key topic, error message, or concept to search for.
-2. **Search** -- run `search(query=..., project=<repo-name>)` to search across all collections (memories, standards, code, todos) in one call. Set `project` to git remote origin repo name (e.g., `memcan` not `memcan-2`). Use `collections` param to narrow scope when needed (e.g., `collections=["standards"]`).
-3. **List all** (optional) -- if search returns few results and broader context is needed, use `get_memories(project=...)` and/or `get_memories()` for full listings.
-4. **Opportunistic cleanup** -- if any returned memories are vague, ephemeral, obsolete, or near-duplicates of better memories, fix them on the spot: `update_memory` to improve, or `delete_memory` to remove. Do NOT search deliberately for bad memories — only act on what surfaces during normal recall.
-5. **Report** -- present relevant results to the conversation. Include memory IDs for reference.
+1. **Formulate query** -- extract 2-4 keywords from the current task or user message. Build a specific search query using domain terms, error messages, API names, or tool names. If context is unclear, use keywords from the first user message.
+   - Good: `"SPV bloom filter identity addresses"`, `"LanceDB compaction write lock"`, `"axum middleware auth bearer"`
+   - Bad: `"project context"`, `"recent decisions"`, `"help"`, single words
+
+2. **Task-specific search** -- run `search(query=..., project=<repo-name>)` with the query from step 1. Set `project` to git remote origin repo name (e.g., `memcan` not `memcan-2`). Use `collections` param to narrow scope when needed (e.g., `collections=["standards"]`).
+
+3. **Broaden if needed** -- only if step 2 returned fewer than 3 results, run a second search with a broader architectural query (e.g., `"error handling conventions"`, `"module structure patterns"`). Skip this step if step 2 already returned useful results.
+
+4. **List all** (optional) -- if both searches returned few results and broader context is needed, use `get_memories(project=...)` and/or `get_memories()` for full listings.
+
+5. **Opportunistic cleanup** -- if any returned memories are vague, ephemeral, obsolete, or near-duplicates of better memories, fix them on the spot: `update_memory` to improve, or `delete_memory` to remove. Do NOT search deliberately for bad memories -- only act on what surfaces during normal recall.
+
+6. **Report** -- present relevant results to the conversation. Include memory IDs for reference.
 
 ## When to Invoke
 
