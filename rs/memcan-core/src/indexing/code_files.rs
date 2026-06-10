@@ -64,8 +64,21 @@ pub async fn index_code_files(
     let mut batch: Vec<(VectorPoint, String)> = Vec::new();
 
     for file in &params.files {
-        if should_skip(Path::new(&file.path)) {
-            warn!(path = %file.path, "skipping file under a skip-dir (storage-layer guard)");
+        let path = Path::new(&file.path);
+
+        // `path` is documented relative. An absolute path under e.g. `/data/build/...`
+        // would otherwise be silently skip-matched whole; reject it explicitly.
+        if path.is_absolute() {
+            warn!(path = %file.path, "skipping absolute path (relative paths required)");
+            total_skipped += 1;
+            continue;
+        }
+
+        // Best-effort noise filter, not a security boundary: it drops obvious
+        // build-artifact / worktree strays a client may send. `path` is only a
+        // stored label, never read from disk, so a bypass cannot leak files.
+        if should_skip(path) {
+            warn!(path = %file.path, "skipping file under a skip-dir (best-effort noise filter)");
             total_skipped += 1;
             continue;
         }
@@ -74,7 +87,7 @@ pub async fn index_code_files(
             .path
             .rsplit('.')
             .next()
-            .map(|e| format!(".{e}"))
+            .map(|e| format!(".{}", e.to_ascii_lowercase()))
             .unwrap_or_default();
         let lang = ext_to_lang(&ext);
 
@@ -493,6 +506,62 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.indexed, 2);
+    }
+
+    #[tokio::test]
+    async fn test_index_code_files_skips_absolute_paths() {
+        let store = MockStore::new();
+        let embedder = MockEmbedder { dims: 3 };
+        let llm = MockLlm {
+            response: "desc".into(),
+        };
+        let schema = crate::traits::MinimalTableSchema;
+
+        let params = IndexCodeFilesParams {
+            files: vec![CodeFileInput {
+                path: "/data/build/myproj/src/main.rs".into(),
+                content: "pub fn main() {}\n".into(),
+            }],
+            project: "test-proj".into(),
+            tech_stack: "rust".into(),
+        };
+
+        let result = index_code_files(&params, &store, &embedder, &schema, &llm, "test", 3)
+            .await
+            .unwrap();
+
+        assert_eq!(result.indexed, 0, "absolute path must not be indexed");
+        assert_eq!(result.skipped, 1);
+    }
+
+    #[tokio::test]
+    async fn test_index_code_files_uppercase_extension_is_rust() {
+        let store = MockStore::new();
+        let embedder = MockEmbedder { dims: 3 };
+        let llm = MockLlm {
+            response: "A function".into(),
+        };
+        let schema = crate::traits::MinimalTableSchema;
+
+        let params = IndexCodeFilesParams {
+            files: vec![CodeFileInput {
+                path: "Foo.RS".into(),
+                content: "pub fn foo() {}\n".into(),
+            }],
+            project: "test-proj".into(),
+            tech_stack: "rust".into(),
+        };
+
+        index_code_files(&params, &store, &embedder, &schema, &llm, "test", 3)
+            .await
+            .unwrap();
+
+        let upserted = store.upserted.lock().unwrap();
+        let payload = &upserted[0].1[0].payload;
+        // `.RS` must be treated as Rust: a real symbol, not the unknown-lang
+        // fallback chunk.
+        assert_eq!(payload["chunk_type"], "function_item");
+        assert_ne!(payload["chunk_type"], "chunk");
     }
 
     #[tokio::test]

@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+// Keep in sync with SKIP_DIRS in rs/memcan-core/src/indexing/code.rs.
 const SKIP_DIRS: &[&str] = &[
     ".claude",
     ".git",
@@ -22,13 +23,31 @@ const SKIP_DIRS: &[&str] = &[
 
 const ALLOWED_EXTENSIONS: &[&str] = &["rs", "py", "go", "ts", "tsx"];
 
+/// The closed set of recognized `--tech-stack` values (canonical lowercase).
+pub const SUPPORTED_TECH_STACKS: &[&str] = &["rust", "python", "go", "typescript"];
+
+/// Canonicalize a user-supplied tech-stack name to its lowercase form.
+///
+/// Matching is case-insensitive (`Rust` -> `rust`). Returns `None` for an
+/// unrecognized stack so callers can reject it loudly. The canonical name is
+/// what gets stored on each record, so server-side exact-match search finds it.
+pub fn canonical_tech_stack(stack: &str) -> Option<&'static str> {
+    SUPPORTED_TECH_STACKS
+        .iter()
+        .copied()
+        .find(|s| *s == stack.to_ascii_lowercase())
+}
+
 /// Maps an explicit tech stack to the file extensions it permits.
 ///
 /// Matching is case-insensitive (`Rust` == `rust`). Returns `None` for an
 /// unrecognized stack so the caller can reject it loudly rather than silently
 /// indexing every language.
+///
+/// Keep the stack->extension mapping in sync with `lang_extensions()` in
+/// rs/memcan-core/src/indexing/code.rs.
 fn extensions_for_stack(stack: &str) -> Option<&'static [&'static str]> {
-    match stack.to_ascii_lowercase().as_str() {
+    match canonical_tech_stack(stack)? {
         "rust" => Some(&["rs"]),
         "python" => Some(&["py"]),
         "go" => Some(&["go"]),

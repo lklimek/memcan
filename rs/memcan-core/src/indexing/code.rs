@@ -31,6 +31,7 @@ const CHUNK_LINES: usize = 100;
 pub(crate) const BATCH_SIZE: usize = 20;
 const MAX_WALK_DEPTH: usize = 50;
 
+// Keep in sync with SKIP_DIRS in rs/memcan/src/walk.rs.
 const SKIP_DIRS: &[&str] = &[
     ".claude",
     ".git",
@@ -73,6 +74,8 @@ struct LangPatterns {
     patterns: Vec<(&'static str, Regex)>,
 }
 
+// Keep the lang->extension mapping in sync with `extensions_for_stack` in
+// rs/memcan/src/walk.rs.
 fn lang_extensions() -> &'static HashMap<&'static str, &'static [&'static str]> {
     static INSTANCE: OnceLock<HashMap<&str, &[&str]>> = OnceLock::new();
     INSTANCE.get_or_init(|| {
@@ -374,7 +377,7 @@ fn collect_files(project_dir: &Path) -> Vec<PathBuf> {
             } else if path.is_file()
                 && let Some(ext) = path.extension()
             {
-                let ext_str = format!(".{}", ext.to_string_lossy());
+                let ext_str = format!(".{}", ext.to_string_lossy().to_ascii_lowercase());
                 if valid_exts.contains(ext_str.as_str()) {
                     files.push(path);
                 }
@@ -533,7 +536,7 @@ pub async fn index_code(
 
         let lang = file_path
             .extension()
-            .and_then(|e| ext_to_lang(&format!(".{}", e.to_string_lossy())));
+            .and_then(|e| ext_to_lang(&format!(".{}", e.to_string_lossy().to_ascii_lowercase())));
 
         if file_path.is_symlink() {
             warn!(path = %rel_path, "Skipping symlink");
