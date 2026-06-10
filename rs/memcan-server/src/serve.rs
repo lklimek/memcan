@@ -1287,7 +1287,12 @@ impl MemcanService {
         }
 
         let mut predicate = format!("project = '{}'", sanitize_eq(&params.project));
-        if let Some(extra) = params.filter.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+        if let Some(extra) = params
+            .filter
+            .as_deref()
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+        {
             predicate = format!("{predicate} AND ({extra})");
         }
 
