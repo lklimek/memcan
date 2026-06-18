@@ -50,6 +50,11 @@ const MAX_FACTS_PER_EXTRACTION: usize = 50;
 /// Fraction of context window available for prompt content (system + user).
 pub const CONTEXT_BUDGET_RATIO: f32 = 0.40;
 
+/// Returns the first `max` chars of `s` (char-safe; never panics on multibyte input).
+fn truncate_chars(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
 /// Fallback context window when model doesn't report one.
 pub const DEFAULT_CONTEXT_WINDOW: usize = 4096;
 
@@ -268,14 +273,14 @@ fn validate_facts(facts: Vec<String>) -> Vec<String> {
     capped
         .iter()
         .map(|f| {
-            if f.chars().count() > MAX_FACT_LENGTH {
+            let char_count = f.chars().count();
+            if char_count > MAX_FACT_LENGTH {
                 warn!(
-                    length = f.chars().count(),
+                    length = char_count,
                     max = MAX_FACT_LENGTH,
                     "truncating oversized fact"
                 );
-                let truncated: String = f.chars().take(MAX_FACT_LENGTH).collect();
-                format!("{truncated}...")
+                format!("{}...", truncate_chars(f, MAX_FACT_LENGTH))
             } else {
                 f.clone()
             }
@@ -652,7 +657,7 @@ impl Pipeline {
                             "created_at": now,
                             "updated_at": serde_json::Value::Null,
                         });
-                        info!("ADD memory: {}", &data[..data.len().min(80)]);
+                        info!("ADD memory: {}", truncate_chars(data, 80));
                         if let Some(obj) = payload.as_object_mut() {
                             for (k, v) in &meta {
                                 obj.insert(k.clone(), v.clone());
@@ -696,7 +701,7 @@ impl Pipeline {
                             });
                             info!(
                                 "UPDATE memory {memory_id}: {}",
-                                &new_data[..new_data.len().min(80)]
+                                truncate_chars(new_data, 80)
                             );
                             if let Some(obj) = payload.as_object_mut() {
                                 for (k, v) in &meta {
@@ -939,6 +944,21 @@ mod tests {
         let facts = vec!["short fact".to_string()];
         let result = validate_facts(facts.clone());
         assert_eq!(result, facts);
+    }
+
+    #[test]
+    fn test_truncate_chars_multibyte_no_panic() {
+        // "ł日" encodes to 4 bytes but is 2 chars — 50 repetitions = 100 chars, >80 bytes.
+        // truncate_chars must not panic and must cap at char count, never byte-slice.
+        let s = "ł日".repeat(50); // 100 chars, 150 bytes
+        assert!(
+            s.len() > 80,
+            "input must exceed 80 bytes to exercise the guard"
+        );
+        let preview = truncate_chars(&s, 80);
+        assert_eq!(preview.chars().count(), 80, "must cap at 80 chars");
+        // Roundtrip: the result must be valid UTF-8 (no panic on re-iteration).
+        let _ = preview.chars().count();
     }
 
     #[test]
