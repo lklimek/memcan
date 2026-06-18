@@ -268,15 +268,14 @@ fn validate_facts(facts: Vec<String>) -> Vec<String> {
     capped
         .iter()
         .map(|f| {
-            if f.len() > MAX_FACT_LENGTH {
+            if f.chars().count() > MAX_FACT_LENGTH {
                 warn!(
-                    length = f.len(),
+                    length = f.chars().count(),
                     max = MAX_FACT_LENGTH,
                     "truncating oversized fact"
                 );
-                let mut truncated = f[..MAX_FACT_LENGTH].to_string();
-                truncated.push_str("...");
-                truncated
+                let truncated: String = f.chars().take(MAX_FACT_LENGTH).collect();
+                format!("{truncated}...")
             } else {
                 f.clone()
             }
@@ -907,7 +906,24 @@ mod tests {
         let long_fact = "x".repeat(3000);
         let result = validate_facts(vec![long_fact]);
         assert_eq!(result.len(), 1);
-        assert!(result[0].len() <= MAX_FACT_LENGTH + 3); // +3 for "..."
+        // char count: MAX_FACT_LENGTH chars + 3 for "..."
+        assert_eq!(result[0].chars().count(), MAX_FACT_LENGTH + 3);
+        assert!(result[0].ends_with("..."));
+    }
+
+    #[test]
+    fn test_validate_facts_truncates_long_multibyte() {
+        // "ł日" = 2 chars; repeat enough to exceed MAX_FACT_LENGTH (2000 chars)
+        let long_multibyte = "ł日".repeat(1500); // 3000 chars
+        assert!(long_multibyte.chars().count() > MAX_FACT_LENGTH);
+        let result = validate_facts(vec![long_multibyte]);
+        assert_eq!(result.len(), 1);
+        // char-safe: no panic, correct char count
+        assert_eq!(
+            result[0].chars().count(),
+            MAX_FACT_LENGTH + 3,
+            "should be exactly MAX_FACT_LENGTH chars + '...'"
+        );
         assert!(result[0].ends_with("..."));
     }
 
