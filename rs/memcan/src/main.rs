@@ -5,6 +5,7 @@
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
@@ -161,8 +162,9 @@ struct IndexCodeArgs {
     #[arg(long)]
     project: String,
 
-    /// Tech stack (auto-detected if omitted).
-    #[arg(long)]
+    /// Tech stack: rust, python, go, or typescript. Restricts indexing to that
+    /// stack's file extensions; auto-detected if omitted.
+    #[arg(long, value_parser = parse_tech_stack)]
     tech_stack: Option<String>,
 
     /// Skip files larger than this (bytes).
@@ -176,6 +178,21 @@ struct IndexCodeArgs {
     /// Wait for all operations to complete.
     #[arg(long)]
     wait: bool,
+}
+
+/// Validate and canonicalize a `--tech-stack` value to its lowercase form.
+///
+/// Stores the canonical name so server-side exact-match search (`tech_stack =
+/// 'rust'`) finds the records, regardless of the case the user typed.
+fn parse_tech_stack(s: &str) -> Result<String, String> {
+    walk::canonical_tech_stack(s)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            format!(
+                "unknown tech stack '{s}'; supported: {}",
+                walk::SUPPORTED_TECH_STACKS.join(", ")
+            )
+        })
 }
 
 fn parse_batch_size(s: &str) -> Result<usize, String> {
@@ -248,6 +265,155 @@ async fn send_import_batch(client: &client::McpClient, batch: &[String]) -> (u64
         Err(e) => {
             eprintln!("Error importing batch: {e}");
             (0, batch.len() as u64)
+        }
+    }
+}
+
+/// Pending-task threshold below which the CLI submits the next batch.
+///
+/// The server caps in-flight async operations at 20 (`MAX_PENDING_TASKS` in
+/// rs/memcan-server/src/serve.rs — keep this margin below it; update both
+/// together). We pace below the cap so a poll/submit race rarely hits it;
+/// `submit_batch_with_retry` covers the residual race.
+const PACING_THRESHOLD: u64 = 16;
+
+/// Backoff ceiling and total budget for retrying a busy-rejected batch.
+const BACKOFF_MAX: Duration = Duration::from_secs(30);
+const RETRY_BUDGET: Duration = Duration::from_secs(900);
+
+/// One MCP tool call. Abstracts [`client::McpClient`] so the pacing/retry
+/// helpers can be unit-tested against a mock.
+trait ToolCaller {
+    async fn call_tool(&self, name: &str, arguments: serde_json::Value) -> Result<String, String>;
+}
+
+impl ToolCaller for client::McpClient {
+    async fn call_tool(&self, name: &str, arguments: serde_json::Value) -> Result<String, String> {
+        client::McpClient::call_tool(self, name, arguments)
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// True if the error is the server's "queue full" rejection (vs. a real failure).
+///
+/// Matches the busy message formatted in `try_enqueue`
+/// (rs/memcan-server/src/serve.rs) — keep these phrases in sync with it.
+fn is_server_busy(err: &str) -> bool {
+    err.contains("Server busy") && err.contains("operations pending")
+}
+
+/// Exponential backoff: 1s, 2s, 4s, 8s, 16s, then capped at [`BACKOFF_MAX`].
+fn backoff_delay(attempt: u32) -> Duration {
+    let secs = 1u64.checked_shl(attempt).unwrap_or(u64::MAX);
+    Duration::from_secs(secs).min(BACKOFF_MAX)
+}
+
+/// Reads the global `pending_tasks` count from a no-arg `get_queue_status` call.
+/// Returns `None` if the server is unreachable or the field is absent.
+async fn pending_tasks(client: &impl ToolCaller) -> Option<u64> {
+    let result = client
+        .call_tool("get_queue_status", serde_json::json!({}))
+        .await
+        .ok()?;
+    serde_json::from_str::<serde_json::Value>(&result)
+        .ok()?
+        .get("pending_tasks")
+        .and_then(|v| v.as_u64())
+}
+
+/// Interval between "still waiting for capacity" progress lines.
+const WAIT_PROGRESS_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Blocks until the server's pending-task count drops below [`PACING_THRESHOLD`].
+///
+/// Best-effort and bounded: if the count can't be read, or [`RETRY_BUDGET`]
+/// elapses while the server stays saturated, it returns and lets
+/// `submit_batch_with_retry`'s own bounded retry loop fail loudly rather than
+/// hanging forever (e.g. against a wedged worker). Prints a periodic line so the
+/// user knows the CLI is alive and why it is waiting.
+async fn wait_for_capacity(client: &impl ToolCaller) {
+    let start = tokio::time::Instant::now();
+    let mut last_progress: Option<tokio::time::Instant> = None;
+    loop {
+        match pending_tasks(client).await {
+            Some(n) if n >= PACING_THRESHOLD => {
+                if start.elapsed() >= RETRY_BUDGET {
+                    eprintln!(
+                        "  server still saturated ({n} pending) after {}s; proceeding best-effort",
+                        RETRY_BUDGET.as_secs()
+                    );
+                    return;
+                }
+                if last_progress.is_none_or(|t| t.elapsed() >= WAIT_PROGRESS_INTERVAL) {
+                    eprintln!("  waiting for capacity ({n} operations pending)...");
+                    last_progress = Some(tokio::time::Instant::now());
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            _ => return,
+        }
+    }
+}
+
+/// Outcome of a successful batch submission.
+#[derive(Debug, PartialEq, Eq)]
+enum SubmitOutcome {
+    /// Server accepted the batch and returned a pollable `operation_id`.
+    Tracked(String),
+    /// Server accepted the batch but returned no `operation_id`, so it cannot
+    /// be polled. The batch *was* submitted — it is processing, just untracked.
+    AcceptedUntracked,
+}
+
+/// Submits one `index_code_files` batch, retrying on server-busy until accepted.
+///
+/// Returns a [`SubmitOutcome`] on acceptance. Hard errors (non-busy) and an
+/// exhausted retry budget both return `Err` so the caller can fail loudly —
+/// a batch is never silently dropped.
+async fn submit_batch_with_retry(
+    client: &impl ToolCaller,
+    tool_args: &serde_json::Value,
+    batch_label: &str,
+) -> Result<SubmitOutcome, String> {
+    let start = tokio::time::Instant::now();
+    let mut attempt: u32 = 0;
+    loop {
+        match client
+            .call_tool("index_code_files", tool_args.clone())
+            .await
+        {
+            Ok(result) => {
+                let op_id = serde_json::from_str::<serde_json::Value>(&result)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("operation_id")
+                            .and_then(|o| o.as_str())
+                            .map(str::to_string)
+                    });
+                return Ok(match op_id {
+                    Some(id) => SubmitOutcome::Tracked(id),
+                    None => SubmitOutcome::AcceptedUntracked,
+                });
+            }
+            Err(msg) => {
+                if !is_server_busy(&msg) {
+                    return Err(format!("{batch_label}: {msg}"));
+                }
+                if start.elapsed() >= RETRY_BUDGET {
+                    return Err(format!(
+                        "{batch_label}: still rejected after {}s of retries (server busy); aborting to avoid dropping it",
+                        RETRY_BUDGET.as_secs()
+                    ));
+                }
+                let delay = backoff_delay(attempt);
+                eprintln!(
+                    "  {batch_label}: server busy, retrying in {}s",
+                    delay.as_secs()
+                );
+                tokio::time::sleep(delay).await;
+                attempt = attempt.saturating_add(1);
+            }
         }
     }
 }
@@ -489,6 +655,7 @@ async fn main() {
             let config = client::load_config();
             let opts = walk::WalkOptions {
                 max_file_size: args.max_file_size,
+                tech_stack: args.tech_stack.as_deref(),
             };
             let files = match walk::walk_directory(&args.dir, &opts) {
                 Ok(f) => f,
@@ -524,6 +691,7 @@ async fn main() {
             match client::McpClient::connect(&config).await {
                 Ok(c) => {
                     let mut operation_ids: Vec<String> = Vec::new();
+                    let total_batches = batches.len();
 
                     for (i, batch) in batches.iter().enumerate() {
                         let files_json: Vec<serde_json::Value> = batch
@@ -542,24 +710,31 @@ async fn main() {
                             "tech_stack": tech_stack,
                         });
 
-                        match c.call_tool("index_code_files", tool_args).await {
-                            Ok(result) => {
-                                if let Ok(parsed) =
-                                    serde_json::from_str::<serde_json::Value>(&result)
-                                    && let Some(op_id) =
-                                        parsed.get("operation_id").and_then(|v| v.as_str())
-                                {
-                                    operation_ids.push(op_id.to_string());
-                                }
+                        let batch_label = format!("Batch {}/{}", i + 1, total_batches);
+                        wait_for_capacity(&c).await;
+                        match submit_batch_with_retry(&c, &tool_args, &batch_label).await {
+                            Ok(SubmitOutcome::Tracked(op_id)) => {
+                                operation_ids.push(op_id);
+                                eprintln!("  {batch_label}: {} files submitted", batch.len());
+                            }
+                            Ok(SubmitOutcome::AcceptedUntracked) => {
+                                // Accepted and processing, just not pollable — count
+                                // it as submitted, do not abort.
                                 eprintln!(
-                                    "  Batch {}/{}: {} files submitted",
-                                    i + 1,
-                                    batches.len(),
+                                    "  {batch_label}: {} files accepted (no operation_id; \
+                                     cannot poll for completion)",
                                     batch.len()
                                 );
                             }
                             Err(e) => {
-                                eprintln!("Error submitting batch {}: {e}", i + 1);
+                                eprintln!("Error: {e}");
+                                eprintln!(
+                                    "Aborting: {} of {} batches submitted before failure. \
+                                     No batch was silently dropped; re-run to finish (indexing is idempotent).",
+                                    i, total_batches
+                                );
+                                c.close().await;
+                                std::process::exit(1);
                             }
                         }
                     }
@@ -580,7 +755,10 @@ async fn main() {
                     );
                     c.close().await;
                 }
-                Err(e) => eprintln!("Connection failed: {e}"),
+                Err(e) => {
+                    eprintln!("Connection failed: {e}");
+                    std::process::exit(1);
+                }
             }
         }
         Command::IndexStandards(args) => {
@@ -714,5 +892,211 @@ async fn main() {
                 Err(e) => eprintln!("Connection failed: {e}"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_server_busy_detects_rejection() {
+        assert!(is_server_busy(
+            "Mcp error: -32603: Server busy: 20 operations pending (max 20). Try again later."
+        ));
+    }
+
+    #[test]
+    fn is_server_busy_ignores_other_errors() {
+        assert!(!is_server_busy(
+            "Mcp error: -32603: embedding model not found"
+        ));
+        assert!(!is_server_busy("Connection refused"));
+        assert!(!is_server_busy(""));
+    }
+
+    #[test]
+    fn backoff_delay_is_exponential_then_capped() {
+        assert_eq!(backoff_delay(0), Duration::from_secs(1));
+        assert_eq!(backoff_delay(1), Duration::from_secs(2));
+        assert_eq!(backoff_delay(2), Duration::from_secs(4));
+        assert_eq!(backoff_delay(3), Duration::from_secs(8));
+        assert_eq!(backoff_delay(4), Duration::from_secs(16));
+        assert_eq!(backoff_delay(5), BACKOFF_MAX);
+    }
+
+    #[test]
+    fn backoff_delay_never_exceeds_cap_for_large_attempts() {
+        assert_eq!(backoff_delay(63), BACKOFF_MAX);
+        assert_eq!(backoff_delay(u32::MAX), BACKOFF_MAX);
+    }
+
+    #[test]
+    fn parse_tech_stack_canonicalizes_to_lowercase() {
+        // Mixed-case input must be stored lowercase so the server's exact-match
+        // `tech_stack = 'rust'` search filter finds the indexed rows.
+        assert_eq!(parse_tech_stack("Rust").unwrap(), "rust");
+        assert_eq!(parse_tech_stack("PYTHON").unwrap(), "python");
+        assert_eq!(parse_tech_stack("go").unwrap(), "go");
+        assert_eq!(parse_tech_stack("TypeScript").unwrap(), "typescript");
+    }
+
+    #[test]
+    fn parse_tech_stack_rejects_unknown() {
+        let err = parse_tech_stack("rsut").unwrap_err();
+        assert!(err.contains("unknown tech stack 'rsut'"), "got: {err}");
+        assert!(err.contains("rust, python, go, typescript"), "got: {err}");
+    }
+
+    // Server's MAX_PENDING_TASKS is 20; keep a margin so the poll/submit race
+    // rarely trips the cap. Compile-time invariant.
+    const _: () = assert!(PACING_THRESHOLD < 20);
+
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
+    const BUSY: &str = "Mcp error: -32603: Server busy: 20 operations pending (max 20).";
+
+    /// Replays a scripted queue of `call_tool` results, recording how many calls
+    /// were made. `None` in the queue means "repeat the last scripted result
+    /// forever" (used to simulate a server that stays busy).
+    struct MockCaller {
+        responses: RefCell<VecDeque<Result<String, String>>>,
+        sticky: RefCell<Option<Result<String, String>>>,
+        calls: RefCell<usize>,
+    }
+
+    impl MockCaller {
+        fn scripted(responses: Vec<Result<String, String>>) -> Self {
+            Self {
+                responses: RefCell::new(responses.into()),
+                sticky: RefCell::new(None),
+                calls: RefCell::new(0),
+            }
+        }
+
+        fn always(result: Result<String, String>) -> Self {
+            Self {
+                responses: RefCell::new(VecDeque::new()),
+                sticky: RefCell::new(Some(result)),
+                calls: RefCell::new(0),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            *self.calls.borrow()
+        }
+    }
+
+    impl ToolCaller for MockCaller {
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: serde_json::Value,
+        ) -> Result<String, String> {
+            *self.calls.borrow_mut() += 1;
+            if let Some(next) = self.responses.borrow_mut().pop_front() {
+                return next;
+            }
+            self.sticky
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| Err("no scripted response".into()))
+        }
+    }
+
+    fn ok_op(id: &str) -> Result<String, String> {
+        Ok(format!(r#"{{"operation_id":"{id}"}}"#))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn submit_retries_on_busy_then_succeeds() {
+        let caller =
+            MockCaller::scripted(vec![Err(BUSY.into()), Err(BUSY.into()), ok_op("op-123")]);
+        let args = serde_json::json!({});
+        let result = submit_batch_with_retry(&caller, &args, "Batch 1/5").await;
+        assert_eq!(result.unwrap(), SubmitOutcome::Tracked("op-123".into()));
+        assert_eq!(caller.call_count(), 3, "two busy retries then success");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn submit_returns_loud_err_on_non_busy_error() {
+        let caller = MockCaller::scripted(vec![Err("embedding model not found".into())]);
+        let args = serde_json::json!({});
+        let err = submit_batch_with_retry(&caller, &args, "Batch 2/5")
+            .await
+            .unwrap_err();
+        assert!(err.contains("Batch 2/5"), "names the batch: {err}");
+        assert!(err.contains("embedding model not found"));
+        assert_eq!(caller.call_count(), 1, "non-busy errors are not retried");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn submit_fails_loudly_when_budget_exhausted() {
+        let caller = MockCaller::always(Err(BUSY.into()));
+        let args = serde_json::json!({});
+        let err = submit_batch_with_retry(&caller, &args, "Batch 3/5")
+            .await
+            .unwrap_err();
+        assert!(err.contains("Batch 3/5"), "names the batch: {err}");
+        assert!(err.contains("server busy"));
+        assert!(caller.call_count() > 1, "retried before giving up");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn submit_accepted_untracked_when_no_operation_id() {
+        // An accepted response without operation_id is a successful submission
+        // (the batch is processing) that simply cannot be polled — not a failure.
+        let caller = MockCaller::scripted(vec![Ok(r#"{"status":"queued"}"#.into())]);
+        let args = serde_json::json!({});
+        let outcome = submit_batch_with_retry(&caller, &args, "Batch 4/5")
+            .await
+            .unwrap();
+        assert_eq!(outcome, SubmitOutcome::AcceptedUntracked);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_capacity_returns_when_below_threshold() {
+        let caller = MockCaller::scripted(vec![
+            Ok(r#"{"pending_tasks":18}"#.into()),
+            Ok(r#"{"pending_tasks":5}"#.into()),
+        ]);
+        wait_for_capacity(&caller).await;
+        assert_eq!(caller.call_count(), 2, "waited once, then proceeded");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_capacity_returns_after_budget_when_saturated() {
+        // Server stays pinned above the threshold forever; the wall-clock budget
+        // must break the loop instead of hanging.
+        let caller = MockCaller::always(Ok(r#"{"pending_tasks":18}"#.into()));
+        let start = tokio::time::Instant::now();
+        wait_for_capacity(&caller).await;
+        assert!(
+            start.elapsed() >= RETRY_BUDGET,
+            "must wait at least the full budget before giving up"
+        );
+        assert!(
+            caller.call_count() > 1,
+            "polled repeatedly before proceeding best-effort"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_capacity_returns_immediately_on_error() {
+        let caller = MockCaller::always(Err("connection refused".into()));
+        wait_for_capacity(&caller).await;
+        assert_eq!(caller.call_count(), 1, "unreadable count must not hang");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_capacity_returns_on_missing_field() {
+        let caller = MockCaller::always(Ok(r#"{"operations":[]}"#.into()));
+        wait_for_capacity(&caller).await;
+        assert_eq!(
+            caller.call_count(),
+            1,
+            "missing pending_tasks must not hang"
+        );
     }
 }

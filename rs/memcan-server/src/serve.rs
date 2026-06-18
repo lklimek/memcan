@@ -81,6 +81,10 @@ fn queue_entry_to_json(entry: &QueueEntry) -> serde_json::Value {
 }
 
 /// Maximum number of pending async operations (queued + running).
+/// Cap on concurrent in-flight async operations.
+///
+/// The memcan CLI mirrors this as `PACING_THRESHOLD` (rs/memcan/src/main.rs) to
+/// pace its submissions below the cap — update both if you change it.
 const MAX_PENDING_TASKS: usize = 20;
 
 /// RAII guard that decrements the pending-task counter on drop.
@@ -101,6 +105,9 @@ fn try_enqueue(counter: &Arc<AtomicUsize>) -> Result<PendingTaskGuard, ErrorData
         counter.fetch_sub(1, Ordering::SeqCst);
         Err(ErrorData::new(
             rmcp::model::ErrorCode::INTERNAL_ERROR,
+            // The "Server busy"/"operations pending" phrasing is string-matched by
+            // the memcan CLI's `is_server_busy` (rs/memcan/src/main.rs) to decide
+            // retry-vs-abort — keep both phrases if you reword this.
             format!(
                 "Server busy: {} operations pending (max {}). Try again later.",
                 prev, MAX_PENDING_TASKS
@@ -112,6 +119,37 @@ fn try_enqueue(counter: &Arc<AtomicUsize>) -> Result<PendingTaskGuard, ErrorData
             counter: Arc::clone(counter),
         })
     }
+}
+
+/// Build the `delete_code_records` predicate from structured, server-validated
+/// inputs only. The mandatory `project` and the optional matchers are escaped
+/// here — no caller-supplied SQL is ever interpolated into the predicate.
+fn build_delete_code_predicate(
+    project: &str,
+    extension: Option<&str>,
+    file_path_exact: Option<&str>,
+) -> Result<String, String> {
+    if project.trim().is_empty() {
+        return Err("project must not be empty".into());
+    }
+
+    let mut parts = vec![format!("project = '{}'", sanitize_eq(project))];
+
+    if let Some(ext) = extension.map(str::trim).filter(|e| !e.is_empty()) {
+        let ext = ext.strip_prefix('.').unwrap_or(ext);
+        if !ext.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Err(format!(
+                "invalid extension '{ext}': only alphanumeric characters are allowed"
+            ));
+        }
+        parts.push(format!("file_path LIKE '%.{}'", sanitize_like(ext)));
+    }
+
+    if let Some(path) = file_path_exact.map(str::trim).filter(|p| !p.is_empty()) {
+        parts.push(format!("file_path = '{}'", sanitize_eq(path)));
+    }
+
+    Ok(parts.join(" AND "))
 }
 
 struct SharedState {
@@ -274,6 +312,19 @@ pub struct IndexStandardsToolParams {
 pub struct DropIndexedStandardsParams {
     /// Standard identifier to drop all indexed data for.
     pub standard_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DeleteCodeRecordsParams {
+    /// Project to scope the delete to (required — prevents an unscoped wipe).
+    pub project: String,
+    /// Optional file extension to narrow the delete to, e.g. `py` or `.py`.
+    /// The server turns this into a validated, wildcard-escaped
+    /// `file_path LIKE '%.<ext>'` matcher — no caller SQL reaches the predicate.
+    pub extension: Option<String>,
+    /// Optional exact relative file path to delete (e.g. `src/main.rs`).
+    /// Matched via a sanitized equality, never raw SQL.
+    pub file_path_exact: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -512,6 +563,10 @@ impl MemcanService {
             .unwrap_or(serde_json::Value::Object(Default::default()));
         let memory = params.memory;
 
+        // Claim a queue slot before logging "queued" or inserting the LRU entry,
+        // so a busy-rejection leaves no phantom never-completing status record.
+        let task_guard = try_enqueue(&self.state.pending_tasks)?;
+
         let op_id = Uuid::new_v4().to_string();
         info!(user_id = %uid, len = memory.len(), operation_id = %op_id, "add_memory: queued");
 
@@ -559,7 +614,6 @@ impl MemcanService {
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         }
 
-        let task_guard = try_enqueue(&self.state.pending_tasks)?;
         let sem = Arc::clone(&self.state.llm_semaphore);
         let health = Arc::clone(&self.state.health);
         let uid_clone = uid.clone();
@@ -755,6 +809,10 @@ impl MemcanService {
             .cloned()
             .unwrap_or_else(|| serde_json::Value::String(chrono::Utc::now().to_rfc3339()));
 
+        // Claim a queue slot before inserting the LRU status entry, so a
+        // busy-rejection leaves no phantom never-completing status record.
+        let task_guard = try_enqueue(&self.state.pending_tasks)?;
+
         let op_id = Uuid::new_v4().to_string();
 
         let pipeline = Pipeline::new(
@@ -786,7 +844,6 @@ impl MemcanService {
             );
         }
 
-        let task_guard = try_enqueue(&self.state.pending_tasks)?;
         let sem = Arc::clone(&self.state.llm_semaphore);
         let health = Arc::clone(&self.state.health);
         let memory_id = params.memory_id.clone();
@@ -1106,6 +1163,10 @@ impl MemcanService {
             ));
         }
 
+        // Claim a queue slot before logging "queued" or inserting the LRU entry,
+        // so a busy-rejection leaves no phantom never-completing status record.
+        let task_guard = try_enqueue(&self.state.pending_tasks)?;
+
         let op_id = Uuid::new_v4().to_string();
         info!(
             standard_id = %params.standard_id,
@@ -1140,7 +1201,6 @@ impl MemcanService {
             .check(DependencyId::Ollama)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
-        let task_guard = try_enqueue(&self.state.pending_tasks)?;
         let store = Arc::clone(&self.state.store);
         let embedder = Arc::clone(&self.state.embedder);
         let llm = Arc::clone(&self.state.llm);
@@ -1253,6 +1313,73 @@ impl MemcanService {
         let response = serde_json::json!({
             "deleted": deleted,
             "standard_id": params.standard_id,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&response).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(
+        description = "Delete code records for a project, optionally narrowed by `extension` \
+        (e.g. \"py\") or an exact `file_path_exact`. Both matchers are server-validated and \
+        escaped — no caller-supplied SQL ever reaches the delete predicate. The project scope \
+        is mandatory. Deletion is immediate and irreversible (no dry-run). Returns the number \
+        of rows deleted (approximate under concurrent writes, since the count precedes the \
+        delete). Refused when the server runs without MEMCAN_API_KEY configured."
+    )]
+    async fn delete_code_records(
+        &self,
+        Parameters(params): Parameters<DeleteCodeRecordsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        debug!(
+            tool = "delete_code_records",
+            project = %params.project,
+            extension = ?params.extension,
+            file_path_exact = ?params.file_path_exact,
+            "MCP request"
+        );
+
+        // A destructive cross-collection primitive must not run on an
+        // unauthenticated endpoint (default Docker binds 0.0.0.0 with no key).
+        if self.state.config.api_key.is_none() {
+            return Err(ErrorData::internal_error(
+                "delete_code_records requires MEMCAN_API_KEY to be configured",
+                None,
+            ));
+        }
+
+        let predicate = build_delete_code_predicate(
+            &params.project,
+            params.extension.as_deref(),
+            params.file_path_exact.as_deref(),
+        )
+        .map_err(|e| ErrorData::internal_error(e, None))?;
+
+        warn!(
+            tool = "delete_code_records",
+            project = %params.project,
+            predicate = %predicate,
+            "executing destructive code-record delete"
+        );
+
+        let deleted = self
+            .state
+            .store
+            .delete_by_filter(CODE_TABLE, &predicate)
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("delete failed: {e}"), None))?;
+
+        warn!(
+            tool = "delete_code_records",
+            project = %params.project,
+            deleted,
+            "destructive code-record delete complete"
+        );
+
+        let response = serde_json::json!({
+            "deleted": deleted,
+            "project": params.project,
+            "predicate": predicate,
         });
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string(&response).unwrap_or_default(),
@@ -1630,6 +1757,10 @@ impl MemcanService {
             .check(DependencyId::Ollama)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
+        // Claim a queue slot before logging "queued" or inserting the LRU entry,
+        // so a busy-rejection leaves no phantom never-completing status record.
+        let task_guard = try_enqueue(&self.state.pending_tasks)?;
+
         let op_id = Uuid::new_v4().to_string();
         info!(
             project = %params.project,
@@ -1657,7 +1788,6 @@ impl MemcanService {
             );
         }
 
-        let task_guard = try_enqueue(&self.state.pending_tasks)?;
         let store = Arc::clone(&self.state.store);
         let embedder = Arc::clone(&self.state.embedder);
         let llm = Arc::clone(&self.state.llm);
@@ -2236,6 +2366,210 @@ mod tests {
         assert_eq!(params.files[0].path, "src/main.rs");
         assert_eq!(params.project, "test");
         assert_eq!(params.tech_stack, "rust");
+    }
+
+    #[test]
+    fn delete_code_predicate_rejects_empty_project() {
+        let err = build_delete_code_predicate("   ", None, None).unwrap_err();
+        assert!(err.contains("project must not be empty"), "got: {err}");
+    }
+
+    #[test]
+    fn delete_code_predicate_project_only() {
+        let pred = build_delete_code_predicate("rust-dashcore", None, None).unwrap();
+        assert_eq!(pred, "project = 'rust-dashcore'");
+    }
+
+    #[test]
+    fn delete_code_predicate_project_and_extension() {
+        let pred = build_delete_code_predicate("myproj", Some("py"), None).unwrap();
+        assert_eq!(pred, "project = 'myproj' AND file_path LIKE '%.py'");
+        // A leading dot is accepted and normalized away.
+        let pred = build_delete_code_predicate("myproj", Some(".py"), None).unwrap();
+        assert_eq!(pred, "project = 'myproj' AND file_path LIKE '%.py'");
+    }
+
+    #[test]
+    fn delete_code_predicate_exact_path() {
+        let pred = build_delete_code_predicate("myproj", None, Some("src/main.rs")).unwrap();
+        assert_eq!(pred, "project = 'myproj' AND file_path = 'src/main.rs'");
+    }
+
+    #[test]
+    fn delete_code_predicate_escapes_quoted_project() {
+        let pred = build_delete_code_predicate("o'brien", None, None).unwrap();
+        assert_eq!(pred, "project = 'o''brien'");
+    }
+
+    #[test]
+    fn delete_code_predicate_injection_cannot_escape_project_scope() {
+        // The classic SEC-001 payload arrives via the project name itself now;
+        // it must be quote-escaped, never break out of the equality.
+        let pred = build_delete_code_predicate("x' OR '1'='1", None, None).unwrap();
+        assert_eq!(pred, "project = 'x'' OR ''1''=''1'");
+        // An injection-shaped extension is rejected outright (non-alphanumeric).
+        let err = build_delete_code_predicate("myproj", Some("rs' OR '1'='1"), None).unwrap_err();
+        assert!(err.contains("invalid extension"), "got: {err}");
+        // A path injection attempt is quote-escaped, never structural.
+        let pred = build_delete_code_predicate("myproj", None, Some("a') OR (1=1")).unwrap();
+        assert_eq!(pred, "project = 'myproj' AND file_path = 'a'') OR (1=1'");
+    }
+
+    #[tokio::test]
+    async fn delete_code_records_refused_without_api_key() {
+        let service = make_test_service();
+        let params = DeleteCodeRecordsParams {
+            project: "myproj".into(),
+            extension: None,
+            file_path_exact: None,
+        };
+        let err = service
+            .delete_code_records(Parameters(params))
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("MEMCAN_API_KEY"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_code_records_with_key_uses_validated_predicate() {
+        use memcan_core::health::DependencyHealth;
+        use memcan_core::traits::{
+            EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, SearchResult, TableSchema,
+            VectorPoint, VectorStore,
+        };
+
+        // Store that records the filter it was asked to delete by.
+        struct CapturingStore {
+            last_filter: StdMutex<Option<String>>,
+        }
+        #[async_trait::async_trait]
+        impl VectorStore for CapturingStore {
+            async fn ensure_table(
+                &self,
+                _: &str,
+                _: usize,
+                _: &dyn TableSchema,
+            ) -> memcan_core::error::Result<()> {
+                Ok(())
+            }
+            async fn upsert(
+                &self,
+                _: &str,
+                _: &[VectorPoint],
+                _: &dyn TableSchema,
+            ) -> memcan_core::error::Result<()> {
+                Ok(())
+            }
+            async fn search(
+                &self,
+                _: &str,
+                _: &[f32],
+                _: Option<&str>,
+                _: usize,
+                _: usize,
+            ) -> memcan_core::error::Result<Vec<SearchResult>> {
+                Ok(vec![])
+            }
+            async fn scroll(
+                &self,
+                _: &str,
+                _: Option<&str>,
+                _: usize,
+                _: usize,
+            ) -> memcan_core::error::Result<Vec<SearchResult>> {
+                Ok(vec![])
+            }
+            async fn count(&self, _: &str, _: Option<&str>) -> memcan_core::error::Result<usize> {
+                Ok(0)
+            }
+            async fn delete(&self, _: &str, _: &[String]) -> memcan_core::error::Result<()> {
+                Ok(())
+            }
+            async fn delete_by_filter(
+                &self,
+                _: &str,
+                filter: &str,
+            ) -> memcan_core::error::Result<usize> {
+                *self.last_filter.lock().unwrap() = Some(filter.to_string());
+                Ok(7)
+            }
+            async fn get(
+                &self,
+                _: &str,
+                _: &[String],
+            ) -> memcan_core::error::Result<Vec<SearchResult>> {
+                Ok(vec![])
+            }
+        }
+
+        struct MockEmbedder;
+        #[async_trait::async_trait]
+        impl EmbeddingProvider for MockEmbedder {
+            async fn embed(&self, texts: &[String]) -> memcan_core::error::Result<Vec<Vec<f32>>> {
+                Ok(texts.iter().map(|_| vec![0.0; 3]).collect())
+            }
+            fn dimensions(&self) -> usize {
+                3
+            }
+        }
+
+        struct MockLlm;
+        #[async_trait::async_trait]
+        impl LlmProvider for MockLlm {
+            async fn chat(
+                &self,
+                _: &str,
+                _: &[LlmMessage],
+                _: Option<LlmOptions>,
+            ) -> memcan_core::error::Result<String> {
+                Ok(String::new())
+            }
+            async fn context_window(&self, _: &str) -> Option<usize> {
+                Some(4096)
+            }
+        }
+
+        let store = Arc::new(CapturingStore {
+            last_filter: StdMutex::new(None),
+        });
+        let config = memcan_core::config::Settings {
+            api_key: Some("secret".into()),
+            ..Default::default()
+        };
+        let state = Arc::new(SharedState {
+            store: Arc::clone(&store) as Arc<dyn VectorStore>,
+            embedder: Arc::new(MockEmbedder),
+            llm: Arc::new(MockLlm),
+            config,
+            llm_model: "test".into(),
+            queue_status: Arc::new(StdMutex::new(LruCache::new(
+                NonZeroUsize::new(100).unwrap(),
+            ))),
+            llm_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+            pending_tasks: Arc::new(AtomicUsize::new(0)),
+            health: Arc::new(DependencyHealth::with_defaults()),
+        });
+        let service = MemcanService::new(state);
+
+        let params = DeleteCodeRecordsParams {
+            project: "rust-dashcore".into(),
+            extension: Some("py".into()),
+            file_path_exact: None,
+        };
+        service
+            .delete_code_records(Parameters(params))
+            .await
+            .unwrap();
+
+        let captured = store.last_filter.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            captured,
+            "project = 'rust-dashcore' AND file_path LIKE '%.py'"
+        );
     }
 
     #[test]
