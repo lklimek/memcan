@@ -6,11 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project use
 
 ## [Unreleased]
 
+### Fixed
+
+- **MCP `search` tool**: `metadata` field no longer duplicates the `data` key — `data` is available only at the top level of each result.
+- **MCP `search` tool**: Result `data` excerpts are capped at 500 characters; longer content is truncated with an ellipsis (`…`). Truncation is character-safe (no mid-codepoint cuts).
+- **Ingestion pipeline**: Fact truncation in `validate_facts` was byte-slicing (`f[..2000]`), which panics on multibyte UTF-8 input. Now uses character-safe iteration (`chars().take(2000)`).
+
 ### Changed
 
 - **MCP `search` tool**: `limit` parameter is now a **global cap** on total merged results across all collections (was per-collection). Results are merged by relevance score before the limit is applied.
-- **MCP `search` tool**: `metadata` field no longer duplicates the `data` key — `data` is available only at the top level of each result.
-- **MCP `search` tool**: Result `data` excerpts are capped at 500 characters; longer content is truncated with an ellipsis (`…`). Truncation is character-safe (no mid-codepoint cuts).
 
 ## [0.38.0] - 2026-03-17
 

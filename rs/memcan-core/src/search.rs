@@ -665,7 +665,7 @@ mod tests {
         assert!(meta.contains_key("user_id"), "user_id must be preserved");
     }
 
-    // T2: long data with multibyte chars is capped at MAX_DATA_LEN chars + ellipsis; no panic.
+    // T2: long data with multibyte chars is capped to exactly 501 chars (500 + ellipsis); no panic.
     #[test]
     fn test_to_unified_caps_long_data_multibyte() {
         // "ł日" = 2 chars, repeat 300 → 600 chars total (well above 500-char cap)
@@ -678,15 +678,71 @@ mod tests {
         }];
         let unified = to_unified("code", results);
         let char_count = unified[0].data.chars().count();
-        // 500 data chars + 1 ellipsis char = 501
-        assert!(
-            char_count <= 501,
-            "data should be capped, got {char_count} chars"
+        // exactly 500 data chars + 1 ellipsis char = 501
+        assert_eq!(
+            char_count, 501,
+            "data should be exactly 501 chars, got {char_count}"
         );
         assert!(
             unified[0].data.ends_with('…'),
             "truncated data should end with ellipsis"
         );
+    }
+
+    // Boundary: data of exactly 500 chars is returned unchanged (no ellipsis, no truncation).
+    #[test]
+    fn test_to_unified_data_exactly_at_cap_unchanged() {
+        let at_cap: String = "a".repeat(MAX_DATA_LEN);
+        assert_eq!(at_cap.chars().count(), 500);
+        let results = vec![SearchResult {
+            id: "boundary1".to_string(),
+            score: 0.5,
+            payload: serde_json::json!({ "data": at_cap }),
+        }];
+        let unified = to_unified("memories", results);
+        assert_eq!(
+            unified[0].data.chars().count(),
+            500,
+            "exactly-500-char data must not be truncated"
+        );
+        assert!(
+            !unified[0].data.ends_with('…'),
+            "no ellipsis at exactly the cap"
+        );
+    }
+
+    // Boundary: data of exactly 501 chars is truncated to 500 + ellipsis (guards > vs >=).
+    #[test]
+    fn test_to_unified_data_one_over_cap_truncated() {
+        let one_over: String = "b".repeat(MAX_DATA_LEN + 1);
+        assert_eq!(one_over.chars().count(), 501);
+        let results = vec![SearchResult {
+            id: "boundary2".to_string(),
+            score: 0.5,
+            payload: serde_json::json!({ "data": one_over }),
+        }];
+        let unified = to_unified("memories", results);
+        assert_eq!(
+            unified[0].data.chars().count(),
+            501,
+            "501-char input should yield 500 chars + ellipsis = 501"
+        );
+        assert!(unified[0].data.ends_with('…'), "must end with ellipsis");
+    }
+
+    // Missing key: payload with no "data" key yields empty string, no panic, metadata intact.
+    #[test]
+    fn test_to_unified_missing_data_key() {
+        let results = vec![SearchResult {
+            id: "nodatakey".to_string(),
+            score: 0.6,
+            payload: serde_json::json!({ "user_id": "alice", "project": "memcan" }),
+        }];
+        let unified = to_unified("memories", results);
+        assert_eq!(unified[0].data, "", "missing data key yields empty string");
+        let meta = unified[0].metadata.as_object().unwrap();
+        assert!(meta.contains_key("user_id"), "other keys preserved");
+        assert!(meta.contains_key("project"), "other keys preserved");
     }
 
     // T3: global top-N — total results across collections are capped to limit.
