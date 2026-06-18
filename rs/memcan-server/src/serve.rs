@@ -242,7 +242,7 @@ pub struct UnifiedSearchParams {
     pub collections: Option<Vec<String>>,
     pub project: Option<String>,
     pub user_id: Option<String>,
-    /// Per-collection result limit (default 5, max 100).
+    /// Total result limit across all collections (merged by relevance score). Default 5, max 100.
     pub limit: Option<u32>,
     /// Filter standards by type (security, coding, cve, guideline, accessibility).
     pub standard_type: Option<String>,
