@@ -9,7 +9,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project use
 ### Fixed
 
 - **MCP `search` tool**: `metadata` field no longer duplicates the `data` key — `data` is available only at the top level of each result.
-- **MCP `search` tool**: Result `data` excerpts are capped at 500 characters; longer content is truncated with an ellipsis (`…`). Truncation is character-safe (no mid-codepoint cuts).
+- **MCP `search` tool**: Result `data` excerpts are capped at 500 content characters (a trailing `…` is appended when truncated). Truncation is character-safe (no mid-codepoint cuts).
 - **Ingestion pipeline**: Fact truncation in `validate_facts` was byte-slicing (`f[..2000]`), which panics on multibyte UTF-8 input. Now uses character-safe iteration (`chars().take(2000)`).
 
 ### Changed

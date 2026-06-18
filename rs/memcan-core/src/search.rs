@@ -14,7 +14,7 @@ use crate::traits::{EmbeddingProvider, SearchResult, VectorStore};
 
 const DEFAULT_LIMIT: u32 = 5;
 const MAX_LIMIT: u32 = 100;
-/// Maximum characters returned in `data`; content beyond this is replaced with an ellipsis.
+/// Maximum content characters in returned `data`; longer content is truncated with a trailing `…`.
 const MAX_DATA_LEN: usize = 500;
 
 const ALL_COLLECTIONS: &[&str] = &["memories", "standards", "code", "todos"];
