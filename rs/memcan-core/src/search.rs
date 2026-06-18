@@ -119,11 +119,14 @@ fn to_unified(collection: &str, results: Vec<SearchResult>) -> Vec<UnifiedSearch
                 .unwrap_or("")
                 .to_string();
             // Char-safe truncation: multilingual content must not be byte-sliced.
-            let data = if raw.chars().count() > MAX_DATA_LEN {
-                let truncated: String = raw.chars().take(MAX_DATA_LEN).collect();
-                format!("{truncated}…")
-            } else {
-                raw
+            // Single pass: char_indices().nth(MAX_DATA_LEN) locates the cut point without counting all chars first.
+            let data = match raw.char_indices().nth(MAX_DATA_LEN) {
+                Some((idx, _)) => {
+                    let mut s = raw[..idx].to_string();
+                    s.push('…');
+                    s
+                }
+                None => raw,
             };
             // Strip the "data" key from metadata to avoid duplicating it alongside the top-level field.
             let mut metadata = r.payload;
