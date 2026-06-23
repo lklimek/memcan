@@ -25,6 +25,7 @@ pub mod lancedb_store;
 pub mod llm;
 #[cfg(feature = "ollama-rs-llm")]
 pub mod llm_ollama_rs;
+pub mod manifest_guard;
 pub mod ollama;
 pub mod pipeline;
 pub mod prompts;

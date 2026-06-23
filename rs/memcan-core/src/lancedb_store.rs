@@ -63,9 +63,14 @@ impl std::fmt::Debug for LanceDbStore {
 
 impl LanceDbStore {
     /// Open (or create) a LanceDB database at the given path.
+    ///
+    /// Before connecting, runs [`crate::manifest_guard::guard_lancedb_path`] to
+    /// quarantine any zero-byte/truncated latest manifests left by an interrupted
+    /// write, so the store opens the last good version instead of crash-looping.
     pub async fn open(path: &str) -> Result<Self> {
         std::fs::create_dir_all(path)
             .with_context(|| format!("cannot create LanceDB directory: {path}"))?;
+        crate::manifest_guard::guard_lancedb_path(std::path::Path::new(path));
         let conn = connect(path)
             .execute()
             .await
@@ -682,6 +687,100 @@ mod tests {
             .and_then(|c| c.as_any().downcast_ref::<StringArray>())
             .expect("priority column");
         assert_eq!(priority_col.value(0), "high");
+    }
+
+    /// Build a single-row batch matching the minimal `(id, vector, payload)` schema.
+    fn single_row_batch(schema: &Arc<Schema>, id: &str) -> RecordBatch {
+        let ids = StringArray::from(vec![id]);
+        let values = Float32Array::from(vec![1.0f32, 2.0]);
+        let item = Arc::new(Field::new("item", DataType::Float32, true));
+        let vector = FixedSizeListArray::new(item, 2, Arc::new(values), None);
+        let payload = LargeStringArray::from(vec!["{}"]);
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(ids), Arc::new(vector), Arc::new(payload)],
+        )
+        .expect("build row batch")
+    }
+
+    /// Truncate the newest manifest (lexically smallest V2 filename) to 0 bytes,
+    /// simulating an interrupted write. Returns the affected path.
+    fn truncate_newest_manifest(versions_dir: &std::path::Path) -> std::path::PathBuf {
+        let mut manifests: Vec<std::path::PathBuf> = std::fs::read_dir(versions_dir)
+            .expect("read _versions")
+            .map(|e| e.expect("dir entry").path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("manifest"))
+            .collect();
+        manifests.sort();
+        let newest = manifests.first().expect("at least one manifest").clone();
+        std::fs::File::create(&newest).expect("truncate manifest");
+        newest
+    }
+
+    #[tokio::test]
+    async fn test_open_recovers_from_zero_byte_latest_manifest() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().to_str().expect("tempdir path");
+
+        // Build a table with three data commits (v2..v4) over an empty v1.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 2),
+                false,
+            ),
+            Field::new("payload", DataType::LargeUtf8, false),
+        ]));
+        let conn = connect(path).execute().await.expect("connect");
+        let empty = RecordBatchIterator::new(vec![], schema.clone());
+        let tbl = conn
+            .create_table("recover", Box::new(empty))
+            .execute()
+            .await
+            .expect("create table");
+        for id in ["r1", "r2", "r3"] {
+            let batch = single_row_batch(&schema, id);
+            let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+            tbl.add(Box::new(iter)).execute().await.expect("add row");
+        }
+        drop(tbl);
+        drop(conn);
+
+        // Latest version holds all three rows.
+        let store = LanceDbStore::open(path).await.expect("open clean");
+        assert_eq!(store.count("recover", None).await.expect("count"), 3);
+        drop(store);
+
+        // Simulate the crash: zero out the newest manifest.
+        let versions = tmp.path().join("recover.lance").join("_versions");
+        truncate_newest_manifest(&versions);
+
+        // Without the guard, a raw open hits the empty manifest and fails.
+        let raw = connect(path).execute().await.expect("connect raw");
+        assert!(
+            raw.open_table("recover").execute().await.is_err(),
+            "raw open should fail on a zero-byte latest manifest"
+        );
+        drop(raw);
+
+        // With the guard (run inside open), the store recovers the prior version.
+        let store = LanceDbStore::open(path).await.expect("open recovers");
+        assert_eq!(
+            store
+                .count("recover", None)
+                .await
+                .expect("count after recover"),
+            2,
+            "recovered to the version before the corrupt commit"
+        );
+
+        // The corrupt manifest was quarantined, not deleted.
+        let corrupt_dir = tmp.path().join("recover.lance").join("_corrupt_manifests");
+        let quarantined: Vec<_> = std::fs::read_dir(&corrupt_dir)
+            .expect("quarantine dir exists")
+            .collect();
+        assert_eq!(quarantined.len(), 1, "one manifest quarantined");
     }
 
     #[tokio::test]
