@@ -10,6 +10,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project fol
 
 - **MCP `search` tool**: `metadata` field no longer duplicates the `data` key — `data` is available only at the top level of each result.
 - **MCP `search` tool**: Result `data` excerpts are capped at 500 content characters (a trailing `…` is appended when truncated). Truncation is character-safe (no mid-codepoint cuts).
+- **MCP `search` tool**: Free-text metadata fields that may carry large LLM-generated content (e.g. `description` on code results) are now subject to the same 500-character cap, keeping the compact-response guarantee consistent across the full payload.
 - **Ingestion pipeline**: Fact truncation in `validate_facts` was byte-slicing (`f[..2000]`), which panics on multibyte UTF-8 input. Now uses character-safe iteration (`chars().take(2000)`).
 - **Security**: Bumped transitive `rustls-webpki` 0.103.10 → 0.103.13 to clear three advisories: RUSTSEC-2026-0098 (URI name constraints), RUSTSEC-2026-0099 (wildcard name constraints), RUSTSEC-2026-0104 (reachable CRL-parsing panic).
 - **`ollama_rs` API**: Replaced deprecated `Ollama::new()` with `Ollama::builder().host().port().build()` (deprecated since ollama-rs 0.3.5).

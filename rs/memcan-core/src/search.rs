@@ -6,9 +6,12 @@
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+use std::borrow::Cow;
+
 use crate::error::Result;
 use crate::pipeline::{CODE_TABLE, MEMORIES_TABLE, STANDARDS_TABLE};
 use crate::query::{resolve_user_id, sanitize_eq, sanitize_like};
+use crate::text::truncate_with;
 use crate::todo::TODOS_TABLE;
 use crate::traits::{EmbeddingProvider, SearchResult, VectorStore};
 
@@ -118,20 +121,31 @@ fn to_unified(collection: &str, results: Vec<SearchResult>) -> Vec<UnifiedSearch
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            // Char-safe truncation: multilingual content must not be byte-sliced.
-            // Single pass: char_indices().nth(MAX_DATA_LEN) locates the cut point without counting all chars first.
-            let data = match raw.char_indices().nth(MAX_DATA_LEN) {
-                Some((idx, _)) => {
-                    let mut s = raw[..idx].to_string();
-                    s.push('…');
-                    s
-                }
-                None => raw,
+            // Char-safe, single-pass truncation via shared helper.
+            // On the no-truncation path we reclaim ownership of `raw` without
+            // an extra allocation; on the truncation path we take the new String.
+            let data = match truncate_with(&raw, MAX_DATA_LEN, "…") {
+                Cow::Borrowed(_) => raw, // fits — reuse the already-owned String
+                Cow::Owned(s) => s,      // truncated — take the new allocation
             };
-            // Strip the "data" key from metadata to avoid duplicating it alongside the top-level field.
+            // Strip the "data" key from metadata to avoid duplicating it alongside
+            // the top-level field.  Also cap other known free-text fields so that
+            // the "compact response" guarantee applies to the full payload, not just
+            // the primary `data` value.
             let mut metadata = r.payload;
             if let Some(obj) = metadata.as_object_mut() {
                 obj.remove("data");
+                // Cap `description` (present on code results) at the same limit.
+                let desc_capped = obj
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| match truncate_with(s, MAX_DATA_LEN, "…") {
+                        Cow::Owned(t) => Some(t),
+                        Cow::Borrowed(_) => None, // fits — no change needed
+                    });
+                if let Some(capped) = desc_capped {
+                    obj.insert("description".into(), serde_json::Value::String(capped));
+                }
             }
             UnifiedSearchResult {
                 collection: collection.to_string(),
@@ -818,6 +832,56 @@ mod tests {
     }
 
     // T5: only "data" is stripped from metadata; all other keys survive.
+    #[test]
+    fn test_to_unified_caps_long_description_in_metadata() {
+        // A long LLM-generated description on a code result must be capped at MAX_DATA_LEN.
+        let long_desc: String = "d".repeat(MAX_DATA_LEN + 50);
+        let results = vec![SearchResult {
+            id: "code1".to_string(),
+            score: 0.8,
+            payload: serde_json::json!({
+                "data": "fn main() {}",
+                "description": long_desc,
+                "project": "memcan",
+            }),
+        }];
+        let unified = to_unified("code", results);
+        let meta = unified[0].metadata.as_object().unwrap();
+        let desc_str = meta.get("description").and_then(|v| v.as_str()).unwrap();
+        let char_count = desc_str.chars().count();
+        assert_eq!(
+            char_count,
+            MAX_DATA_LEN + 1, // 500 chars + 1 ellipsis char
+            "description must be capped to {} chars + ellipsis, got {char_count}",
+            MAX_DATA_LEN
+        );
+        assert!(
+            desc_str.ends_with('…'),
+            "truncated description must end with '…'"
+        );
+    }
+
+    #[test]
+    fn test_to_unified_short_description_unchanged() {
+        let short_desc = "Short description that fits.";
+        let results = vec![SearchResult {
+            id: "code2".to_string(),
+            score: 0.7,
+            payload: serde_json::json!({
+                "data": "fn helper() {}",
+                "description": short_desc,
+                "project": "memcan",
+            }),
+        }];
+        let unified = to_unified("code", results);
+        let meta = unified[0].metadata.as_object().unwrap();
+        let desc_str = meta.get("description").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(
+            desc_str, short_desc,
+            "short description must be preserved unchanged"
+        );
+    }
+
     #[test]
     fn test_to_unified_preserves_other_metadata_keys() {
         let results = vec![SearchResult {
