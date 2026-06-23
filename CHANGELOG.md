@@ -11,10 +11,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project use
 - **MCP `search` tool**: `metadata` field no longer duplicates the `data` key — `data` is available only at the top level of each result.
 - **MCP `search` tool**: Result `data` excerpts are capped at 500 content characters (a trailing `…` is appended when truncated). Truncation is character-safe (no mid-codepoint cuts).
 - **Ingestion pipeline**: Fact truncation in `validate_facts` was byte-slicing (`f[..2000]`), which panics on multibyte UTF-8 input. Now uses character-safe iteration (`chars().take(2000)`).
+- **Security**: Bumped transitive `rustls-webpki` 0.103.10 → 0.103.13 to clear three advisories: RUSTSEC-2026-0098 (URI name constraints), RUSTSEC-2026-0099 (wildcard name constraints), RUSTSEC-2026-0104 (reachable CRL-parsing panic).
+- **`ollama_rs` API**: Replaced deprecated `Ollama::new()` with `Ollama::builder().host().port().build()` (deprecated since ollama-rs 0.3.5).
 
 ### Changed
 
 - **MCP `search` tool**: `limit` parameter is now a **global cap** on total merged results across all collections (was per-collection). Results are merged by relevance score before the limit is applied.
+- **Dependencies**: Refreshed all workspace dependencies via `cargo update`. Notable updates: `ollama-rs` 0.3.3 → 0.3.5, `zerocopy` 0.8.47 → 0.8.52, `zeroize` 1.8.2 → 1.9.0, `tower-http` 0.6.x → 0.6.11.
+- **`audit.toml`**: Removed stale `number_prefix` ignore entry (dep no longer in tree); added `proc-macro-error2` RUSTSEC-2026-0173 (unmaintained, transitive via lance → jsonb → jiff → defmt-macros).
 
 ## [0.38.0] - 2026-03-17
 
