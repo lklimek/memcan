@@ -135,7 +135,7 @@ fn guard_table_versions(table_dir: &Path) -> io::Result<Vec<PathBuf>> {
             break;
         }
         // LanceDB opens the highest version; evaluate that one.
-        entries.sort_by(|a, b| b.version.cmp(&a.version));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.version));
         let latest = &entries[0];
 
         if manifest_is_valid(latest) {
