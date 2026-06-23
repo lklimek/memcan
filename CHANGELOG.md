@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-Format follows [Keep a Changelog](https://keepachangelog.com/). This project uses [Semantic Versioning](https://semver.org/).
+Format follows [Keep a Changelog](https://keepachangelog.com/). This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
