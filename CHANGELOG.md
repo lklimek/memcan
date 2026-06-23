@@ -28,6 +28,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project use
 ### Security
 
 - Bump `rustls-webpki` to 0.103.13 — clears RUSTSEC-2026-0098, RUSTSEC-2026-0099, RUSTSEC-2026-0104 (#20)
+- Bump `quinn-proto` to 0.11.15 — clears RUSTSEC-2026-0185 (high-severity remote memory exhaustion from unbounded out-of-order QUIC stream reassembly; transitive via `reqwest`) (#22)
 
 ## [0.38.0] - 2026-03-17
 
