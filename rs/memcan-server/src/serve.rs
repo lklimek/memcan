@@ -2048,11 +2048,22 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
 
     info!("Tables ensured: {MEMORIES_TABLE}, {STANDARDS_TABLE}, {CODE_TABLE}, {TODOS_TABLE}");
 
-    info!("Pruning old version backlog on startup");
-    for table_name in &[MEMORIES_TABLE, STANDARDS_TABLE, CODE_TABLE, TODOS_TABLE] {
-        if let Err(e) = ctx.store.compact_table(table_name).await {
-            warn!(table = table_name, "startup prune failed: {e}");
+    if ctx.settings.compact_on_startup {
+        info!("Running startup compaction (compact fragments + prune old versions)");
+        for table_name in &[MEMORIES_TABLE, STANDARDS_TABLE, CODE_TABLE, TODOS_TABLE] {
+            match ctx.store.compact_table(table_name).await {
+                Ok(outcome) => info!(
+                    table = table_name,
+                    fragments_before = outcome.fragments_before,
+                    fragments_after = outcome.fragments_after,
+                    "startup compaction complete"
+                ),
+                // Non-fatal: a compaction failure must not block the server boot.
+                Err(e) => warn!(table = table_name, "startup compaction failed: {e}"),
+            }
         }
+    } else {
+        info!("Startup compaction disabled (COMPACT_ON_STARTUP=false)");
     }
 
     let listen_addr = args
@@ -2270,6 +2281,8 @@ mod tests {
                 ollama_host: None,
                 ollama_api_key: None,
                 url: "http://localhost:8191".into(),
+                compact_on_startup: false,
+                compact_fragment_threshold: 0,
             },
             llm_model: "test".into(),
             queue_status: Arc::new(StdMutex::new(LruCache::new(
