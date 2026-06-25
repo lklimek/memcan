@@ -49,6 +49,7 @@ Reusable library. All domain logic lives here. Must not depend on transport, CLI
 | `indexing::standards` | Markdown chunking, LLM metadata extraction |
 | `schema` | Memcan-specific `TableSchema` implementation with filterable columns |
 | `typed_table` | Strongly-typed LanceDB table handle (`TypedTable<S>`) |
+| `manifest_guard` | Self-heal corrupt/empty LanceDB manifests on open (quarantine to `_corrupt_manifests/`) |
 | `config` | `Settings` loading from env/files |
 | `init` | `MemcanContext` bootstrap (wires all components) |
 | `prompts` | LLM prompt templates |
@@ -208,6 +209,8 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 | `LANCEDB_PATH` | `~/.local/share/memcan/lancedb` | LanceDB storage directory |
 | `DEFAULT_USER_ID` | `global` | Default memory scope |
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction |
+| `COMPACT_ON_STARTUP` | `true` | Run full table compaction (`OptimizeAction::All`) on boot before serving; over-fragmented tables only (tables ≤ `COMPACT_FRAGMENT_THRESHOLD` fragments are skipped). Set `false` to avoid boot latency on very large databases. |
+| `COMPACT_FRAGMENT_THRESHOLD` | `64` | Auto-compact a table after a write once it reaches this many data fragments; also the startup-compaction skip threshold. `0` disables auto-compaction. |
 | `LLM_MODEL` | `qwen3.5:9b` | LLM model name (`ollama::` prefix accepted for backward compat) |
 | `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings (dimensions derived automatically) |
 | `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`). Passed to genai client explicitly. |

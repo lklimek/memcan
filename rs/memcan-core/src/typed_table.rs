@@ -6,7 +6,6 @@
 //! [`LanceDbStore::typed_table()`](crate::lancedb_store::LanceDbStore::typed_table).
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 use arrow_array::RecordBatch;
 use futures::TryStreamExt;
@@ -14,7 +13,7 @@ use lancedb::query::{ExecutableQuery, QueryBase, Select};
 use lancedb::table::OptimizeAction;
 
 use crate::error::VectorStoreError;
-use crate::lancedb_store::LanceDbStore;
+use crate::lancedb_store::{CompactionGuardSet, LanceDbStore};
 use crate::traits::{SearchResult, TableSchema, VectorPoint};
 
 type Result<T> = std::result::Result<T, VectorStoreError>;
@@ -30,8 +29,9 @@ pub struct TypedTable<S: TableSchema> {
     dims: usize,
     /// Auto-compact once the table reaches this many data fragments (0 = off).
     fragment_threshold: usize,
-    /// Single-flight compaction guard, shared across clones of this handle.
-    compacting: Arc<AtomicBool>,
+    /// Per-table single-flight compaction guard, shared with the owning store
+    /// and every other compaction entry point.
+    compacting: CompactionGuardSet,
 }
 
 impl<S: TableSchema> TypedTable<S> {
@@ -42,6 +42,7 @@ impl<S: TableSchema> TypedTable<S> {
         schema: S,
         dims: usize,
         fragment_threshold: usize,
+        compacting: CompactionGuardSet,
     ) -> Self {
         Self {
             name,
@@ -49,7 +50,7 @@ impl<S: TableSchema> TypedTable<S> {
             schema,
             dims,
             fragment_threshold,
-            compacting: Arc::new(AtomicBool::new(false)),
+            compacting,
         }
     }
 

@@ -2049,8 +2049,32 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
     info!("Tables ensured: {MEMORIES_TABLE}, {STANDARDS_TABLE}, {CODE_TABLE}, {TODOS_TABLE}");
 
     if ctx.settings.compact_on_startup {
+        let threshold = ctx.settings.compact_fragment_threshold;
         info!("Running startup compaction (compact fragments + prune old versions)");
         for table_name in &[MEMORIES_TABLE, STANDARDS_TABLE, CODE_TABLE, TODOS_TABLE] {
+            // Skip tables that aren't fragmented enough to be worth a full
+            // rewrite, so an already-compact DB doesn't pay OptimizeAction::All
+            // on every boot. On a count error, fall back to compacting.
+            let needs_compaction = match ctx.store.count_fragments(table_name).await {
+                Ok(fragments) if fragments <= threshold => {
+                    info!(
+                        table = table_name,
+                        fragments, threshold, "startup compaction skipped (already compact)"
+                    );
+                    false
+                }
+                Ok(_) => true,
+                Err(e) => {
+                    warn!(
+                        table = table_name,
+                        "startup fragment count failed, compacting anyway: {e}"
+                    );
+                    true
+                }
+            };
+            if !needs_compaction {
+                continue;
+            }
             match ctx.store.compact_table(table_name).await {
                 Ok(outcome) => info!(
                     table = table_name,

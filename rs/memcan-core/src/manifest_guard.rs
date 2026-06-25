@@ -32,6 +32,12 @@ const MANIFEST_SUFFIX: &str = ".manifest";
 const V2_STEM_LEN: usize = 20;
 /// Directory suffix LanceDB uses for a table's data directory.
 const LANCE_DIR_SUFFIX: &str = ".lance";
+/// Maximum manifests to quarantine for one table in a single preflight pass.
+/// A real interrupted commit leaves one or two zero-byte manifests; needing to
+/// quarantine more than this signals a systematic problem (e.g. a changed
+/// manifest format) where blindly cascading would silently roll the table back
+/// many versions — so the guard stops and defers to manual recovery.
+const MAX_CONSECUTIVE_QUARANTINE: usize = 3;
 
 /// Magic written as the final 4 bytes of every complete Lance manifest
 /// (`lance_table::format::MAGIC`). A manifest missing this footer was never
@@ -149,6 +155,18 @@ fn guard_table_versions(table_dir: &Path) -> io::Result<Vec<PathBuf>> {
                 bytes = latest.len,
                 "manifest preflight: only remaining manifest is corrupt; cannot auto-recover. \
                  Data files are intact — manual recovery required"
+            );
+            break;
+        }
+
+        if quarantined.len() >= MAX_CONSECUTIVE_QUARANTINE {
+            error!(
+                table = %table_dir.display(),
+                quarantined = quarantined.len(),
+                manifest = %latest.path.display(),
+                "manifest preflight: too many consecutive corrupt manifests; stopping before a \
+                 deep rollback. Likely a systematic problem — remaining manifests left in place \
+                 for manual recovery"
             );
             break;
         }
@@ -453,6 +471,33 @@ mod tests {
         let remaining = names_in(&versions);
         assert_eq!(remaining.len(), 1, "one manifest always left in place");
         assert_eq!(remaining, vec![v2_name(1)], "oldest manifest retained");
+    }
+
+    #[test]
+    fn caps_consecutive_quarantines_on_systematic_corruption() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let table = tmp.path().join("memories.lance");
+        let versions = setup_versions(&table);
+
+        // Far more corrupt manifests than a single interrupted commit could
+        // leave: this looks systematic, so the guard must stop rather than
+        // cascade the table all the way back to its oldest version.
+        let total = MAX_CONSECUTIVE_QUARANTINE + 3;
+        for v in 1..=total as u64 {
+            write_empty_manifest(&versions, v);
+        }
+
+        let moved = guard_table_versions(&table).expect("guard");
+        assert_eq!(
+            moved.len(),
+            MAX_CONSECUTIVE_QUARANTINE,
+            "quarantine is capped per preflight pass"
+        );
+        assert_eq!(
+            names_in(&versions).len(),
+            total - MAX_CONSECUTIVE_QUARANTINE,
+            "remaining manifests left in place for manual recovery"
+        );
     }
 
     #[test]
