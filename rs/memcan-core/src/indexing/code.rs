@@ -31,17 +31,19 @@ const CHUNK_LINES: usize = 100;
 pub(crate) const BATCH_SIZE: usize = 20;
 const MAX_WALK_DEPTH: usize = 50;
 
+// Keep in sync with SKIP_DIRS in rs/memcan/src/walk.rs.
 const SKIP_DIRS: &[&str] = &[
+    ".claude",
     ".git",
-    "node_modules",
-    "target",
+    ".next",
+    ".tox",
     ".venv",
     "__pycache__",
-    "dist",
     "build",
-    ".next",
+    "dist",
+    "node_modules",
+    "target",
     "vendor",
-    ".tox",
 ];
 
 /// Parameters for indexing a code project.
@@ -72,6 +74,8 @@ struct LangPatterns {
     patterns: Vec<(&'static str, Regex)>,
 }
 
+// Keep the lang->extension mapping in sync with `extensions_for_stack` in
+// rs/memcan/src/walk.rs.
 fn lang_extensions() -> &'static HashMap<&'static str, &'static [&'static str]> {
     static INSTANCE: OnceLock<HashMap<&str, &[&str]>> = OnceLock::new();
     INSTANCE.get_or_init(|| {
@@ -103,7 +107,7 @@ fn all_extensions() -> &'static HashSet<&'static str> {
     })
 }
 
-fn should_skip(rel_path: &Path) -> bool {
+pub(crate) fn should_skip(rel_path: &Path) -> bool {
     rel_path
         .components()
         .any(|c| SKIP_DIRS.contains(&c.as_os_str().to_string_lossy().as_ref()))
@@ -373,7 +377,7 @@ fn collect_files(project_dir: &Path) -> Vec<PathBuf> {
             } else if path.is_file()
                 && let Some(ext) = path.extension()
             {
-                let ext_str = format!(".{}", ext.to_string_lossy());
+                let ext_str = format!(".{}", ext.to_string_lossy().to_ascii_lowercase());
                 if valid_exts.contains(ext_str.as_str()) {
                     files.push(path);
                 }
@@ -532,7 +536,7 @@ pub async fn index_code(
 
         let lang = file_path
             .extension()
-            .and_then(|e| ext_to_lang(&format!(".{}", e.to_string_lossy())));
+            .and_then(|e| ext_to_lang(&format!(".{}", e.to_string_lossy().to_ascii_lowercase())));
 
         if file_path.is_symlink() {
             warn!(path = %rel_path, "Skipping symlink");
@@ -737,6 +741,9 @@ mod tests {
         assert!(should_skip(Path::new("node_modules/foo.js")));
         assert!(should_skip(Path::new("src/.git/config")));
         assert!(should_skip(Path::new("target/debug/build")));
+        assert!(should_skip(Path::new(
+            ".claude/worktrees/agent-abc/stray.rs"
+        )));
         assert!(!should_skip(Path::new("src/main.rs")));
         assert!(!should_skip(Path::new("lib/utils.py")));
     }

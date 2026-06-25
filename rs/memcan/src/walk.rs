@@ -6,25 +6,64 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+// Keep in sync with SKIP_DIRS in rs/memcan-core/src/indexing/code.rs.
 const SKIP_DIRS: &[&str] = &[
+    ".claude",
     ".git",
-    "node_modules",
-    "target",
+    ".next",
+    ".tox",
     ".venv",
     "__pycache__",
-    "dist",
     "build",
-    ".next",
+    "dist",
+    "node_modules",
+    "target",
     "vendor",
-    ".tox",
 ];
 
 const ALLOWED_EXTENSIONS: &[&str] = &["rs", "py", "go", "ts", "tsx"];
 
-pub struct WalkOptions {
-    pub max_file_size: u64,
+/// The closed set of recognized `--tech-stack` values (canonical lowercase).
+pub const SUPPORTED_TECH_STACKS: &[&str] = &["rust", "python", "go", "typescript"];
+
+/// Canonicalize a user-supplied tech-stack name to its lowercase form.
+///
+/// Matching is case-insensitive (`Rust` -> `rust`). Returns `None` for an
+/// unrecognized stack so callers can reject it loudly. The canonical name is
+/// what gets stored on each record, so server-side exact-match search finds it.
+pub fn canonical_tech_stack(stack: &str) -> Option<&'static str> {
+    SUPPORTED_TECH_STACKS
+        .iter()
+        .copied()
+        .find(|s| *s == stack.to_ascii_lowercase())
 }
 
+/// Maps an explicit tech stack to the file extensions it permits.
+///
+/// Matching is case-insensitive (`Rust` == `rust`). Returns `None` for an
+/// unrecognized stack so the caller can reject it loudly rather than silently
+/// indexing every language.
+///
+/// Keep the stack->extension mapping in sync with `lang_extensions()` in
+/// rs/memcan-core/src/indexing/code.rs.
+fn extensions_for_stack(stack: &str) -> Option<&'static [&'static str]> {
+    match canonical_tech_stack(stack)? {
+        "rust" => Some(&["rs"]),
+        "python" => Some(&["py"]),
+        "go" => Some(&["go"]),
+        "typescript" => Some(&["ts", "tsx"]),
+        _ => None,
+    }
+}
+
+pub struct WalkOptions<'a> {
+    pub max_file_size: u64,
+    /// When `Some`, restrict walked files to the extensions of this tech stack.
+    /// When `None`, walk all supported extensions.
+    pub tech_stack: Option<&'a str>,
+}
+
+#[derive(Debug)]
 pub struct WalkedFile {
     pub relative_path: String,
     pub content: String,
@@ -34,6 +73,12 @@ pub fn walk_directory(root: &Path, opts: &WalkOptions) -> Result<Vec<WalkedFile>
     let root = root
         .canonicalize()
         .map_err(|e| format!("cannot resolve root directory: {e}"))?;
+    let allowed: &[&str] = match opts.tech_stack {
+        Some(stack) => extensions_for_stack(stack).ok_or_else(|| {
+            format!("unknown --tech-stack '{stack}'; supported: rust, python, go, typescript")
+        })?,
+        None => ALLOWED_EXTENSIONS,
+    };
     let mut files = Vec::new();
     let mut stack: Vec<PathBuf> = vec![root.clone()];
 
@@ -70,10 +115,10 @@ pub fn walk_directory(root: &Path, opts: &WalkOptions) -> Result<Vec<WalkedFile>
             }
 
             let ext = match path.extension().and_then(|e| e.to_str()) {
-                Some(e) => e,
+                Some(e) => e.to_ascii_lowercase(),
                 None => continue,
             };
-            if !ALLOWED_EXTENSIONS.contains(&ext) {
+            if !allowed.contains(&ext.as_str()) {
                 continue;
             }
 
@@ -108,13 +153,13 @@ pub fn walk_directory(root: &Path, opts: &WalkOptions) -> Result<Vec<WalkedFile>
 }
 
 pub fn detect_tech_stack(files: &[WalkedFile]) -> Result<String, String> {
-    let mut exts: HashSet<&str> = HashSet::new();
+    let mut exts: HashSet<String> = HashSet::new();
     for f in files {
         if let Some(ext) = Path::new(&f.relative_path)
             .extension()
             .and_then(|e| e.to_str())
         {
-            exts.insert(ext);
+            exts.insert(ext.to_ascii_lowercase());
         }
     }
 
@@ -190,6 +235,16 @@ mod tests {
         fs::create_dir_all(root.join("target")).unwrap();
         fs::write(root.join("target").join("debug.rs"), "// build output").unwrap();
 
+        fs::create_dir_all(root.join(".claude").join("worktrees").join("agent-abc")).unwrap();
+        fs::write(
+            root.join(".claude")
+                .join("worktrees")
+                .join("agent-abc")
+                .join("stray.rs"),
+            "fn stray() {}",
+        )
+        .unwrap();
+
         // Create unsupported extension
         fs::write(root.join("readme.md"), "# Readme").unwrap();
         fs::write(root.join("data.json"), "{}").unwrap();
@@ -202,6 +257,7 @@ mod tests {
         let dir = setup_test_dir();
         let opts = WalkOptions {
             max_file_size: 1_048_576,
+            tech_stack: None,
         };
         let files = walk_directory(dir.path(), &opts).unwrap();
         let paths: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
@@ -216,6 +272,7 @@ mod tests {
         let dir = setup_test_dir();
         let opts = WalkOptions {
             max_file_size: 1_048_576,
+            tech_stack: None,
         };
         let files = walk_directory(dir.path(), &opts).unwrap();
         let paths: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
@@ -227,6 +284,7 @@ mod tests {
                 "should skip node_modules: {p}"
             );
             assert!(!p.starts_with("target/"), "should skip target: {p}");
+            assert!(!p.starts_with(".claude/"), "should skip .claude: {p}");
         }
     }
 
@@ -235,6 +293,7 @@ mod tests {
         let dir = setup_test_dir();
         let opts = WalkOptions {
             max_file_size: 1_048_576,
+            tech_stack: None,
         };
         let files = walk_directory(dir.path(), &opts).unwrap();
         let paths: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
@@ -249,12 +308,71 @@ mod tests {
         fs::write(dir.path().join("big.rs"), "x".repeat(200)).unwrap();
         fs::write(dir.path().join("small.rs"), "fn f() {}").unwrap();
 
-        let opts = WalkOptions { max_file_size: 100 };
+        let opts = WalkOptions {
+            max_file_size: 100,
+            tech_stack: None,
+        };
         let files = walk_directory(dir.path(), &opts).unwrap();
         let paths: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
 
         assert!(!paths.contains(&"big.rs"));
         assert!(paths.contains(&"small.rs"));
+    }
+
+    #[test]
+    fn walk_restricts_extensions_to_explicit_tech_stack() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.rs"), "fn a() {}").unwrap();
+        fs::write(dir.path().join("b.ts"), "export {}").unwrap();
+
+        let opts = WalkOptions {
+            max_file_size: 1_048_576,
+            tech_stack: Some("rust"),
+        };
+        let files = walk_directory(dir.path(), &opts).unwrap();
+        let paths: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
+
+        assert!(paths.contains(&"a.rs"));
+        assert!(!paths.contains(&"b.ts"), "should skip .ts when stack=rust");
+    }
+
+    #[test]
+    fn walk_rejects_unknown_explicit_tech_stack() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.rs"), "fn a() {}").unwrap();
+
+        let opts = WalkOptions {
+            max_file_size: 1_048_576,
+            tech_stack: Some("rsut"),
+        };
+        let err = walk_directory(dir.path(), &opts).unwrap_err();
+        assert!(err.contains("unknown --tech-stack 'rsut'"), "got: {err}");
+    }
+
+    #[test]
+    fn walk_tech_stack_is_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.RS"), "fn a() {}").unwrap();
+        fs::write(dir.path().join("b.ts"), "export {}").unwrap();
+
+        let opts = WalkOptions {
+            max_file_size: 1_048_576,
+            tech_stack: Some("Rust"),
+        };
+        let files = walk_directory(dir.path(), &opts).unwrap();
+        let paths: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
+
+        assert!(paths.contains(&"a.RS"), "uppercase .RS should match rust");
+        assert!(!paths.contains(&"b.ts"));
+    }
+
+    #[test]
+    fn detect_tech_stack_is_case_insensitive() {
+        let files = vec![WalkedFile {
+            relative_path: "src/Main.RS".into(),
+            content: String::new(),
+        }];
+        assert_eq!(detect_tech_stack(&files).unwrap(), "rust");
     }
 
     #[test]
