@@ -115,36 +115,35 @@ fn to_unified(collection: &str, results: Vec<SearchResult>) -> Vec<UnifiedSearch
     results
         .into_iter()
         .map(|r| {
-            let raw = r
+            // Char-safe, single-pass truncation of the borrowed payload string:
+            // one allocation on the truncation path, one on the happy path.
+            let data = r
                 .payload
                 .get("data")
                 .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            // Char-safe, single-pass truncation via shared helper.
-            // On the no-truncation path we reclaim ownership of `raw` without
-            // an extra allocation; on the truncation path we take the new String.
-            let data = match truncate_with(&raw, MAX_DATA_LEN, "…") {
-                Cow::Borrowed(_) => raw, // fits — reuse the already-owned String
-                Cow::Owned(s) => s,      // truncated — take the new allocation
-            };
-            // Strip the "data" key from metadata to avoid duplicating it alongside
-            // the top-level field.  Also cap other known free-text fields so that
-            // the "compact response" guarantee applies to the full payload, not just
-            // the primary `data` value.
+                .map(|s| truncate_with(s, MAX_DATA_LEN, "…").into_owned())
+                .unwrap_or_default();
+            // Compact the metadata payload:
+            // - drop the duplicated `data` excerpt, but only when it is a string,
+            //   so a non-string `data` is preserved rather than silently lost;
+            // - cap every remaining free-text string value at the same limit so the
+            //   compact-response guarantee covers the whole payload, not just `data`.
             let mut metadata = r.payload;
             if let Some(obj) = metadata.as_object_mut() {
-                obj.remove("data");
-                // Cap `description` (present on code results) at the same limit.
-                let desc_capped = obj
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| match truncate_with(s, MAX_DATA_LEN, "…") {
-                        Cow::Owned(t) => Some(t),
-                        Cow::Borrowed(_) => None, // fits — no change needed
-                    });
-                if let Some(capped) = desc_capped {
-                    obj.insert("description".into(), serde_json::Value::String(capped));
+                if obj.get("data").and_then(|v| v.as_str()).is_some() {
+                    obj.remove("data");
+                }
+                for value in obj.values_mut() {
+                    let capped = match value.as_str() {
+                        Some(s) => match truncate_with(s, MAX_DATA_LEN, "…") {
+                            Cow::Owned(t) => Some(t),
+                            Cow::Borrowed(_) => None, // fits — no change needed
+                        },
+                        None => None,
+                    };
+                    if let Some(t) = capped {
+                        *value = serde_json::Value::String(t);
+                    }
                 }
             }
             UnifiedSearchResult {
@@ -900,5 +899,58 @@ mod tests {
         assert!(meta.contains_key("user_id"), "user_id must survive");
         assert!(meta.contains_key("project"), "project must survive");
         assert!(meta.contains_key("type"), "type must survive");
+    }
+
+    // Any oversized free-text metadata value — not just `description` — must be capped.
+    #[test]
+    fn test_to_unified_caps_arbitrary_long_metadata_string() {
+        let long_notes: String = "n".repeat(MAX_DATA_LEN + 100);
+        let results = vec![SearchResult {
+            id: "id6".to_string(),
+            score: 0.6,
+            payload: serde_json::json!({
+                "data": "fn main() {}",
+                "notes": long_notes,
+                "project": "memcan",
+            }),
+        }];
+        let unified = to_unified("code", results);
+        let meta = unified[0].metadata.as_object().unwrap();
+        let notes = meta.get("notes").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(
+            notes.chars().count(),
+            MAX_DATA_LEN + 1,
+            "arbitrary metadata string must be capped at MAX_DATA_LEN + ellipsis"
+        );
+        assert!(
+            notes.ends_with('…'),
+            "capped metadata string must end with '…'"
+        );
+        assert_eq!(meta.get("project").and_then(|v| v.as_str()), Some("memcan"));
+    }
+
+    // A non-string `data` value must be preserved in metadata (lossless), and the
+    // top-level `data` falls back to an empty string.
+    #[test]
+    fn test_to_unified_non_string_data_preserved_in_metadata() {
+        let results = vec![SearchResult {
+            id: "id7".to_string(),
+            score: 0.6,
+            payload: serde_json::json!({
+                "data": 42,
+                "project": "memcan",
+            }),
+        }];
+        let unified = to_unified("memories", results);
+        assert_eq!(
+            unified[0].data, "",
+            "non-string data yields an empty top-level excerpt"
+        );
+        let meta = unified[0].metadata.as_object().unwrap();
+        assert_eq!(
+            meta.get("data").and_then(|v| v.as_i64()),
+            Some(42),
+            "non-string data must be preserved in metadata, not dropped"
+        );
     }
 }

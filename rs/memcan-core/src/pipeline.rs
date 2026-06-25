@@ -4,6 +4,7 @@
 //! to callers via shared `PipelineProgress` state. All backend interactions go through trait
 //! objects, making the pipeline storage- and LLM-agnostic.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
@@ -268,18 +269,19 @@ fn validate_facts(facts: Vec<String>) -> Vec<String> {
 
     capped
         .iter()
-        .map(|f| {
-            let char_count = f.chars().count();
-            if char_count > MAX_FACT_LENGTH {
+        .map(|f| match truncate_with(f, MAX_FACT_LENGTH, "...") {
+            // Over-length detection short-circuits at MAX_FACT_LENGTH + 1 chars
+            // inside `truncate_with`; the full O(n) `chars().count()` only runs on
+            // the rare truncation path, for the diagnostic log.
+            Cow::Owned(truncated) => {
                 warn!(
-                    length = char_count,
+                    length = f.chars().count(),
                     max = MAX_FACT_LENGTH,
                     "truncating oversized fact"
                 );
-                truncate_with(f, MAX_FACT_LENGTH, "...").into_owned()
-            } else {
-                f.clone()
+                truncated
             }
+            Cow::Borrowed(_) => f.clone(),
         })
         .collect()
 }
