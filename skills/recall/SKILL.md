@@ -44,7 +44,7 @@ Search and retrieve knowledge from past sessions across all collections.
 
 | Tool | Params | Use |
 |------|--------|-----|
-| `search` | `query: str, project?: str, collections?: [str], limit?: int` | Search all collections in one query. |
+| `search` | `query: str, project?: str, collections?: [str], limit?: int` | Search all collections in one query. `limit` is a **global top-N** cap across collections (merged by relevance), not per-collection. |
 | `search_memories` | `query: str, project?: str, limit?: int` | Memories-only search. |
 | `search_standards` | `query: str, standard_id?: str, standard_type?: str, limit?: int` | Search indexed standards. |
 | `search_code` | `query: str, file_path?: str, tech_stack?: str, limit?: int` | Search indexed code. |
@@ -52,3 +52,7 @@ Search and retrieve knowledge from past sessions across all collections.
 | `count_memories` | `project?: str` | Count memories. |
 | `update_memory` | `memory_id: str, memory: str` | Fix a memory encountered during recall. |
 | `delete_memory` | `memory_id: str` | Remove obsolete memory. |
+
+## `search` Response Shape
+
+Each result exposes a top-level `data` excerpt capped at ~500 characters (trailing `…` when truncated); the duplicated `metadata.data` is no longer returned, and other free-text `metadata` strings are capped at the same limit. For full untruncated content, fetch by id via `get_memories`.

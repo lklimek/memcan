@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-Format follows [Keep a Changelog](https://keepachangelog.com/). This project uses [Semantic Versioning](https://semver.org/).
+Format follows [Keep a Changelog](https://keepachangelog.com/). This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
@@ -12,10 +12,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project use
 
 ### Changed
 
+- **MCP `search` tool**: `limit` parameter is now a **global cap** on total merged results across all collections (was per-collection). Results are merged by relevance score before the limit is applied.
+- **`ollama_rs` API**: Replaced the deprecated `Ollama::new()` constructor (deprecated since ollama-rs 0.3.5) with `Ollama::builder().host().port().build()` on the no-API-key path; the authenticated path still uses `Ollama::new_with_request_headers` to inject the Bearer header.
+- **Dependencies**: Refreshed all workspace dependencies via `cargo update`. Notable updates: `ollama-rs` 0.3.4 → 0.3.5, `zerocopy` 0.8.42 → 0.8.52, `zeroize` 1.8.2 → 1.9.0, `tower-http` 0.6.8 → 0.6.11.
+- **`audit.toml`**: Removed stale `number_prefix` ignore entry (dep no longer in tree); added `proc-macro-error2` RUSTSEC-2026-0173 (unmaintained, transitive via lance → jsonb → jiff → defmt-macros).
 - `memcan index-code` (thin CLI): an explicit `--tech-stack` now restricts walked extensions to that stack and fails with a nonzero exit on unrecognized values (previously a free-form label); names are matched case-insensitively and stored canonically lowercase. Omitting it preserves auto-detection. The `memcan-server index-code` admin path is unchanged — it indexes all supported languages and treats `--tech-stack` as a metadata label (#20)
 
 ### Fixed
 
+- **MCP `search` tool**: `metadata` field no longer duplicates the `data` key — `data` is available only at the top level of each result.
+- **MCP `search` tool**: Result `data` excerpts are capped at 500 content characters (a trailing `…` is appended when truncated). Truncation is character-safe (no mid-codepoint cuts).
+- **MCP `search` tool**: Every free-text string field in `metadata` (not just `description`) is now subject to the same 500-character cap, keeping the compact-response guarantee consistent across the full payload.
+- **Ingestion pipeline**: Fact truncation in `validate_facts` was byte-slicing (`f[..2000]`), which panics on multibyte UTF-8 input. Now uses the shared character-safe `truncate_with` helper (`char_indices()`-based, appends `...`).
+- **Docker**: Raised container file-descriptor limits (`nofile` soft 65536 / hard 262144) to prevent `EMFILE` errors during large LanceDB table scans.
 - `index-code`: exclude `.claude` worktree directories in the file walker (CLI and core) — prevents indexing stray worktree clones (#20)
 - `index-code`: pace batch submission under the server queue cap and retry on "server busy" instead of silently dropping rejected batches — prevents data loss on large repos (#20)
 - `index-code`: file extensions are matched case-insensitively (`Foo.RS` is indexed as Rust, not as an unknown-language fallback) (#20)
@@ -23,7 +32,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project use
 
 ### Security
 
-- Bump `rustls-webpki` to 0.103.13 — clears RUSTSEC-2026-0098, RUSTSEC-2026-0099, RUSTSEC-2026-0104 (#20)
+- Bump transitive `rustls-webpki` 0.103.9 → 0.103.13 to clear three advisories: RUSTSEC-2026-0098 (URI name constraints), RUSTSEC-2026-0099 (wildcard name constraints), RUSTSEC-2026-0104 (reachable CRL-parsing panic) (#20)
 
 ## [0.38.0] - 2026-03-17
 

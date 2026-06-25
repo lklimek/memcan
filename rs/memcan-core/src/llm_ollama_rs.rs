@@ -23,7 +23,8 @@ impl OllamaRsLlmProvider {
     ///
     /// Parses `OLLAMA_HOST` into (scheme+host, port). Strips the `ollama::`
     /// prefix from the configured model name. When `OLLAMA_API_KEY` is set,
-    /// injects a Bearer auth header via `Ollama::new_with_request_headers`.
+    /// injects a Bearer auth header via `Ollama::new_with_request_headers`;
+    /// otherwise uses the `Ollama::builder()` API.
     pub fn from_settings(settings: &Settings) -> Self {
         let raw_host = settings
             .ollama_host
@@ -53,11 +54,11 @@ impl OllamaRsLlmProvider {
                         error = %e,
                         "OLLAMA_API_KEY contains invalid characters, connecting without auth"
                     );
-                    Ollama::new(host.clone(), port)
+                    Ollama::builder().host(host.clone()).port(port).build()
                 }
             }
         } else {
-            Ollama::new(host, port)
+            Ollama::builder().host(host).port(port).build()
         };
 
         Self {

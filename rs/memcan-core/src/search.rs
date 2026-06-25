@@ -6,14 +6,19 @@
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+use std::borrow::Cow;
+
 use crate::error::Result;
 use crate::pipeline::{CODE_TABLE, MEMORIES_TABLE, STANDARDS_TABLE};
 use crate::query::{resolve_user_id, sanitize_eq, sanitize_like};
+use crate::text::truncate_with;
 use crate::todo::TODOS_TABLE;
 use crate::traits::{EmbeddingProvider, SearchResult, VectorStore};
 
 const DEFAULT_LIMIT: u32 = 5;
 const MAX_LIMIT: u32 = 100;
+/// Maximum content characters in returned `data`; longer content is truncated with a trailing `…`.
+const MAX_DATA_LEN: usize = 500;
 
 const ALL_COLLECTIONS: &[&str] = &["memories", "standards", "code", "todos"];
 
@@ -25,7 +30,7 @@ pub struct UnifiedSearchParams {
     pub collections: Option<Vec<String>>,
     pub project: Option<String>,
     pub user_id: Option<String>,
-    /// Per-collection result limit.
+    /// Total result limit across all collections (merged by relevance score). Default 5, max 100.
     pub limit: Option<u32>,
     // Standards filters
     pub standard_type: Option<String>,
@@ -110,18 +115,43 @@ fn to_unified(collection: &str, results: Vec<SearchResult>) -> Vec<UnifiedSearch
     results
         .into_iter()
         .map(|r| {
+            // Char-safe, single-pass truncation of the borrowed payload string:
+            // one allocation on the truncation path, one on the happy path.
             let data = r
                 .payload
                 .get("data")
                 .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+                .map(|s| truncate_with(s, MAX_DATA_LEN, "…").into_owned())
+                .unwrap_or_default();
+            // Compact the metadata payload:
+            // - drop the duplicated `data` excerpt, but only when it is a string,
+            //   so a non-string `data` is preserved rather than silently lost;
+            // - cap every remaining free-text string value at the same limit so the
+            //   compact-response guarantee covers the whole payload, not just `data`.
+            let mut metadata = r.payload;
+            if let Some(obj) = metadata.as_object_mut() {
+                if obj.get("data").and_then(|v| v.as_str()).is_some() {
+                    obj.remove("data");
+                }
+                for value in obj.values_mut() {
+                    let capped = match value.as_str() {
+                        Some(s) => match truncate_with(s, MAX_DATA_LEN, "…") {
+                            Cow::Owned(t) => Some(t),
+                            Cow::Borrowed(_) => None, // fits — no change needed
+                        },
+                        None => None,
+                    };
+                    if let Some(t) = capped {
+                        *value = serde_json::Value::String(t);
+                    }
+                }
+            }
             UnifiedSearchResult {
                 collection: collection.to_string(),
                 id: r.id,
                 score: r.score,
                 data,
-                metadata: r.payload,
+                metadata,
             }
         })
         .collect()
@@ -267,6 +297,8 @@ pub async fn unified_search(
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+    // Global cap: keep only the top-`limit` results across all collections.
+    all.truncate(limit);
     Ok(all)
 }
 
@@ -624,5 +656,301 @@ mod tests {
             file_path: None,
         };
         assert!(build_todos_filter(&params).is_none());
+    }
+
+    // T1: metadata must not contain the "data" key; top-level data must be populated.
+    #[test]
+    fn test_to_unified_metadata_no_data_key() {
+        let results = vec![SearchResult {
+            id: "id1".to_string(),
+            score: 0.8,
+            payload: serde_json::json!({
+                "data": "hello world",
+                "user_id": "global",
+                "project": "myproj"
+            }),
+        }];
+        let unified = to_unified("memories", results);
+        assert_eq!(unified.len(), 1);
+        assert_eq!(unified[0].data, "hello world");
+        let meta = unified[0].metadata.as_object().unwrap();
+        assert!(
+            !meta.contains_key("data"),
+            "metadata must not contain 'data' key"
+        );
+        assert!(meta.contains_key("user_id"), "user_id must be preserved");
+    }
+
+    // T2: long data with multibyte chars is capped to exactly 501 chars (500 + ellipsis); no panic.
+    #[test]
+    fn test_to_unified_caps_long_data_multibyte() {
+        // "ł日" = 2 chars, repeat 300 → 600 chars total (well above 500-char cap)
+        let long_data: String = "ł日".repeat(300);
+        assert_eq!(long_data.chars().count(), 600);
+        let results = vec![SearchResult {
+            id: "id2".to_string(),
+            score: 0.5,
+            payload: serde_json::json!({ "data": long_data }),
+        }];
+        let unified = to_unified("code", results);
+        let char_count = unified[0].data.chars().count();
+        // exactly 500 data chars + 1 ellipsis char = 501
+        assert_eq!(
+            char_count, 501,
+            "data should be exactly 501 chars, got {char_count}"
+        );
+        assert!(
+            unified[0].data.ends_with('…'),
+            "truncated data should end with ellipsis"
+        );
+    }
+
+    // Boundary: data of exactly 500 chars is returned unchanged (no ellipsis, no truncation).
+    #[test]
+    fn test_to_unified_data_exactly_at_cap_unchanged() {
+        let at_cap: String = "a".repeat(MAX_DATA_LEN);
+        assert_eq!(at_cap.chars().count(), 500);
+        let results = vec![SearchResult {
+            id: "boundary1".to_string(),
+            score: 0.5,
+            payload: serde_json::json!({ "data": at_cap }),
+        }];
+        let unified = to_unified("memories", results);
+        assert_eq!(
+            unified[0].data.chars().count(),
+            500,
+            "exactly-500-char data must not be truncated"
+        );
+        assert!(
+            !unified[0].data.ends_with('…'),
+            "no ellipsis at exactly the cap"
+        );
+    }
+
+    // Boundary: data of exactly 501 chars is truncated to 500 + ellipsis (guards > vs >=).
+    #[test]
+    fn test_to_unified_data_one_over_cap_truncated() {
+        let one_over: String = "b".repeat(MAX_DATA_LEN + 1);
+        assert_eq!(one_over.chars().count(), 501);
+        let results = vec![SearchResult {
+            id: "boundary2".to_string(),
+            score: 0.5,
+            payload: serde_json::json!({ "data": one_over }),
+        }];
+        let unified = to_unified("memories", results);
+        assert_eq!(
+            unified[0].data.chars().count(),
+            501,
+            "501-char input should yield 500 chars + ellipsis = 501"
+        );
+        assert!(unified[0].data.ends_with('…'), "must end with ellipsis");
+    }
+
+    // Missing key: payload with no "data" key yields empty string, no panic, metadata intact.
+    #[test]
+    fn test_to_unified_missing_data_key() {
+        let results = vec![SearchResult {
+            id: "nodatakey".to_string(),
+            score: 0.6,
+            payload: serde_json::json!({ "user_id": "alice", "project": "memcan" }),
+        }];
+        let unified = to_unified("memories", results);
+        assert_eq!(unified[0].data, "", "missing data key yields empty string");
+        let meta = unified[0].metadata.as_object().unwrap();
+        assert!(meta.contains_key("user_id"), "other keys preserved");
+        assert!(meta.contains_key("project"), "other keys preserved");
+    }
+
+    // T3: global top-N — total results across collections are capped to limit.
+    #[tokio::test]
+    async fn test_unified_search_global_top_n_limit() {
+        let store = MockStore::new();
+        store.add_results(
+            MEMORIES_TABLE,
+            vec![
+                make_result("m1", 0.9, "memory 1"),
+                make_result("m2", 0.7, "memory 2"),
+                make_result("m3", 0.5, "memory 3"),
+            ],
+        );
+        store.add_results(
+            CODE_TABLE,
+            vec![
+                make_result("c1", 0.85, "code 1"),
+                make_result("c2", 0.65, "code 2"),
+                make_result("c3", 0.45, "code 3"),
+            ],
+        );
+
+        let params = UnifiedSearchParams {
+            query: "test".to_string(),
+            collections: Some(vec!["memories".to_string(), "code".to_string()]),
+            project: None,
+            user_id: None,
+            limit: Some(3),
+            standard_type: None,
+            standard_id: None,
+            tech_stack: None,
+            file_path: None,
+        };
+
+        let results = unified_search(&params, &store, &MockEmbedder, "global")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            results.len(),
+            3,
+            "global cap: expected 3, got {}",
+            results.len()
+        );
+        // sorted by score desc
+        assert!(results[0].score >= results[1].score);
+        assert!(results[1].score >= results[2].score);
+        // top-3 by score: m1(0.9), c1(0.85), m2(0.7)
+        assert_eq!(results[0].score, 0.9);
+        assert_eq!(results[1].score, 0.85);
+        assert_eq!(results[2].score, 0.7);
+    }
+
+    // T4: data shorter than the cap is returned unchanged (no ellipsis appended).
+    #[test]
+    fn test_to_unified_short_data_unchanged() {
+        let short = "Hello ł日 world"; // multibyte, well under 500 chars
+        let results = vec![SearchResult {
+            id: "id4".to_string(),
+            score: 0.5,
+            payload: serde_json::json!({ "data": short }),
+        }];
+        let unified = to_unified("memories", results);
+        assert_eq!(
+            unified[0].data, short,
+            "short data should be returned unchanged"
+        );
+        assert!(!unified[0].data.ends_with('…'), "no ellipsis on short data");
+    }
+
+    // T5: only "data" is stripped from metadata; all other keys survive.
+    #[test]
+    fn test_to_unified_caps_long_description_in_metadata() {
+        // A long LLM-generated description on a code result must be capped at MAX_DATA_LEN.
+        let long_desc: String = "d".repeat(MAX_DATA_LEN + 50);
+        let results = vec![SearchResult {
+            id: "code1".to_string(),
+            score: 0.8,
+            payload: serde_json::json!({
+                "data": "fn main() {}",
+                "description": long_desc,
+                "project": "memcan",
+            }),
+        }];
+        let unified = to_unified("code", results);
+        let meta = unified[0].metadata.as_object().unwrap();
+        let desc_str = meta.get("description").and_then(|v| v.as_str()).unwrap();
+        let char_count = desc_str.chars().count();
+        assert_eq!(
+            char_count,
+            MAX_DATA_LEN + 1, // 500 chars + 1 ellipsis char
+            "description must be capped to {} chars + ellipsis, got {char_count}",
+            MAX_DATA_LEN
+        );
+        assert!(
+            desc_str.ends_with('…'),
+            "truncated description must end with '…'"
+        );
+    }
+
+    #[test]
+    fn test_to_unified_short_description_unchanged() {
+        let short_desc = "Short description that fits.";
+        let results = vec![SearchResult {
+            id: "code2".to_string(),
+            score: 0.7,
+            payload: serde_json::json!({
+                "data": "fn helper() {}",
+                "description": short_desc,
+                "project": "memcan",
+            }),
+        }];
+        let unified = to_unified("code", results);
+        let meta = unified[0].metadata.as_object().unwrap();
+        let desc_str = meta.get("description").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(
+            desc_str, short_desc,
+            "short description must be preserved unchanged"
+        );
+    }
+
+    #[test]
+    fn test_to_unified_preserves_other_metadata_keys() {
+        let results = vec![SearchResult {
+            id: "id5".to_string(),
+            score: 0.7,
+            payload: serde_json::json!({
+                "data": "some data",
+                "user_id": "alice",
+                "project": "memcan",
+                "type": "snippet",
+            }),
+        }];
+        let unified = to_unified("code", results);
+        let meta = unified[0].metadata.as_object().unwrap();
+        assert!(!meta.contains_key("data"), "data key must be stripped");
+        assert!(meta.contains_key("user_id"), "user_id must survive");
+        assert!(meta.contains_key("project"), "project must survive");
+        assert!(meta.contains_key("type"), "type must survive");
+    }
+
+    // Any oversized free-text metadata value — not just `description` — must be capped.
+    #[test]
+    fn test_to_unified_caps_arbitrary_long_metadata_string() {
+        let long_notes: String = "n".repeat(MAX_DATA_LEN + 100);
+        let results = vec![SearchResult {
+            id: "id6".to_string(),
+            score: 0.6,
+            payload: serde_json::json!({
+                "data": "fn main() {}",
+                "notes": long_notes,
+                "project": "memcan",
+            }),
+        }];
+        let unified = to_unified("code", results);
+        let meta = unified[0].metadata.as_object().unwrap();
+        let notes = meta.get("notes").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(
+            notes.chars().count(),
+            MAX_DATA_LEN + 1,
+            "arbitrary metadata string must be capped at MAX_DATA_LEN + ellipsis"
+        );
+        assert!(
+            notes.ends_with('…'),
+            "capped metadata string must end with '…'"
+        );
+        assert_eq!(meta.get("project").and_then(|v| v.as_str()), Some("memcan"));
+    }
+
+    // A non-string `data` value must be preserved in metadata (lossless), and the
+    // top-level `data` falls back to an empty string.
+    #[test]
+    fn test_to_unified_non_string_data_preserved_in_metadata() {
+        let results = vec![SearchResult {
+            id: "id7".to_string(),
+            score: 0.6,
+            payload: serde_json::json!({
+                "data": 42,
+                "project": "memcan",
+            }),
+        }];
+        let unified = to_unified("memories", results);
+        assert_eq!(
+            unified[0].data, "",
+            "non-string data yields an empty top-level excerpt"
+        );
+        let meta = unified[0].metadata.as_object().unwrap();
+        assert_eq!(
+            meta.get("data").and_then(|v| v.as_i64()),
+            Some(42),
+            "non-string data must be preserved in metadata, not dropped"
+        );
     }
 }
