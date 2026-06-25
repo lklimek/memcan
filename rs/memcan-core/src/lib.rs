@@ -32,6 +32,7 @@ pub mod prompts;
 pub mod query;
 pub mod schema;
 pub mod search;
+pub mod text;
 pub mod todo;
 pub mod traits;
 pub mod typed_table;

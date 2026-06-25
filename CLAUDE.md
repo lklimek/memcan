@@ -40,6 +40,7 @@ Reusable library. All domain logic lives here. Must not depend on transport, CLI
 | `pipeline` | Memory add pipeline (LLM fact extraction, dedup, store) |
 | `query` | User ID resolution, SQL sanitization helpers |
 | `search` | Unified cross-collection search (memories, standards, code, todos) |
+| `text` | Shared char-safe text helpers (`truncate_with`) |
 | `todo` | Per-project TODO list CRUD operations |
 | `health` | Dependency circuit breaker (Ollama, LanceDB, Embedding) |
 | `export` | Collection export to JSONL format (paginated scroll, no vectors) |
@@ -107,6 +108,7 @@ Server exposes these MCP tools (via HTTP at `/mcp`):
 | Tool | Description |
 |---|---|
 | `add_memory` | Store a memory (async, returns operation_id) |
+| `search` | Unified search across all collections (memories, standards, code, todos), merged by relevance score; `limit` is a global top-N cap |
 | `search_memories` | Semantic search across memories |
 | `get_memories` | List memories for a given scope |
 | `count_memories` | Count memories |

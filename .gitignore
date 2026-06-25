@@ -42,3 +42,4 @@ Thumbs.db
 report.json
 .claude/scheduled_tasks.lock
 settings.local.json
+docker-compose.override.yml

@@ -280,7 +280,7 @@ pub struct UnifiedSearchParams {
     pub collections: Option<Vec<String>>,
     pub project: Option<String>,
     pub user_id: Option<String>,
-    /// Per-collection result limit (default 5, max 100).
+    /// Total result limit across all collections (merged by relevance score). Default 5, max 100.
     pub limit: Option<u32>,
     /// Filter standards by type (security, coding, cve, guideline, accessibility).
     pub standard_type: Option<String>,
@@ -689,7 +689,6 @@ impl MemcanService {
             .map_err(|e| ErrorData::internal_error(format!("search failed: {e}"), None))?;
 
         info!(
-            query = %query,
             results = results.len(),
             top_score = results.first().map(|r| r.score).unwrap_or(0.0),
             "search completed"
@@ -1110,7 +1109,6 @@ impl MemcanService {
         };
 
         info!(
-            query = %core_params.query,
             results = results.len(),
             top_score = results.first().map(|r| r.score).unwrap_or(0.0),
             collections = ?core_params.collections,

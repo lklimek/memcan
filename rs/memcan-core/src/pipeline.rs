@@ -4,6 +4,7 @@
 //! to callers via shared `PipelineProgress` state. All backend interactions go through trait
 //! objects, making the pipeline storage- and LLM-agnostic.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
@@ -16,6 +17,7 @@ use uuid::Uuid;
 
 use crate::error::{Result, ResultExt};
 use crate::prompts::{FACT_EXTRACTION_PROMPT, MEMORY_UPDATE_PROMPT, render_prompt};
+use crate::text::truncate_with;
 use crate::traits::{
     EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, TableSchema, VectorPoint,
     VectorStore,
@@ -267,19 +269,19 @@ fn validate_facts(facts: Vec<String>) -> Vec<String> {
 
     capped
         .iter()
-        .map(|f| {
-            if f.len() > MAX_FACT_LENGTH {
+        .map(|f| match truncate_with(f, MAX_FACT_LENGTH, "...") {
+            // Over-length detection short-circuits at MAX_FACT_LENGTH + 1 chars
+            // inside `truncate_with`; the full O(n) `chars().count()` only runs on
+            // the rare truncation path, for the diagnostic log.
+            Cow::Owned(truncated) => {
                 warn!(
-                    length = f.len(),
+                    length = f.chars().count(),
                     max = MAX_FACT_LENGTH,
                     "truncating oversized fact"
                 );
-                let mut truncated = f[..MAX_FACT_LENGTH].to_string();
-                truncated.push_str("...");
                 truncated
-            } else {
-                f.clone()
             }
+            Cow::Borrowed(_) => f.clone(),
         })
         .collect()
 }
@@ -653,7 +655,7 @@ impl Pipeline {
                             "created_at": now,
                             "updated_at": serde_json::Value::Null,
                         });
-                        info!("ADD memory: {}", &data[..data.len().min(80)]);
+                        info!("ADD memory: {}", truncate_with(data, 80, ""));
                         if let Some(obj) = payload.as_object_mut() {
                             for (k, v) in &meta {
                                 obj.insert(k.clone(), v.clone());
@@ -697,7 +699,7 @@ impl Pipeline {
                             });
                             info!(
                                 "UPDATE memory {memory_id}: {}",
-                                &new_data[..new_data.len().min(80)]
+                                truncate_with(new_data, 80, "")
                             );
                             if let Some(obj) = payload.as_object_mut() {
                                 for (k, v) in &meta {
@@ -907,7 +909,24 @@ mod tests {
         let long_fact = "x".repeat(3000);
         let result = validate_facts(vec![long_fact]);
         assert_eq!(result.len(), 1);
-        assert!(result[0].len() <= MAX_FACT_LENGTH + 3); // +3 for "..."
+        // char count: MAX_FACT_LENGTH chars + 3 for "..."
+        assert_eq!(result[0].chars().count(), MAX_FACT_LENGTH + 3);
+        assert!(result[0].ends_with("..."));
+    }
+
+    #[test]
+    fn test_validate_facts_truncates_long_multibyte() {
+        // "ł日" = 2 chars; repeat enough to exceed MAX_FACT_LENGTH (2000 chars)
+        let long_multibyte = "ł日".repeat(1500); // 3000 chars
+        assert!(long_multibyte.chars().count() > MAX_FACT_LENGTH);
+        let result = validate_facts(vec![long_multibyte]);
+        assert_eq!(result.len(), 1);
+        // char-safe: no panic, correct char count
+        assert_eq!(
+            result[0].chars().count(),
+            MAX_FACT_LENGTH + 3,
+            "should be exactly MAX_FACT_LENGTH chars + '...'"
+        );
         assert!(result[0].ends_with("..."));
     }
 
@@ -923,6 +942,21 @@ mod tests {
         let facts = vec!["short fact".to_string()];
         let result = validate_facts(facts.clone());
         assert_eq!(result, facts);
+    }
+
+    #[test]
+    fn test_truncate_with_multibyte_no_panic() {
+        // "ł日" encodes to 4 bytes but is 2 chars — 50 repetitions = 100 chars, >80 bytes.
+        // truncate_with must not panic and must cap at char count, never byte-slice.
+        let s = "ł日".repeat(50); // 100 chars, 150 bytes
+        assert!(
+            s.len() > 80,
+            "input must exceed 80 bytes to exercise the guard"
+        );
+        let preview = truncate_with(&s, 80, "");
+        assert_eq!(preview.chars().count(), 80, "must cap at 80 chars");
+        // Roundtrip: the result must be valid UTF-8 (no panic on re-iteration).
+        let _ = preview.chars().count();
     }
 
     #[test]
