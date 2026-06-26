@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project fol
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-06-26
+
 ### Added
 
 - `delete_code_records` MCP tool — project-scoped delete over the code table, optionally narrowed by a validated `extension` or exact `file_path_exact` (no caller-supplied SQL reaches the predicate), returning the number of rows removed; the mandatory project scope prevents an unscoped wipe, and the tool is refused when the server runs without `MEMCAN_API_KEY` (#20)
