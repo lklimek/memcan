@@ -24,7 +24,9 @@ impl MemcanContext {
         let settings = Settings::load()?;
         settings.ensure_log_dir()?;
         let embedder = FastEmbedProvider::from_settings(&settings)?;
-        let store = LanceDbStore::open(&settings.lancedb_path).await?;
+        let store = LanceDbStore::open(&settings.lancedb_path)
+            .await?
+            .with_auto_compaction(settings.compact_fragment_threshold);
         Ok(Self {
             settings,
             embedder,

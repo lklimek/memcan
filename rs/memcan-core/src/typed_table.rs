@@ -6,7 +6,6 @@
 //! [`LanceDbStore::typed_table()`](crate::lancedb_store::LanceDbStore::typed_table).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use arrow_array::RecordBatch;
 use futures::TryStreamExt;
@@ -14,12 +13,10 @@ use lancedb::query::{ExecutableQuery, QueryBase, Select};
 use lancedb::table::OptimizeAction;
 
 use crate::error::VectorStoreError;
-use crate::lancedb_store::LanceDbStore;
+use crate::lancedb_store::{CompactionGuardSet, LanceDbStore};
 use crate::traits::{SearchResult, TableSchema, VectorPoint};
 
 type Result<T> = std::result::Result<T, VectorStoreError>;
-
-const COMPACTION_THRESHOLD: u64 = 1000;
 
 /// A handle to a single LanceDB table, bound to a specific [`TableSchema`].
 ///
@@ -30,18 +27,30 @@ pub struct TypedTable<S: TableSchema> {
     inner: lancedb::Table,
     schema: S,
     dims: usize,
-    write_count: Arc<AtomicU64>,
+    /// Auto-compact once the table reaches this many data fragments (0 = off).
+    fragment_threshold: usize,
+    /// Per-table single-flight compaction guard, shared with the owning store
+    /// and every other compaction entry point.
+    compacting: CompactionGuardSet,
 }
 
 impl<S: TableSchema> TypedTable<S> {
     /// Create a new `TypedTable` (called by `LanceDbStore::typed_table()`).
-    pub(crate) fn new(name: String, inner: lancedb::Table, schema: S, dims: usize) -> Self {
+    pub(crate) fn new(
+        name: String,
+        inner: lancedb::Table,
+        schema: S,
+        dims: usize,
+        fragment_threshold: usize,
+        compacting: CompactionGuardSet,
+    ) -> Self {
         Self {
             name,
             inner,
             schema,
             dims,
-            write_count: Arc::new(AtomicU64::new(0)),
+            fragment_threshold,
+            compacting,
         }
     }
 
@@ -66,21 +75,15 @@ impl<S: TableSchema> TypedTable<S> {
         Ok(())
     }
 
-    /// Increment write counter and trigger background compaction at threshold.
-    fn maybe_compact(&self) {
-        let count = self.write_count.fetch_add(1, Ordering::Relaxed) + 1;
-        if count.is_multiple_of(COMPACTION_THRESHOLD) {
-            let table = self.inner.clone();
-            let name = self.name.clone();
-            tokio::spawn(async move {
-                tracing::info!(table = %name, writes = count, "auto-compaction triggered");
-                if let Err(e) = table.optimize(OptimizeAction::All).await {
-                    tracing::warn!(table = %name, error = %e, "auto-compaction failed");
-                } else {
-                    tracing::info!(table = %name, "auto-compaction complete");
-                }
-            });
-        }
+    /// Trigger a single-flight background compaction when over-fragmented.
+    async fn maybe_compact(&self) {
+        crate::lancedb_store::maybe_auto_compact(
+            &self.inner,
+            &self.name,
+            self.fragment_threshold,
+            &self.compacting,
+        )
+        .await;
     }
 
     /// Insert or update points. Existing IDs are overwritten.
@@ -108,7 +111,7 @@ impl<S: TableSchema> TypedTable<S> {
             .execute()
             .await
             .map_err(|e| self.classify_error(e))?;
-        self.maybe_compact();
+        self.maybe_compact().await;
         Ok(())
     }
 
@@ -154,7 +157,7 @@ impl<S: TableSchema> TypedTable<S> {
             .delete(filter)
             .await
             .map_err(|e| self.classify_error(e))?;
-        self.maybe_compact();
+        self.maybe_compact().await;
         Ok(())
     }
 
@@ -240,7 +243,8 @@ impl<S: TableSchema + Clone> Clone for TypedTable<S> {
             inner: self.inner.clone(),
             schema: self.schema.clone(),
             dims: self.dims,
-            write_count: Arc::clone(&self.write_count),
+            fragment_threshold: self.fragment_threshold,
+            compacting: Arc::clone(&self.compacting),
         }
     }
 }
@@ -431,30 +435,5 @@ mod tests {
 
         let count = table.count(None).await.expect("count after compact");
         assert_eq!(count, 1);
-    }
-
-    #[tokio::test]
-    async fn test_write_count_increments() {
-        let tmp = tempfile::tempdir().expect("create tempdir");
-        let path = tmp.path().to_str().expect("tempdir path");
-        let store = LanceDbStore::open(path).await.expect("open lancedb");
-
-        let table = store
-            .typed_table("test_wc", MinimalTableSchema, 4)
-            .await
-            .expect("typed_table");
-
-        assert_eq!(table.write_count.load(Ordering::Relaxed), 0);
-
-        let points = vec![VectorPoint {
-            id: "w1".into(),
-            vector: vec![1.0, 0.0, 0.0, 0.0],
-            payload: serde_json::json!({}),
-        }];
-        table.upsert(&points).await.expect("upsert");
-        assert_eq!(table.write_count.load(Ordering::Relaxed), 1);
-
-        table.delete("id = 'w1'").await.expect("delete");
-        assert_eq!(table.write_count.load(Ordering::Relaxed), 2);
     }
 }

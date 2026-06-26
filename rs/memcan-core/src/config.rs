@@ -47,6 +47,13 @@ pub struct Settings {
     pub api_key: Option<String>,
     /// MemCan server URL for thin clients, e.g. `"http://localhost:8190"`.
     pub url: String,
+    /// Run full compaction (compact fragments + prune versions) on every table
+    /// at startup, before serving. The startup window is single-writer, which is
+    /// the safe time to compact.
+    pub compact_on_startup: bool,
+    /// Auto-compact a table once it reaches this many data fragments. `0`
+    /// disables auto-compaction (startup compaction is gated separately).
+    pub compact_fragment_threshold: usize,
 }
 
 impl std::fmt::Debug for Settings {
@@ -68,6 +75,11 @@ impl std::fmt::Debug for Settings {
             .field("listen", &self.listen)
             .field("api_key", &self.api_key.as_ref().map(|_| "***"))
             .field("url", &self.url)
+            .field("compact_on_startup", &self.compact_on_startup)
+            .field(
+                "compact_fragment_threshold",
+                &self.compact_fragment_threshold,
+            )
             .finish()
     }
 }
@@ -88,6 +100,8 @@ impl Default for Settings {
             listen: "127.0.0.1:8191".into(),
             api_key: None,
             url: "http://localhost:8190".into(),
+            compact_on_startup: true,
+            compact_fragment_threshold: 64,
         }
     }
 }
@@ -163,6 +177,18 @@ impl Settings {
             .ok()
             .filter(|s| !s.is_empty());
         let url = env_or("MEMCAN_URL", &defaults.url);
+        let compact_on_startup = env_or(
+            "COMPACT_ON_STARTUP",
+            &defaults.compact_on_startup.to_string(),
+        )
+        .parse::<bool>()
+        .unwrap_or(defaults.compact_on_startup);
+        let compact_fragment_threshold = env_or(
+            "COMPACT_FRAGMENT_THRESHOLD",
+            &defaults.compact_fragment_threshold.to_string(),
+        )
+        .parse::<usize>()
+        .unwrap_or(defaults.compact_fragment_threshold);
 
         let settings = Settings {
             lancedb_path,
@@ -178,6 +204,8 @@ impl Settings {
             listen,
             api_key,
             url,
+            compact_on_startup,
+            compact_fragment_threshold,
         };
         settings.validate()?;
         Ok(settings)
@@ -261,6 +289,8 @@ mod tests {
         assert_eq!(d.embed_model, "MultilingualE5Large");
         assert_eq!(d.embed_dims, 1024);
         assert!(d.distill_memories);
+        assert!(d.compact_on_startup);
+        assert_eq!(d.compact_fragment_threshold, 64);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! LanceDB implementation of [`VectorStore`].
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use arrow_array::{
@@ -13,7 +14,7 @@ use lancedb::query::{ExecutableQuery, QueryBase, Select};
 use lancedb::table::NewColumnTransform;
 use lancedb::{Connection, Table, connect};
 use tokio::sync::Mutex;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use lancedb::table::OptimizeAction;
 
@@ -44,6 +45,117 @@ pub(crate) fn build_id_filter<'a>(ids: impl Iterator<Item = &'a str>) -> String 
     format!("id IN ({})", escaped.join(", "))
 }
 
+/// Outcome of a [`LanceDbStore::compact_table`] run.
+#[derive(Debug, Clone, Copy)]
+pub struct CompactionOutcome {
+    /// Data-fragment count before compaction.
+    pub fragments_before: usize,
+    /// Data-fragment count after compaction.
+    pub fragments_after: usize,
+}
+
+/// Count a table's data fragments for the auto-compaction trigger.
+///
+/// Returns 0 when the count is unavailable (non-native table, or a transient
+/// count error) — fail-safe, since 0 simply means "do not compact". The public
+/// [`LanceDbStore::count_fragments`] surfaces the error instead of masking it.
+async fn fragment_count(table: &Table) -> usize {
+    match table.as_native() {
+        Some(native) => match native.count_fragments().await {
+            Ok(n) => n,
+            Err(e) => {
+                debug!(error = %e, "fragment count unavailable; treating as 0 for compaction trigger");
+                0
+            }
+        },
+        None => 0,
+    }
+}
+
+/// Table names with a compaction in flight. Shared across every compaction
+/// entry point so a given table is compacted by at most one task at a time
+/// within this process (LanceDB compaction needs an exclusive writer;
+/// concurrent compaction on one table can drop data). Cross-process
+/// coordination (e.g. a file lock on `LANCEDB_PATH`) is out of scope.
+pub(crate) type CompactionGuardSet = Arc<std::sync::Mutex<HashSet<String>>>;
+
+/// Releases a table's single-flight claim when its compaction finishes
+/// (including on panic-unwind of the spawned task).
+struct CompactionGuard {
+    set: CompactionGuardSet,
+    table: String,
+}
+
+impl Drop for CompactionGuard {
+    fn drop(&mut self) {
+        self.set
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.table);
+    }
+}
+
+/// Claim the single-flight slot for `table`, returning a guard that releases it
+/// on drop, or `None` if a compaction is already in flight for that table.
+fn claim_compaction(set: &CompactionGuardSet, table: &str) -> Option<CompactionGuard> {
+    let mut in_flight = set.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if in_flight.insert(table.to_string()) {
+        Some(CompactionGuard {
+            set: Arc::clone(set),
+            table: table.to_string(),
+        })
+    } else {
+        None
+    }
+}
+
+/// Spawn a single-flight full compaction if a table is over-fragmented.
+///
+/// Queries the (cheap, already-loaded) fragment count; when it reaches
+/// `fragment_threshold` a background [`OptimizeAction::All`] is launched.
+/// `fragment_threshold` of 0 disables auto-compaction. `in_flight` is keyed by
+/// table name and shared across every compaction entry point, so a given table
+/// is compacted by at most one task at a time within this process — concurrent
+/// compaction on one table can corrupt data, so this guard is load-bearing.
+pub(crate) async fn maybe_auto_compact(
+    table: &Table,
+    name: &str,
+    fragment_threshold: usize,
+    in_flight: &CompactionGuardSet,
+) {
+    if fragment_threshold == 0 {
+        return;
+    }
+    let fragments = fragment_count(table).await;
+    if fragments < fragment_threshold {
+        return;
+    }
+    // Single-flight per table: bail if this table is already compacting.
+    let Some(guard) = claim_compaction(in_flight, name) else {
+        debug!(
+            table = name,
+            "auto-compaction already in progress for table; skipping"
+        );
+        return;
+    };
+
+    let table = table.clone();
+    let name = name.to_string();
+    tokio::spawn(async move {
+        let _guard = guard;
+        info!(
+            table = %name,
+            fragments,
+            threshold = fragment_threshold,
+            "auto-compaction: fragment threshold reached, compacting"
+        );
+        match table.optimize(OptimizeAction::All).await {
+            Ok(_) => info!(table = %name, "auto-compaction complete"),
+            Err(e) => warn!(table = %name, error = %e, "auto-compaction failed"),
+        }
+    });
+}
+
 /// LanceDB-backed vector store.
 ///
 /// Data is stored in a local directory. Each "table" in the trait maps to a
@@ -53,6 +165,10 @@ pub struct LanceDbStore {
     conn: Connection,
     /// Guards table-creation to avoid races.
     create_lock: Mutex<()>,
+    /// Auto-compact a table once it reaches this many data fragments (0 = off).
+    auto_compact_fragments: usize,
+    /// Per-table single-flight guard, shared with every compaction entry point.
+    compacting: CompactionGuardSet,
 }
 
 impl std::fmt::Debug for LanceDbStore {
@@ -63,9 +179,14 @@ impl std::fmt::Debug for LanceDbStore {
 
 impl LanceDbStore {
     /// Open (or create) a LanceDB database at the given path.
+    ///
+    /// Before connecting, runs [`crate::manifest_guard::guard_lancedb_path`] to
+    /// quarantine any zero-byte/truncated latest manifests left by an interrupted
+    /// write, so the store opens the last good version instead of crash-looping.
     pub async fn open(path: &str) -> Result<Self> {
         std::fs::create_dir_all(path)
             .with_context(|| format!("cannot create LanceDB directory: {path}"))?;
+        crate::manifest_guard::guard_lancedb_path(std::path::Path::new(path));
         let conn = connect(path)
             .execute()
             .await
@@ -73,7 +194,19 @@ impl LanceDbStore {
         Ok(Self {
             conn,
             create_lock: Mutex::new(()),
+            auto_compact_fragments: 0,
+            compacting: Arc::new(std::sync::Mutex::new(HashSet::new())),
         })
+    }
+
+    /// Enable fragment-count-based auto-compaction with the given threshold.
+    ///
+    /// After each write, a table with at least `fragment_threshold` data
+    /// fragments triggers a single-flight background compaction. A threshold of
+    /// `0` (the default) disables auto-compaction. Returns `self` for chaining.
+    pub fn with_auto_compaction(mut self, fragment_threshold: usize) -> Self {
+        self.auto_compact_fragments = fragment_threshold;
+        self
     }
 
     /// Build the Arrow schema for a table with the given vector dimensionality
@@ -218,23 +351,60 @@ impl LanceDbStore {
         }
     }
 
-    /// Prune old versions from a single table (one-time cleanup for existing backlog).
-    pub async fn compact_table(&self, table_name: &str) -> Result<()> {
+    /// Run full compaction on a table: merge data fragments, optimize indices,
+    /// and prune old versions ([`OptimizeAction::All`]).
+    ///
+    /// Returns the data-fragment count before and after. Intended to run at
+    /// startup, the single-writer window where compaction is safe.
+    pub async fn compact_table(&self, table_name: &str) -> Result<CompactionOutcome> {
         let table = self
             .conn
             .open_table(table_name)
             .execute()
             .await
             .with_context(|| format!("failed to open table {table_name} for compaction"))?;
+        let fragments_before = fragment_count(&table).await;
+        // Coordinate with auto-compaction: never run two OptimizeAction::All on
+        // one table. If one is already in flight, skip and report a no-op.
+        let Some(_guard) = claim_compaction(&self.compacting, table_name) else {
+            debug!(
+                table = table_name,
+                "compaction already in progress; skipping explicit compaction"
+            );
+            return Ok(CompactionOutcome {
+                fragments_before,
+                fragments_after: fragments_before,
+            });
+        };
         table
-            .optimize(OptimizeAction::Prune {
-                older_than: Some(chrono::Duration::days(1)),
-                delete_unverified: Some(false),
-                error_if_tagged_old_versions: Some(false),
-            })
+            .optimize(OptimizeAction::All)
             .await
-            .with_context(|| format!("failed to prune table {table_name}"))?;
-        Ok(())
+            .with_context(|| format!("failed to compact table {table_name}"))?;
+        let fragments_after = fragment_count(&table).await;
+        Ok(CompactionOutcome {
+            fragments_before,
+            fragments_after,
+        })
+    }
+
+    /// Count a table's data fragments. A high count signals a need to compact.
+    ///
+    /// Surfaces count failures as `Err` rather than masking them as `0`, so a
+    /// returned `Ok(0)` unambiguously means the table has no data fragments.
+    pub async fn count_fragments(&self, table_name: &str) -> Result<usize> {
+        let table = self
+            .conn
+            .open_table(table_name)
+            .execute()
+            .await
+            .with_context(|| format!("failed to open table {table_name}"))?;
+        match table.as_native() {
+            Some(native) => native
+                .count_fragments()
+                .await
+                .with_context(|| format!("failed to count fragments for table {table_name}")),
+            None => Ok(0),
+        }
     }
 
     /// Infer vector dimensionality from an existing table's schema.
@@ -344,7 +514,14 @@ impl LanceDbStore {
             .execute()
             .await
             .map_err(|e| classify_lancedb_error(name, e))?;
-        Ok(TypedTable::new(name.into(), table, schema, dims))
+        Ok(TypedTable::new(
+            name.into(),
+            table,
+            schema,
+            dims,
+            self.auto_compact_fragments,
+            Arc::clone(&self.compacting),
+        ))
     }
 }
 
@@ -431,6 +608,7 @@ impl VectorStore for LanceDbStore {
         let schema = batch.schema();
         let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
         tbl.add(Box::new(batches)).execute().await?;
+        maybe_auto_compact(&tbl, table, self.auto_compact_fragments, &self.compacting).await;
         Ok(())
     }
 
@@ -525,6 +703,7 @@ impl VectorStore for LanceDbStore {
         let tbl = self.open_table(table).await?;
         let filter = build_id_filter(ids.iter().map(|id| id.as_str()));
         tbl.delete(&filter).await?;
+        maybe_auto_compact(&tbl, table, self.auto_compact_fragments, &self.compacting).await;
         Ok(())
     }
 
@@ -534,6 +713,7 @@ impl VectorStore for LanceDbStore {
         if before > 0 {
             let tbl = self.open_table(table).await?;
             tbl.delete(filter).await?;
+            maybe_auto_compact(&tbl, table, self.auto_compact_fragments, &self.compacting).await;
         }
         Ok(before)
     }
@@ -682,6 +862,280 @@ mod tests {
             .and_then(|c| c.as_any().downcast_ref::<StringArray>())
             .expect("priority column");
         assert_eq!(priority_col.value(0), "high");
+    }
+
+    /// Build a single-row batch matching the minimal `(id, vector, payload)` schema.
+    fn single_row_batch(schema: &Arc<Schema>, id: &str) -> RecordBatch {
+        let ids = StringArray::from(vec![id]);
+        let values = Float32Array::from(vec![1.0f32, 2.0]);
+        let item = Arc::new(Field::new("item", DataType::Float32, true));
+        let vector = FixedSizeListArray::new(item, 2, Arc::new(values), None);
+        let payload = LargeStringArray::from(vec!["{}"]);
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(ids), Arc::new(vector), Arc::new(payload)],
+        )
+        .expect("build row batch")
+    }
+
+    /// Truncate the newest manifest (lexically smallest V2 filename) to 0 bytes,
+    /// simulating an interrupted write. Returns the affected path.
+    fn truncate_newest_manifest(versions_dir: &std::path::Path) -> std::path::PathBuf {
+        let mut manifests: Vec<std::path::PathBuf> = std::fs::read_dir(versions_dir)
+            .expect("read _versions")
+            .map(|e| e.expect("dir entry").path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("manifest"))
+            .collect();
+        manifests.sort();
+        let newest = manifests.first().expect("at least one manifest").clone();
+        std::fs::File::create(&newest).expect("truncate manifest");
+        newest
+    }
+
+    #[tokio::test]
+    async fn test_open_recovers_from_zero_byte_latest_manifest() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().to_str().expect("tempdir path");
+
+        // Build a table with three data commits (v2..v4) over an empty v1.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 2),
+                false,
+            ),
+            Field::new("payload", DataType::LargeUtf8, false),
+        ]));
+        let conn = connect(path).execute().await.expect("connect");
+        let empty = RecordBatchIterator::new(vec![], schema.clone());
+        let tbl = conn
+            .create_table("recover", Box::new(empty))
+            .execute()
+            .await
+            .expect("create table");
+        for id in ["r1", "r2", "r3"] {
+            let batch = single_row_batch(&schema, id);
+            let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+            tbl.add(Box::new(iter)).execute().await.expect("add row");
+        }
+        drop(tbl);
+        drop(conn);
+
+        // Latest version holds all three rows.
+        let store = LanceDbStore::open(path).await.expect("open clean");
+        assert_eq!(store.count("recover", None).await.expect("count"), 3);
+        drop(store);
+
+        // Simulate the crash: zero out the newest manifest.
+        let versions = tmp.path().join("recover.lance").join("_versions");
+        truncate_newest_manifest(&versions);
+
+        // Without the guard, a raw open hits the empty manifest and fails.
+        let raw = connect(path).execute().await.expect("connect raw");
+        assert!(
+            raw.open_table("recover").execute().await.is_err(),
+            "raw open should fail on a zero-byte latest manifest"
+        );
+        drop(raw);
+
+        // With the guard (run inside open), the store recovers the prior version.
+        let store = LanceDbStore::open(path).await.expect("open recovers");
+        assert_eq!(
+            store
+                .count("recover", None)
+                .await
+                .expect("count after recover"),
+            2,
+            "recovered to the version before the corrupt commit"
+        );
+
+        // The corrupt manifest was quarantined, not deleted.
+        let corrupt_dir = tmp.path().join("recover.lance").join("_corrupt_manifests");
+        let quarantined: Vec<_> = std::fs::read_dir(&corrupt_dir)
+            .expect("quarantine dir exists")
+            .collect();
+        assert_eq!(quarantined.len(), 1, "one manifest quarantined");
+    }
+
+    /// Write `n` single-row upserts, each creating a new data fragment.
+    async fn fragment_table(store: &LanceDbStore, table: &str, n: usize) {
+        store
+            .ensure_table(table, 4, &MinimalTableSchema)
+            .await
+            .expect("ensure_table");
+        for i in 0..n {
+            let point = vec![VectorPoint {
+                id: format!("r{i}"),
+                vector: vec![i as f32, 0.0, 0.0, 0.0],
+                payload: serde_json::json!({}),
+            }];
+            store
+                .upsert(table, &point, &MinimalTableSchema)
+                .await
+                .expect("upsert");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_compact_table_reduces_fragments() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().to_str().expect("tempdir path");
+        let store = LanceDbStore::open(path).await.expect("open lancedb");
+
+        fragment_table(&store, "frag", 12).await;
+        let outcome = store.compact_table("frag").await.expect("compact");
+
+        assert!(
+            outcome.fragments_before >= 10,
+            "expected many fragments before, got {}",
+            outcome.fragments_before
+        );
+        assert!(
+            outcome.fragments_after < outcome.fragments_before,
+            "compaction should reduce fragments ({} -> {})",
+            outcome.fragments_before,
+            outcome.fragments_after
+        );
+        // Data survives compaction.
+        assert_eq!(store.count("frag", None).await.expect("count"), 12);
+    }
+
+    #[tokio::test]
+    async fn test_compact_table_missing_table_errors_gracefully() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().to_str().expect("tempdir path");
+        let store = LanceDbStore::open(path).await.expect("open lancedb");
+
+        // A failure here is surfaced as Err (serve.rs logs and continues — never panics).
+        assert!(store.compact_table("does_not_exist").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_auto_compaction_disabled_by_default() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().to_str().expect("tempdir path");
+        let store = LanceDbStore::open(path).await.expect("open lancedb");
+
+        fragment_table(&store, "nac", 10).await;
+        // Give any (erroneous) background compaction a chance to run.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        let fragments = store.count_fragments("nac").await.expect("count_fragments");
+        assert!(
+            fragments >= 10,
+            "auto-compaction must not run when disabled, got {fragments} fragments"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_auto_compaction_fires_on_write_path() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().to_str().expect("tempdir path");
+        let store = LanceDbStore::open(path)
+            .await
+            .expect("open lancedb")
+            .with_auto_compaction(4);
+
+        fragment_table(&store, "ac", 12).await;
+
+        // Auto-compaction runs in the background; poll until fragments collapse.
+        let mut fragments = store.count_fragments("ac").await.expect("count_fragments");
+        for _ in 0..50 {
+            if fragments < 12 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            fragments = store.count_fragments("ac").await.expect("count_fragments");
+        }
+        assert!(
+            fragments < 12,
+            "auto-compaction should reduce fragments below the write count, got {fragments}"
+        );
+        // No rows lost to background compaction.
+        assert_eq!(store.count("ac", None).await.expect("count"), 12);
+    }
+
+    // The load-bearing safety property: at most one compaction per table at a
+    // time, different tables run in parallel, and the slot is released on drop.
+    #[test]
+    fn test_claim_compaction_is_single_flight_per_table() {
+        let set: CompactionGuardSet = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let len = |s: &CompactionGuardSet| s.lock().expect("lock not poisoned").len();
+
+        let g1 = claim_compaction(&set, "memories");
+        assert!(g1.is_some(), "first claim for a table succeeds");
+        assert!(
+            claim_compaction(&set, "memories").is_none(),
+            "second claim for the same table is refused while the first is held"
+        );
+
+        let g_other = claim_compaction(&set, "standards");
+        assert!(
+            g_other.is_some(),
+            "a different table may compact concurrently"
+        );
+        assert_eq!(len(&set), 2, "both in-flight tables are tracked");
+
+        drop(g1);
+        let g_reclaim = claim_compaction(&set, "memories");
+        assert!(
+            g_reclaim.is_some(),
+            "the table's slot is reclaimable once its guard is dropped"
+        );
+
+        drop(g_reclaim);
+        drop(g_other);
+        assert_eq!(len(&set), 0, "every slot is released once its guard drops");
+    }
+
+    // End-to-end: many concurrent threshold-crossing writes must not lose rows
+    // to a background compaction — the per-table single-flight guard serializes
+    // OptimizeAction::All against itself even under write pressure.
+    #[tokio::test]
+    async fn test_concurrent_writes_no_row_loss_under_auto_compaction() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().to_str().expect("tempdir path");
+        let store = Arc::new(
+            LanceDbStore::open(path)
+                .await
+                .expect("open lancedb")
+                .with_auto_compaction(4),
+        );
+        store
+            .ensure_table("conc", 4, &MinimalTableSchema)
+            .await
+            .expect("ensure_table");
+
+        const N: usize = 32;
+        let writes = (0..N).map(|i| {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move {
+                let point = vec![VectorPoint {
+                    id: format!("c{i}"),
+                    vector: vec![i as f32, 0.0, 0.0, 0.0],
+                    payload: serde_json::json!({}),
+                }];
+                store.upsert("conc", &point, &MinimalTableSchema).await
+            })
+        });
+        for result in futures::future::join_all(writes).await {
+            result.expect("task joined").expect("concurrent upsert ok");
+        }
+
+        // Background compaction may still be running; poll until it settles.
+        let mut count = 0;
+        for _ in 0..50 {
+            count = store.count("conc", None).await.expect("count");
+            if count == N {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(
+            count, N,
+            "all {N} concurrently-written rows must survive auto-compaction"
+        );
     }
 
     #[tokio::test]
