@@ -952,9 +952,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_budget_not_floored_when_above_min() {
-        // A window just large enough that raw_budget ≥ MIN_DESCRIPTION_INPUT_CHARS.
-        // MIN_DESCRIPTION_INPUT_CHARS = 256 chars = 64 tokens; RESERVED = 520.
-        // Need: context_tokens > 520 + 64 = 584. Use 600.
+        // Floor condition: (ctx − 520) × 4 < 256  ↔  ctx < 584.
+        // At ctx ≥ 584, raw_budget ≥ MIN_DESCRIPTION_INPUT_CHARS (strict <), no floor applied.
+        // Use 600 for a clear margin above the 584 boundary.
         let llm = MockDescLlm::with_context(600);
         let budget = description_input_budget(&llm, "model").await;
         let expected = (600 - 520) * CHARS_PER_TOKEN; // 80 * 4 = 320 > 256 → no floor
