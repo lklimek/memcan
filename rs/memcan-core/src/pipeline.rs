@@ -855,6 +855,29 @@ mod tests {
         let facts = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let result = dedup_facts_exact(&facts);
         assert_eq!(result.len(), 3);
+        assert_eq!(result[0].as_str(), "a");
+        assert_eq!(result[1].as_str(), "b");
+        assert_eq!(result[2].as_str(), "c");
+    }
+
+    #[test]
+    fn test_dedup_facts_exact_case_and_whitespace_not_deduped() {
+        // Case differences and trailing whitespace are NOT considered duplicates.
+        // Semantic deduplication is the LLM's job — this helper is byte-exact only.
+        let facts = vec![
+            "fact a".to_string(),
+            "Fact A".to_string(),  // different case — distinct
+            "fact a ".to_string(), // trailing space — distinct
+        ];
+        let result = dedup_facts_exact(&facts);
+        assert_eq!(
+            result.len(),
+            3,
+            "case and whitespace variants must survive as distinct entries"
+        );
+        assert_eq!(result[0].as_str(), "fact a");
+        assert_eq!(result[1].as_str(), "Fact A");
+        assert_eq!(result[2].as_str(), "fact a ");
     }
 
     #[test]

@@ -50,6 +50,6 @@ Output: {"facts": ["The batch embedder uses rayon for parallel embedding"]}
 - Do not return facts from the examples above.
 - **Self-containment is absolute**: every fact must name its full subject and stand alone. Never use "this", "that", "it", "the above", or reference another fact or the source text — inline the referent.
 - **Don't fragment a unit of meaning**: keep cause+fix, problem+resolution, metric+recommendation, and claim+rationale together in ONE fact. Atomize only genuinely independent facts; prefer fewer complete facts over many fragments.
-- **Collapse parallel facts**: when the same property holds for several named symbols/items, emit ONE fact naming them together — never a near-identical fact per symbol.
+- **Collapse near-duplicate parallel facts**: when the same predicate (behaviour, constraint, or property) applies to multiple named symbols and each symbol offers no additional per-symbol detail, emit ONE fact naming all symbols together. Keep as separate facts when each entry carries a distinct value or mapping (e.g. different log levels, different config values, different thresholds).
 - **Timeless present tense**: strip change-relative words ("now", "previously", "currently", "no longer", "as of this PR/change"); state the durable end-state.
 - Today's date is $today.
