@@ -12,8 +12,8 @@ use std::path::Path;
 
 use crate::error::Result;
 use crate::indexing::code::{
-    BATCH_SIZE, chunk_fallback, content_hash, context_line, ext_to_lang, extract_symbols_regex,
-    flush_batch, generate_description, point_id, should_skip,
+    BATCH_SIZE, chunk_fallback, content_hash, context_line, description_input_budget, ext_to_lang,
+    extract_symbols_regex, flush_batch, generate_description, point_id, should_skip,
 };
 use crate::pipeline::CODE_TABLE;
 use crate::traits::{EmbeddingProvider, LlmProvider, TableSchema, VectorPoint, VectorStore};
@@ -58,6 +58,8 @@ pub async fn index_code_files(
     store.ensure_table(CODE_TABLE, embed_dims, schema).await?;
 
     let now = Utc::now().to_rfc3339();
+    // Compute input budget once — model context window doesn't change between files.
+    let desc_budget = description_input_budget(llm, llm_model).await;
     let mut total_indexed = 0usize;
     let mut total_skipped = 0usize;
     let mut total_errors = 0usize;
@@ -119,21 +121,22 @@ pub async fn index_code_files(
                 sym.start_line,
             );
 
-            let description = match generate_description(&sym.text, llm, llm_model).await {
-                Ok(desc) => {
-                    let desc = desc.trim().to_string();
-                    if desc.is_empty() { None } else { Some(desc) }
-                }
-                Err(e) => {
-                    warn!(
-                        symbol = %sym.symbol_name,
-                        file = %file.path,
-                        error = %e,
-                        "LLM description generation failed"
-                    );
-                    None
-                }
-            };
+            let description =
+                match generate_description(&sym.text, llm, llm_model, desc_budget).await {
+                    Ok(desc) => {
+                        let desc = desc.trim().to_string();
+                        if desc.is_empty() { None } else { Some(desc) }
+                    }
+                    Err(e) => {
+                        warn!(
+                            symbol = %sym.symbol_name,
+                            file = %file.path,
+                            error = %e,
+                            "LLM description generation failed"
+                        );
+                        None
+                    }
+                };
 
             let embed_text = if let Some(ref desc) = description {
                 format!("# Description: {desc}\n{data}")

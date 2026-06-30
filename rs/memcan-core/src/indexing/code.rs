@@ -4,6 +4,7 @@
 //! falls back to line-based chunking, then embeds and upserts into the vector store.
 //! Supports incremental indexing via content hashing and stale-file cleanup.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -16,8 +17,9 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::error::{MemcanError, Result, ResultExt};
-use crate::pipeline::CODE_TABLE;
+use crate::pipeline::{CHARS_PER_TOKEN, CODE_TABLE, DEFAULT_CONTEXT_WINDOW};
 use crate::prompts::CODE_DESCRIPTION_PROMPT;
+use crate::text::truncate_with;
 use crate::traits::{
     EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, TableSchema, VectorPoint,
     VectorStore,
@@ -433,11 +435,57 @@ pub async fn drop_code(
     Ok(deleted)
 }
 
+/// Marker appended to truncated symbol text so the LLM knows the code was cut.
+const TRUNCATION_MARKER: &str = "\n// ... [truncated: symbol exceeds LLM input budget]";
+
+/// Compute the maximum character count of symbol text that can safely be sent
+/// to the LLM in a single [`generate_description`] call.
+///
+/// Queries the provider for the model's context window (falls back to
+/// [`DEFAULT_CONTEXT_WINDOW`]) and subtracts reserved tokens for the system
+/// prompt overhead (~200 t), max output (256 t), and a safety margin (64 t).
+/// The remaining token budget is converted to characters via [`CHARS_PER_TOKEN`].
+///
+/// Call this **once** before the indexing loop — not per symbol.
+pub(crate) async fn description_input_budget(llm: &dyn LlmProvider, llm_model: &str) -> usize {
+    /// System prompt + message-framing overhead (CODE_DESCRIPTION_PROMPT ≈ 176 t).
+    const PROMPT_OVERHEAD_TOKENS: usize = 200;
+    /// Must match `max_tokens` in [`generate_description`]'s [`LlmOptions`].
+    const MAX_OUTPUT_TOKENS: usize = 256;
+    /// Extra headroom for request framing and quantisation rounding.
+    const SAFETY_MARGIN_TOKENS: usize = 64;
+    const RESERVED: usize = PROMPT_OVERHEAD_TOKENS + MAX_OUTPUT_TOKENS + SAFETY_MARGIN_TOKENS;
+
+    let context_tokens = llm
+        .context_window(llm_model)
+        .await
+        .unwrap_or(DEFAULT_CONTEXT_WINDOW);
+
+    context_tokens.saturating_sub(RESERVED) * CHARS_PER_TOKEN
+}
+
+/// Generate a short functional description for a code symbol via the LLM.
+///
+/// `max_input_chars` caps the symbol text before sending (see
+/// [`description_input_budget`]). If the text is oversized it is truncated to
+/// `max_input_chars` characters with a clear marker and a `warn!` is emitted.
 pub(crate) async fn generate_description(
     code: &str,
     llm: &dyn LlmProvider,
     llm_model: &str,
+    max_input_chars: usize,
 ) -> Result<String> {
+    // Truncate oversized symbol text, keeping the head (signature + opening
+    // context) — that's the part most useful for description generation.
+    let truncated: Cow<str> = truncate_with(code, max_input_chars, TRUNCATION_MARKER);
+    if matches!(truncated, Cow::Owned(_)) {
+        warn!(
+            original_chars = code.chars().count(),
+            budget_chars = max_input_chars,
+            "code_description: symbol text truncated to fit LLM context budget"
+        );
+    }
+
     let messages = vec![
         LlmMessage {
             role: Role::System,
@@ -445,7 +493,7 @@ pub(crate) async fn generate_description(
         },
         LlmMessage {
             role: Role::User,
-            content: code.to_string(),
+            content: truncated.into_owned(),
         },
     ];
     let options = Some(LlmOptions {
@@ -521,6 +569,10 @@ pub async fn index_code(
     let files = collect_files(&project_dir);
     info!(count = files.len(), dir = %project_dir.display(), "Found source files");
 
+    // Compute input budget once — querying the context window per symbol would
+    // be wasteful; the model doesn't change between iterations.
+    let desc_budget = description_input_budget(llm, llm_model).await;
+
     let mut current_file_paths: HashSet<String> = HashSet::new();
     let mut total_upserted = 0usize;
     let mut total_skipped = 0usize;
@@ -588,21 +640,22 @@ pub async fn index_code(
                 continue;
             }
 
-            let description = match generate_description(&sym.text, llm, llm_model).await {
-                Ok(desc) => {
-                    let desc = desc.trim().to_string();
-                    if desc.is_empty() { None } else { Some(desc) }
-                }
-                Err(e) => {
-                    warn!(
-                        symbol = %sym.symbol_name,
-                        file = %rel_path,
-                        error = %e,
-                        "LLM description generation failed, indexing without description"
-                    );
-                    None
-                }
-            };
+            let description =
+                match generate_description(&sym.text, llm, llm_model, desc_budget).await {
+                    Ok(desc) => {
+                        let desc = desc.trim().to_string();
+                        if desc.is_empty() { None } else { Some(desc) }
+                    }
+                    Err(e) => {
+                        warn!(
+                            symbol = %sym.symbol_name,
+                            file = %rel_path,
+                            error = %e,
+                            "LLM description generation failed, indexing without description"
+                        );
+                        None
+                    }
+                };
 
             let embed_text = if let Some(ref desc) = description {
                 format!("# Description: {desc}\n{data}")
@@ -726,6 +779,120 @@ pub async fn index_code(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Mock LLM for async tests ──────────────────────────────────────────────
+
+    struct MockDescLlm {
+        response: String,
+        context_window_tokens: Option<usize>,
+    }
+
+    impl MockDescLlm {
+        fn with_response(r: impl Into<String>) -> Self {
+            Self {
+                response: r.into(),
+                context_window_tokens: None,
+            }
+        }
+        fn with_context(tokens: usize) -> Self {
+            Self {
+                response: "description".into(),
+                context_window_tokens: Some(tokens),
+            }
+        }
+        fn without_context() -> Self {
+            Self {
+                response: "description".into(),
+                context_window_tokens: None,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::traits::LlmProvider for MockDescLlm {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: &[crate::traits::LlmMessage],
+            _options: Option<crate::traits::LlmOptions>,
+        ) -> crate::error::Result<String> {
+            Ok(self.response.clone())
+        }
+        async fn context_window(&self, _model: &str) -> Option<usize> {
+            self.context_window_tokens
+        }
+    }
+
+    // ── description_input_budget tests ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_budget_uses_provided_context_window() {
+        let llm = MockDescLlm::with_context(8192);
+        let budget = description_input_budget(&llm, "model").await;
+        // RESERVED = 200 + 256 + 64 = 520
+        let expected = (8192usize - 520) * CHARS_PER_TOKEN;
+        assert_eq!(budget, expected);
+    }
+
+    #[tokio::test]
+    async fn test_budget_falls_back_to_default_when_no_context_window() {
+        let llm = MockDescLlm::without_context();
+        let budget = description_input_budget(&llm, "model").await;
+        let expected = (DEFAULT_CONTEXT_WINDOW - 520) * CHARS_PER_TOKEN;
+        assert_eq!(budget, expected);
+    }
+
+    // ── generate_description truncation tests ────────────────────────────────
+
+    #[tokio::test]
+    async fn test_generate_description_truncates_oversized_symbol() {
+        // Build a large symbol that exceeds a tiny budget.
+        let large_code = "fn big() {\n".to_string() + &"    let x = 1;\n".repeat(200) + "}";
+        assert!(
+            large_code.chars().count() > 100,
+            "precondition: code must be large"
+        );
+
+        let llm = MockDescLlm::with_response("A big function.");
+        // Budget of 100 chars is far smaller than large_code.
+        let result = generate_description(&large_code, &llm, "model", 100).await;
+
+        assert!(result.is_ok(), "truncation must not cause an error");
+        assert_eq!(result.unwrap(), "A big function.");
+    }
+
+    #[tokio::test]
+    async fn test_generate_description_no_truncation_when_fits() {
+        let small_code = "fn foo() { 42 }";
+        let llm = MockDescLlm::with_response("Returns 42.");
+        // Budget much larger than the symbol.
+        let result = generate_description(small_code, &llm, "model", 10_000).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "Returns 42.");
+    }
+
+    #[tokio::test]
+    async fn test_generate_description_truncation_appends_marker() {
+        // Verify the marker lands in the text passed to the LLM.
+        // We capture it via a response that echoes back (via a closure mock isn't
+        // easily possible without Arc<Mutex<>>, so we rely on truncate_with directly).
+        use std::borrow::Cow;
+        let code = "x".repeat(500);
+        let budget = 100;
+        let truncated = truncate_with(&code, budget, TRUNCATION_MARKER);
+        assert!(matches!(truncated, Cow::Owned(_)), "must be truncated");
+        let s = truncated.as_ref();
+        assert!(
+            s.ends_with(TRUNCATION_MARKER),
+            "truncation marker must be present"
+        );
+        assert_eq!(
+            s.chars().count(),
+            budget + TRUNCATION_MARKER.chars().count(),
+            "output length = budget + marker"
+        );
+    }
 
     #[test]
     fn test_ext_to_lang() {
