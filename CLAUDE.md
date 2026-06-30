@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-**MemCan** — Claude Code plugin for persistent memory via LanceDB + fastembed + genai. Stores and recalls learnings, decisions, preferences across sessions. MIT license.
+**MemCan** — Claude Code plugin for persistent memory via LanceDB + fastembed + ollama-rs. Stores and recalls learnings, decisions, preferences across sessions. MIT license.
 
-Stack: Rust MCP server (rmcp), LanceDB (embedded vectors), genai+Ollama (LLM), fastembed (embeddings).
+Stack: Rust MCP server (rmcp), LanceDB (embedded vectors), ollama-rs (default LLM) / genai (optional), fastembed (embeddings).
 
 Architecture: Three-crate workspace — reusable library (`memcan-core`), MCP server binary (`memcan-server`), thin CLI client (`memcan`).
 
@@ -35,7 +35,9 @@ Reusable library. All domain logic lives here. Must not depend on transport, CLI
 | `traits` | `VectorStore`, `EmbeddingProvider`, `LlmProvider`, `TableSchema` abstractions |
 | `lancedb_store` | LanceDB implementation of `VectorStore` |
 | `embed` | fastembed implementation of `EmbeddingProvider` |
-| `llm` | genai implementation of `LlmProvider` |
+| `llm_ollama_rs` | **Default** `LlmProvider` backed by ollama-rs 0.3.5 (feature `ollama-rs-llm`). Token counts from `ChatMessageFinalResponseData.{prompt_eval_count, eval_count}`. |
+| `llm` | Optional `LlmProvider` backed by genai 0.5.3 (feature `genai-llm`; not default). Token counts from `ChatResponse.usage.{prompt_tokens, completion_tokens}`. |
+| `llm_telemetry` | Shared structured debug log emitter for per-call token counts; called by both LLM backends. |
 | `ollama` | Ollama model resolution helpers |
 | `pipeline` | Memory add pipeline (LLM fact extraction, dedup, store) |
 | `query` | User ID resolution, SQL sanitization helpers |
@@ -45,7 +47,7 @@ Reusable library. All domain logic lives here. Must not depend on transport, CLI
 | `health` | Dependency circuit breaker (Ollama, LanceDB, Embedding) |
 | `export` | Collection export to JSONL format (paginated scroll, no vectors) |
 | `import` | JSONL import with re-embedding (no LLM processing) |
-| `indexing::code` | Language-specific symbol extraction, LLM descriptions, incremental code indexing |
+| `indexing::code` | Language-specific symbol extraction, LLM descriptions, incremental code indexing. Input guard: `description_input_budget()` queries the model context window and truncates oversized symbol text via `truncate_with()` — emits `warn!` when fired. |
 | `indexing::code_files` | Batch file-level code indexing from raw source content |
 | `indexing::standards` | Markdown chunking, LLM metadata extraction |
 | `schema` | Memcan-specific `TableSchema` implementation with filterable columns |
@@ -215,10 +217,25 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 | `COMPACT_FRAGMENT_THRESHOLD` | `64` | Auto-compact a table after a write once it reaches this many data fragments; also the startup-compaction skip threshold. `0` disables auto-compaction. |
 | `LLM_MODEL` | `qwen3.5:9b` | LLM model name (`ollama::` prefix accepted for backward compat) |
 | `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings (dimensions derived automatically) |
-| `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`). Passed to genai client explicitly. |
+| `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`). Injected into the LLM client (ollama-rs default; or genai via `ServiceTargetResolver`). |
 | `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth (sent as `Authorization: Bearer $key`) |
 
-> **Note:** The genai crate does **not** read `OLLAMA_HOST` or `OLLAMA_API_KEY` from environment — MemCan reads them via `Settings` and passes them to the genai client via `ServiceTargetResolver`.
+> **Note:** Neither ollama-rs nor genai reads `OLLAMA_HOST` or `OLLAMA_API_KEY` from the environment automatically — MemCan reads them via `Settings` and injects them into each LLM client at construction time.
+
+## LLM Token Telemetry
+
+Both LLM backends emit a structured `debug` log line after each chat call:
+
+```
+RUST_LOG=memcan::llm::telemetry=debug
+```
+
+Example output:
+```
+DEBUG memcan::llm::telemetry: LLM token usage op="fact_extraction" model="qwen3.5:9b" prompt_tokens=599 completion_tokens=78 total_tokens=677
+```
+
+Fields: `op` (call-site label: `fact_extraction`, `dedup`, `code_description`, `standards_metadata`), `model`, `prompt_tokens`, `completion_tokens`, `total_tokens`. When the provider returns no counts, logs "LLM token usage unavailable" instead.
 
 ## Deprecated Features
 
