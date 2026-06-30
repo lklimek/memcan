@@ -452,6 +452,7 @@ pub(crate) async fn generate_description(
         temperature: Some(0.0),
         max_tokens: Some(256),
         think: Some(false),
+        op: "code_description",
         ..Default::default()
     });
     llm.chat(llm_model, &messages, options).await

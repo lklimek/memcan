@@ -210,6 +210,11 @@ pub struct LlmOptions {
     pub max_tokens: Option<u32>,
     /// Enable thinking/reasoning mode.
     pub think: Option<bool>,
+    /// Operation label for token telemetry (e.g. `"fact_extraction"`, `"dedup"`).
+    ///
+    /// Emitted verbatim in the `memcan::llm::telemetry` debug log line so
+    /// operators can distinguish per-call-site costs. Defaults to `""` (unknown).
+    pub op: &'static str,
 }
 
 #[cfg(test)]

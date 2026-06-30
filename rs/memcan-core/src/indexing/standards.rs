@@ -209,6 +209,7 @@ pub async fn extract_metadata(
         temperature: Some(0.0),
         max_tokens: Some(512),
         think: Some(false),
+        op: "standards_metadata",
     });
     let response = llm.chat(model, &messages, options).await?;
     let meta: ChunkMetadata = serde_json::from_str(&response).with_context(|| {
