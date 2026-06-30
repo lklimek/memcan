@@ -1,0 +1,12 @@
+{"decision": "rejected", "content": "Hi!"}
+{"decision": "rejected", "content": "OK"}
+{"decision": "rejected", "content": "Let me think about this..."}
+{"decision": "rejected", "content": "Hmm."}
+{"decision": "rejected", "content": "What should we do next?"}
+{"decision": "kept", "content": "The WAL segment reader panics on empty files because it tries to slice byte 0 before checking length. Fix: add an early-return guard that returns Ok(vec![]) when file_size == 0."}
+{"decision": "kept", "content": "flush_pending() and drain_queue() both acquire the write lock before checking whether the target table is already in the in-flight set."}
+{"decision": "kept", "content": "The index writer now skips files larger than 5 MB. Previously it indexed all files regardless of size."}
+{"decision": "kept", "content": "compact_delta() exits early and returns Ok(()) when the table has fewer than 8 delta fragments, avoiding unnecessary rewrite overhead."}
+{"decision": "kept", "content": "When the manifest file is missing entirely on table open, the store returns VectorStoreError::TableNotFound rather than panicking with an index-out-of-bounds."}
+{"decision": "kept", "content": "merge_facts() and split_facts() both rely on the same sentence-boundary tokenizer; changing the tokenizer affects both functions."}
+{"decision": "kept", "content": "The embedding cache entry is now keyed by (model_name, text_hash) rather than text alone, so switching models automatically invalidates cached vectors."}

@@ -136,8 +136,7 @@ pub fn chunk_content<'a>(
     chunks
 }
 
-// INTENTIONAL(SEC-009): MD5 used for content deduplication only, not security.
-// Collision risk negligible for this use case.
+// MD5 here is for content dedup only, not security — collision risk is acceptable.
 /// Compute MD5 hex digest of a string.
 pub fn md5_hex(data: &str) -> String {
     let mut hasher = Md5::new();
@@ -252,6 +251,15 @@ pub struct MemoryEvent {
     pub data: Option<String>,
     #[serde(default)]
     pub memory_id: Option<String>,
+}
+
+/// Remove exact-duplicate strings from a batch of facts, preserving first-occurrence order.
+///
+/// Runs in O(n) time and allocates only the HashSet of seen strings. Near-duplicates
+/// (same meaning, different wording) are handled later by the dedup LLM call.
+fn dedup_facts_exact(facts: &[String]) -> Vec<&String> {
+    let mut seen = HashSet::new();
+    facts.iter().filter(|f| seen.insert(f.as_str())).collect()
 }
 
 /// Validate and sanitize extracted facts: truncate long facts and cap total count.
@@ -592,7 +600,9 @@ impl Pipeline {
     ) -> Result<()> {
         let meta = clean_metadata(metadata);
 
-        for fact in facts {
+        // Drop exact-duplicate strings within the batch before hitting the store.
+        // Near-duplicates are handled by the dedup LLM call below.
+        for fact in dedup_facts_exact(facts) {
             let vectors = self.embedder.embed(std::slice::from_ref(fact)).await?;
             let vector = &vectors[0];
 
@@ -824,6 +834,58 @@ async fn run_dedup_llm(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_dedup_facts_exact_removes_duplicates() {
+        let facts = vec![
+            "fact a".to_string(),
+            "fact b".to_string(),
+            "fact a".to_string(), // exact duplicate — should be dropped
+            "fact c".to_string(),
+        ];
+        let result = dedup_facts_exact(&facts);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].as_str(), "fact a");
+        assert_eq!(result[1].as_str(), "fact b");
+        assert_eq!(result[2].as_str(), "fact c");
+    }
+
+    #[test]
+    fn test_dedup_facts_exact_no_duplicates() {
+        let facts = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let result = dedup_facts_exact(&facts);
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_dedup_facts_exact_empty() {
+        let facts: Vec<String> = vec![];
+        let result = dedup_facts_exact(&facts);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_dedup_facts_exact_all_same() {
+        let facts = vec!["same".to_string(), "same".to_string(), "same".to_string()];
+        let result = dedup_facts_exact(&facts);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].as_str(), "same");
+    }
+
+    #[test]
+    fn test_dedup_facts_exact_preserves_order() {
+        let facts = vec![
+            "z fact".to_string(),
+            "a fact".to_string(),
+            "z fact".to_string(),
+            "m fact".to_string(),
+        ];
+        let result = dedup_facts_exact(&facts);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].as_str(), "z fact");
+        assert_eq!(result[1].as_str(), "a fact");
+        assert_eq!(result[2].as_str(), "m fact");
+    }
 
     #[test]
     fn test_md5_hex() {
