@@ -33,10 +33,23 @@ Output: {"facts": ["Do not use symlinks in Docker build contexts"]}
 Input: Hi, how are you?
 Output: {"facts": []}
 
+Input: LanceDB index files become unreadable when the process is killed mid-flush. We added a preflight check on table open that detects and quarantines the damaged files before any read is attempted.
+Output: {"facts": ["LanceDB table open runs a preflight check that detects and quarantines files damaged by mid-flush process kills, preventing unreadable-index errors"]}
+
+Input: open_table() and open_or_create_table() both skip the manifest validation step when the table name is in the in-flight write set. open_table() does it to avoid conflicts; open_or_create_table() does it for the same reason.
+Output: {"facts": ["open_table() and open_or_create_table() both skip manifest validation when the table name is in the in-flight write set"]}
+
+Input: The batch embedder now uses rayon for parallelism. Previously it ran sequentially.
+Output: {"facts": ["The batch embedder uses rayon for parallel embedding"]}
+
 ## Rules
 
 - Preserve specific details: model names, version numbers, error messages, config values.
 - Detect the language of the input and record facts in the same language.
 - Return ONLY valid JSON with a "facts" key containing a list of strings.
 - Do not return facts from the examples above.
+- **Self-containment is absolute**: every fact must name its full subject and stand alone. Never use "this", "that", "it", "the above", or reference another fact or the source text — inline the referent.
+- **Don't fragment a unit of meaning**: keep cause+fix, problem+resolution, metric+recommendation, and claim+rationale together in ONE fact. Atomize only genuinely independent facts; prefer fewer complete facts over many fragments.
+- **Collapse near-duplicate parallel facts**: when the same predicate (behaviour, constraint, or property) applies to multiple named symbols and each symbol offers no additional per-symbol detail, emit ONE fact naming all symbols together. Keep as separate facts when each entry carries a distinct value or mapping (e.g. different log levels, different config values, different thresholds).
+- **Timeless present tense**: strip change-relative words ("now", "previously", "currently", "no longer", "as of this PR/change"); state the durable end-state.
 - Today's date is $today.
