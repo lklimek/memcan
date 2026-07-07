@@ -64,12 +64,13 @@ pub fn strip_code_fence(s: &str) -> &str {
     let Some(after_open) = trimmed.strip_prefix("```") else {
         return trimmed;
     };
-    // Discard the rest of the opening fence line (an optional language tag such
-    // as `json`); on single-line input strip only a leading alphanumeric tag.
-    let body = match after_open.split_once('\n') {
-        Some((_tag, rest)) => rest,
-        None => after_open.trim_start_matches(|c: char| c.is_ascii_alphanumeric()),
-    };
+    // Discard an optional language tag (a contiguous alphanumeric run right
+    // after the opening fence, e.g. `json`) — regardless of whether the body
+    // starts on the same line (`` ```json {...}\n``` ``) or the next one
+    // (`` ```json\n{...}\n``` ``). Splitting on the first newline instead
+    // would wrongly swallow a same-line body into the "tag" when the fence
+    // only closes on a later line.
+    let body = after_open.trim_start_matches(|c: char| c.is_ascii_alphanumeric());
     let body = body.trim();
     body.strip_suffix("```").map_or(body, str::trim)
 }
@@ -210,6 +211,15 @@ mod tests {
     #[test]
     fn test_fence_single_line_with_tag() {
         assert_eq!(strip_code_fence("```json {\"a\":1} ```"), "{\"a\":1}");
+    }
+
+    // Mixed format: body starts on the same line as the opening tag, but the
+    // closing fence is on a later line. Regression test — this previously
+    // returned "" because the whole first line (tag + body) was mistaken for
+    // the language tag.
+    #[test]
+    fn test_fence_body_starts_on_tag_line_closes_on_next() {
+        assert_eq!(strip_code_fence("```json {\"a\":1}\n```"), "{\"a\":1}");
     }
 
     // Bare (unfenced) text with surrounding whitespace is only trimmed.

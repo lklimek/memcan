@@ -212,13 +212,13 @@ pub async fn extract_metadata(
         think: Some(false),
     });
     let response = llm.chat(model, &messages, options).await?;
-    let meta: ChunkMetadata =
-        serde_json::from_str(strip_code_fence(&response)).with_context(|| {
-            format!(
-                "Failed to parse metadata: {}",
-                truncate_with(&response, 200, "…")
-            )
-        })?;
+    let stripped = strip_code_fence(&response);
+    let meta: ChunkMetadata = serde_json::from_str(stripped).with_context(|| {
+        format!(
+            "Failed to parse metadata: {}",
+            truncate_with(stripped, 200, "…")
+        )
+    })?;
     Ok(validate_metadata(meta))
 }
 
