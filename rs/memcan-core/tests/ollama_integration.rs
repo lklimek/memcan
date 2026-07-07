@@ -55,7 +55,7 @@ async fn construction_default_config() {
     // Then: model name has ollama:: prefix stripped, URL points to localhost
     assert_eq!(
         provider.default_model(),
-        "qwen3.5:9b",
+        "gemma4:26b-a4b-it-qat",
         "default model should be bare name without ollama:: prefix"
     );
     assert!(
