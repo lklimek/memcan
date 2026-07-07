@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>qwen vs gemma4 — MemCan Model Guide</title>
+<style>
+  :root {
+    --surface: #f3f1ec;
+    --surface-raised: #ffffff;
+    --surface-sunken: #eae6dd;
+    --ink: #1c1917;
+    --ink-muted: #6b6459;
+    --ink-faint: #a39a8b;
+    --border: #dedacf;
+    --qwen: #b8862b;
+    --qwen-soft: #b8862b1a;
+    --gemma: #0f7a5c;
+    --gemma-soft: #0f7a5c1a;
+    --good: #3f8f5f;
+    --warn: #b5541f;
+    --warn-soft: #b5541f14;
+    --shadow: 0 1px 2px rgba(28,25,23,0.06), 0 8px 24px -12px rgba(28,25,23,0.18);
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface: #1a1917;
+      --surface-raised: #242220;
+      --surface-sunken: #14130f;
+      --ink: #f0ebe3;
+      --ink-muted: #a79e90;
+      --ink-faint: #6e6559;
+      --border: #3a342e;
+      --qwen: #c4842e;
+      --qwen-soft: #c4842e26;
+      --gemma: #2f9478;
+      --gemma-soft: #2f947826;
+      --good: #4a9a66;
+      --warn: #c7622e;
+      --warn-soft: #c7622e1f;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -12px rgba(0,0,0,0.5);
+    }
+  }
+  :root[data-theme="dark"] {
+    --surface: #1a1917; --surface-raised: #242220; --surface-sunken: #14130f;
+    --ink: #f0ebe3; --ink-muted: #a79e90; --ink-faint: #6e6559; --border: #3a342e;
+    --qwen: #c4842e; --qwen-soft: #c4842e26; --gemma: #2f9478; --gemma-soft: #2f947826;
+    --good: #4a9a66; --warn: #c7622e; --warn-soft: #c7622e1f;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -12px rgba(0,0,0,0.5);
+  }
+  :root[data-theme="light"] {
+    --surface: #f3f1ec; --surface-raised: #ffffff; --surface-sunken: #eae6dd;
+    --ink: #1c1917; --ink-muted: #6b6459; --ink-faint: #a39a8b; --border: #dedacf;
+    --qwen: #b8862b; --qwen-soft: #b8862b1a; --gemma: #0f7a5c; --gemma-soft: #0f7a5c1a;
+    --good: #3f8f5f; --warn: #b5541f; --warn-soft: #b5541f14;
+    --shadow: 0 1px 2px rgba(28,25,23,0.06), 0 8px 24px -12px rgba(28,25,23,0.18);
+  }
+
+  * { box-sizing: border-box; }
+  html { color-scheme: light dark; }
+  body {
+    margin: 0;
+    background: var(--surface);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: clamp(28px, 5vw, 64px) clamp(18px, 4vw, 28px) 80px;
+  }
+  .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface-raised);
+  }
+  .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--gemma); flex: none; }
+
+  h1 {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: clamp(28px, 5.4vw, 42px);
+    line-height: 1.12;
+    letter-spacing: -0.01em;
+    margin: 18px 0 14px;
+    text-wrap: balance;
+  }
+  .lede {
+    font-size: 17px;
+    color: var(--ink-muted);
+    max-width: 60ch;
+    margin: 0 0 26px;
+  }
+  .lede b { color: var(--ink); font-weight: 600; }
+
+  .verdict {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    align-items: center;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    box-shadow: var(--shadow);
+    margin-bottom: 44px;
+  }
+  .verdict-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .verdict-text { flex: 1 1 320px; font-size: 15.5px; }
+  .chip {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 100px;
+    white-space: nowrap;
+  }
+  .chip-qwen { background: var(--qwen-soft); color: var(--qwen); border: 1px solid var(--qwen); }
+  .chip-gemma { background: var(--gemma-soft); color: var(--gemma); border: 1px solid var(--gemma); }
+  .chip-tie { background: var(--surface-sunken); color: var(--ink-muted); border: 1px solid var(--border); }
+
+  section { margin-bottom: 48px; }
+  .section-head { margin-bottom: 16px; }
+  h2 {
+    font-family: var(--mono);
+    font-size: clamp(19px, 3vw, 23px);
+    font-weight: 700;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+  .section-sub { color: var(--ink-muted); font-size: 14.5px; max-width: 62ch; }
+
+  /* --- VRAM gauge --- */
+  .gauge-card {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px clamp(16px, 4vw, 26px) 20px;
+    box-shadow: var(--shadow);
+  }
+  .gauge-scale {
+    position: relative;
+    height: 14px;
+    margin: 6px 0 26px;
+  }
+  .gauge-scale-track {
+    position: absolute; inset: 0;
+    border-radius: 3px;
+    background: var(--surface-sunken);
+  }
+  .gauge-budget-line {
+    position: absolute; top: -6px; bottom: -6px;
+    width: 2px; background: var(--ink);
+    left: 100%;
+  }
+  .gauge-budget-label {
+    position: absolute; top: -26px; right: -14px;
+    font-family: var(--mono); font-size: 11px; color: var(--ink-muted);
+    white-space: nowrap;
+  }
+  .gauge-8gb-line {
+    position: absolute; top: -6px; bottom: -6px;
+    left: 50%;
+    border-left: 2px dashed var(--ink-faint);
+  }
+  .gauge-8gb-label {
+    position: absolute; top: -26px; left: 50%;
+    transform: translateX(-50%);
+    font-family: var(--mono); font-size: 11px; color: var(--ink-faint);
+    white-space: nowrap;
+  }
+  .gauge-row { margin-bottom: 22px; }
+  .gauge-row:last-child { margin-bottom: 4px; }
+  .gauge-row-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 8px; gap: 10px; flex-wrap: wrap;
+  }
+  .gauge-model { font-family: var(--mono); font-weight: 700; font-size: 15px; }
+  .gauge-model .m-qwen { color: var(--qwen); }
+  .gauge-model .m-gemma { color: var(--gemma); }
+  .gauge-figs { font-family: var(--mono); font-size: 14px; color: var(--ink-muted); }
+  .gauge-figs b { color: var(--ink); font-weight: 700; }
+  .gauge-bar-wrap {
+    position: relative;
+    height: 30px;
+    background: var(--surface-sunken);
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .gauge-bar-wrap::after {
+    /* 16GB budget marker, at 100% width since bars scale to a 16GB=100% axis */
+    content: "";
+    position: absolute; top: 0; bottom: 0; right: 0;
+    width: 2px; background: var(--ink); opacity: 0.35;
+  }
+  .gauge-bar-wrap::before {
+    /* 8GB reference marker, at 50% width on the same 16GB=100% axis */
+    content: "";
+    position: absolute; top: 0; bottom: 0; left: 50%;
+    border-left: 2px dashed var(--ink-faint);
+    opacity: 0.6;
+    z-index: 1;
+  }
+  .gauge-fill {
+    height: 100%;
+    border-radius: 5px 0 0 5px;
+    display: flex; align-items: center;
+    transition: width 0.6s cubic-bezier(.2,.8,.2,1);
+  }
+  .gauge-fill.f-qwen { background: linear-gradient(90deg, var(--qwen), color-mix(in oklab, var(--qwen) 78%, var(--surface-raised))); }
+  .gauge-fill.f-gemma { background: linear-gradient(90deg, var(--gemma), color-mix(in oklab, var(--gemma) 78%, var(--surface-raised))); }
+  .gauge-headroom {
+    font-family: var(--mono); font-size: 12px; margin-top: 6px; color: var(--ink-muted);
+  }
+  .tag {
+    font-family: var(--mono); font-size: 11px; font-weight: 700;
+    letter-spacing: 0.03em; padding: 2px 7px; border-radius: 4px;
+    margin-left: 8px;
+  }
+  .tag-warn { background: var(--warn-soft); color: var(--warn); }
+  .tag-good { background: color-mix(in oklab, var(--good) 14%, transparent); color: var(--good); }
+  .gauge-footnote {
+    font-size: 13px; color: var(--ink-muted); margin-top: 18px;
+    padding-top: 16px; border-top: 1px dashed var(--border);
+  }
+
+  /* --- comparison table --- */
+  .table-scroll { overflow-x: auto; }
+  table.compare {
+    width: 100%;
+    min-width: 560px;
+    border-collapse: collapse;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+  }
+  table.compare th, table.compare td {
+    padding: 14px 16px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  table.compare tr:last-child td { border-bottom: none; }
+  table.compare thead th {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--ink-faint); font-weight: 600;
+    background: var(--surface-sunken);
+  }
+  table.compare .metric-name { font-weight: 600; font-size: 14.5px; }
+  table.compare .metric-help { font-size: 12.5px; color: var(--ink-muted); margin-top: 3px; max-width: 34ch; }
+  table.compare .val { font-family: var(--mono); font-weight: 700; font-size: 15px; white-space: nowrap; }
+  table.compare .val-qwen { color: var(--qwen); }
+  table.compare .val-gemma { color: var(--gemma); }
+  table.compare .winner-col { text-align: center; }
+
+  .tie-callout {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--ink-faint);
+    border-radius: 8px;
+    padding: 16px 18px;
+    font-size: 14.5px;
+    color: var(--ink-muted);
+  }
+  .tie-callout b { color: var(--ink); }
+
+  /* --- decision cards --- */
+  .decision-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 620px) {
+    .decision-grid { grid-template-columns: 1fr; }
+  }
+  .decide-card {
+    border-radius: 12px;
+    padding: 20px 20px 18px;
+    border: 1px solid var(--border);
+    background: var(--surface-raised);
+    box-shadow: var(--shadow);
+  }
+  .decide-card.for-qwen { border-top: 3px solid var(--qwen); }
+  .decide-card.for-gemma { border-top: 3px solid var(--gemma); }
+  .decide-title {
+    font-family: var(--mono); font-weight: 700; font-size: 15.5px;
+    margin: 0 0 12px;
+  }
+  .decide-title .m-qwen { color: var(--qwen); }
+  .decide-title .m-gemma { color: var(--gemma); }
+  .decide-card ul { margin: 0; padding-left: 20px; font-size: 14.5px; }
+  .decide-card li { margin-bottom: 8px; }
+  .decide-card li:last-child { margin-bottom: 0; }
+
+  footer {
+    margin-top: 56px;
+    padding-top: 22px;
+    border-top: 1px solid var(--border);
+    font-size: 12.5px;
+    color: var(--ink-faint);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  footer .mono { font-size: 12px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .gauge-fill { transition: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <span class="eyebrow"><span class="dot"></span>MemCan model guide — 8&nbsp;GB &amp; 16&nbsp;GB VRAM</span>
+
+  <h1>Which local model should<br>remember for you?</h1>
+
+  <p class="lede">
+    <a href="https://github.com/lklimek/memcan" style="color:inherit">MemCan</a> gives Claude Code persistent memory across sessions — a small local
+    AI model reads your conversations and decides what's actually worth saving. We benchmarked
+    the two leading options for that job, <b>qwen3.5:9b</b> and <b>gemma4:26b-a4b-it-qat</b>,
+    on real engineering conversations, run through MemCan's actual production code
+    (not a synthetic scoring rig). Here's what to pick — on an 8&nbsp;GB card or a 16&nbsp;GB one.
+  </p>
+
+  <div class="verdict">
+    <span class="verdict-label">Short version</span>
+    <span class="verdict-text">
+      <span class="chip chip-qwen">qwen</span> fits comfortably on an 8&nbsp;GB card and is the
+      only option if that's what you have.
+      <span class="chip chip-gemma">gemma4</span> is more accurate and more reliable, but needs
+      a full 16&nbsp;GB card to itself.
+    </span>
+  </div>
+
+  <section>
+    <div class="section-head">
+      <h2>Rule #1: does it even fit?</h2>
+      <p class="section-sub">
+        Whether or not the model is actively "thinking," it has to sit fully loaded in your
+        graphics card's memory (VRAM). This is the hard constraint everything else is downstream
+        of — check it against your own card, whether that's 8&nbsp;GB or 16&nbsp;GB.
+      </p>
+    </div>
+
+    <div class="gauge-card">
+      <div class="gauge-scale">
+        <div class="gauge-scale-track"></div>
+        <div class="gauge-8gb-line"></div>
+        <div class="gauge-8gb-label">8&nbsp;GB card</div>
+        <div class="gauge-budget-line"></div>
+        <div class="gauge-budget-label">16&nbsp;GB card</div>
+      </div>
+
+      <div class="gauge-row">
+        <div class="gauge-row-head">
+          <span class="gauge-model"><span class="m-qwen">qwen3.5:9b</span></span>
+          <span class="gauge-figs"><b>6.6</b>&nbsp;GB</span>
+        </div>
+        <div class="gauge-bar-wrap">
+          <div class="gauge-fill f-qwen" style="width:41.25%"></div>
+        </div>
+        <div class="gauge-headroom">Fits an 8&nbsp;GB card with ~1.4&nbsp;GB to spare — and a 16&nbsp;GB card easily <span class="tag tag-good">fits 8GB+</span></div>
+      </div>
+
+      <div class="gauge-row">
+        <div class="gauge-row-head">
+          <span class="gauge-model"><span class="m-gemma">gemma4:26b-a4b-it-qat</span></span>
+          <span class="gauge-figs"><b>15.6</b>&nbsp;GB</span>
+        </div>
+        <div class="gauge-bar-wrap">
+          <div class="gauge-fill f-gemma" style="width:97.5%"></div>
+        </div>
+        <div class="gauge-headroom">Needs the full 16&nbsp;GB card — doesn't fit an 8&nbsp;GB card at all <span class="tag tag-warn">requires 16GB</span></div>
+      </div>
+
+      <div class="gauge-footnote">
+        gemma4 is technically a 26-billion-parameter model that only "activates" about 4B of
+        those parameters per response (that's why it isn't much slower) — but the <em>full</em>
+        26B still has to be sitting in memory, all the time. On a 16&nbsp;GB card, that leaves
+        almost nothing for anything else — no browser tabs eating GPU memory, no second model,
+        no game in the background. On an 8&nbsp;GB card it simply won't load.
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>How they actually perform</h2>
+      <p class="section-sub">Measured on real engineering conversations, not toy examples.</p>
+    </div>
+
+    <div class="table-scroll">
+      <table class="compare">
+        <thead>
+          <tr>
+            <th>Metric</th>
+            <th class="winner-col">qwen3.5:9b</th>
+            <th class="winner-col">gemma4</th>
+            <th class="winner-col">Winner</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+              <div class="metric-name">Avoids saving junk as a memory</div>
+              <div class="metric-help">How often it correctly ignores things not worth remembering — status pings, file paths, commit hashes.</div>
+            </td>
+            <td class="winner-col val val-qwen">80%</td>
+            <td class="winner-col val val-gemma">93%</td>
+            <td class="winner-col"><span class="chip chip-gemma">gemma4</span></td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-name">Broken responses during testing</div>
+              <div class="metric-help">Out of hundreds of test calls, how many times the output came back malformed.</div>
+            </td>
+            <td class="winner-col val val-qwen">6</td>
+            <td class="winner-col val val-gemma">0</td>
+            <td class="winner-col"><span class="chip chip-gemma">gemma4</span></td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-name">Response speed, once warmed up</div>
+              <div class="metric-help">Typical time to save a memory, with the model already loaded.</div>
+            </td>
+            <td class="winner-col val val-qwen">~1.5s</td>
+            <td class="winner-col val val-gemma">~1.3s</td>
+            <td class="winner-col"><span class="chip chip-tie">tie</span></td>
+          </tr>
+          <tr>
+            <td>
+              <div class="metric-name">Doesn't lose memories when updating them</div>
+              <div class="metric-help">When merging new info into an existing memory, qwen's one miss silently dropped a valid memory instead of saving it — gemma4's miss just kept it as a duplicate.</div>
+            </td>
+            <td class="winner-col val val-qwen">4/6</td>
+            <td class="winner-col val val-gemma">5/6</td>
+            <td class="winner-col"><span class="chip chip-gemma">gemma4</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>What about the writing itself?</h2>
+    </div>
+    <div class="tie-callout">
+      We also compared how clearly each model summarizes what it saves — is it accurate,
+      well-phrased, free of invented detail? <b>Genuine tie.</b> Both write comparably clear,
+      faithful notes on real-world input. If good prose is all you care about, it isn't the
+      deciding factor here — VRAM and reliability are.
+    </div>
+  </section>
+
+  <section style="margin-bottom: 8px;">
+    <div class="section-head">
+      <h2>So, which one?</h2>
+    </div>
+    <div class="decision-grid">
+      <div class="decide-card for-qwen">
+        <p class="decide-title">Choose <span class="m-qwen">qwen3.5:9b</span> if —</p>
+        <ul>
+          <li>You're on an 8&nbsp;GB card — gemma4 doesn't fit there at all</li>
+          <li>Your 16&nbsp;GB card is shared with games, a browser, or other local AI tools</li>
+          <li>A bit more junk occasionally slipping into memory is an acceptable trade</li>
+        </ul>
+      </div>
+      <div class="decide-card for-gemma">
+        <p class="decide-title">Choose <span class="m-gemma">gemma4:26b-a4b-it-qat</span> if —</p>
+        <ul>
+          <li>You have a full 16&nbsp;GB card (not 8&nbsp;GB) free for this</li>
+          <li>Accuracy and reliability matter more than squeezing into a smaller card</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Tested on real engineering commit history and conversations, through MemCan's production code path — not synthetic scoring.</span>
+    <span class="mono">2026&#8209;07&#8209;07</span>
+  </footer>
+
+</div>
+</body>
+</html>

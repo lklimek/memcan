@@ -7,6 +7,7 @@
 
 use memcan_core::config::Settings;
 use memcan_core::llm_ollama_rs::OllamaRsLlmProvider;
+use memcan_core::text::strip_code_fence;
 use memcan_core::traits::{LlmMessage, LlmOptions, LlmProvider, Role};
 use serial_test::serial;
 
@@ -37,24 +38,6 @@ fn msg(role: Role, content: &str) -> LlmMessage {
     }
 }
 
-/// Strip markdown code fences (```json ... ```) from LLM output.
-///
-/// Some models wrap JSON in fences even when format_json is set.
-/// The pipeline test needs to handle this gracefully.
-#[allow(dead_code)] // Used by #[ignore] tests only
-fn strip_code_fences(text: &str) -> &str {
-    let trimmed = text.trim();
-    if let Some(rest) = trimmed.strip_prefix("```") {
-        // Skip optional language tag on first line
-        let rest = rest.strip_prefix("json").unwrap_or(rest);
-        let rest = rest.trim_start_matches('\n');
-        if let Some(body) = rest.strip_suffix("```") {
-            return body.trim();
-        }
-    }
-    trimmed
-}
-
 // ---------------------------------------------------------------------------
 // Provider Construction
 // ---------------------------------------------------------------------------
@@ -72,7 +55,7 @@ async fn construction_default_config() {
     // Then: model name has ollama:: prefix stripped, URL points to localhost
     assert_eq!(
         provider.default_model(),
-        "qwen3.5:9b",
+        "gemma4:26b-a4b-it-qat",
         "default model should be bare name without ollama:: prefix"
     );
     assert!(
@@ -288,8 +271,9 @@ async fn json_mode_returns_valid_json() {
         .expect("JSON mode chat should succeed");
     eprintln!("[response] {text}");
 
-    // Then: response is valid JSON with the expected key
-    let parsed: serde_json::Value = serde_json::from_str(&text)
+    // Then: response is valid JSON with the expected key.
+    // Strip markdown code fences if the model wraps JSON despite format_json.
+    let parsed: serde_json::Value = serde_json::from_str(strip_code_fence(&text))
         .unwrap_or_else(|e| panic!("response is not valid JSON: {e}\nraw: {text}"));
     assert!(
         parsed.get("answer").is_some(),
@@ -334,8 +318,9 @@ async fn json_mode_structured_prompt_has_expected_keys() {
     // Then: response must be valid JSON with an object at the top level.
     // We verify our provider correctly enables JSON mode — the specific keys
     // depend on LLM instruction-following which is non-deterministic.
-    let parsed: serde_json::Value =
-        serde_json::from_str(&text).unwrap_or_else(|e| panic!("not valid JSON: {e}\nraw: {text}"));
+    // Strip markdown code fences if the model wraps JSON despite format_json.
+    let parsed: serde_json::Value = serde_json::from_str(strip_code_fence(&text))
+        .unwrap_or_else(|e| panic!("not valid JSON: {e}\nraw: {text}"));
     assert!(parsed.is_object(), "expected JSON object, got: {parsed}");
     // At minimum, the model should return *some* keys
     let obj = parsed.as_object().unwrap();
@@ -432,13 +417,14 @@ async fn think_false_with_json_mode_clean_output() {
         .expect("think:false + json chat should succeed");
     eprintln!("[response] {text}");
 
-    // Then: valid JSON, no thinking tags, correct value
+    // Then: valid JSON, no thinking tags, correct value.
+    // Strip markdown code fences if the model wraps JSON despite format_json.
     assert!(
         !text.contains("<think>"),
         "no <think> tags expected in JSON mode with think=false"
     );
-    let parsed: serde_json::Value =
-        serde_json::from_str(&text).unwrap_or_else(|e| panic!("not valid JSON: {e}\nraw: {text}"));
+    let parsed: serde_json::Value = serde_json::from_str(strip_code_fence(&text))
+        .unwrap_or_else(|e| panic!("not valid JSON: {e}\nraw: {text}"));
     assert!(
         parsed.get("result").is_some(),
         "expected 'result' key in JSON: {parsed}"
@@ -719,7 +705,7 @@ Keep single-fact inputs as one item. Preserve all specific details."#;
 
     // Then: valid JSON with a "facts" array containing multiple items
     // Strip markdown code fences if the model wraps JSON despite format_json
-    let clean = strip_code_fences(&text);
+    let clean = strip_code_fence(&text);
     let parsed: serde_json::Value =
         serde_json::from_str(clean).unwrap_or_else(|e| panic!("not valid JSON: {e}\nraw: {text}"));
 
@@ -789,7 +775,7 @@ For greetings or filler with no information, return {"facts": []}"#;
     eprintln!("[response] {text}");
 
     // Then: valid JSON with empty or near-empty facts array
-    let clean = strip_code_fences(&text);
+    let clean = strip_code_fence(&text);
     let parsed: serde_json::Value =
         serde_json::from_str(clean).unwrap_or_else(|e| panic!("not valid JSON: {e}\nraw: {text}"));
     let facts = parsed

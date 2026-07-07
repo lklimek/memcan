@@ -6,6 +6,7 @@ use serde::Deserialize;
 use memcan_core::config::Settings;
 use memcan_core::error::{MemcanError, Result as MemcanResult, ResultExt};
 use memcan_core::init::create_llm_provider;
+use memcan_core::text::strip_code_fence;
 use memcan_core::traits::{LlmMessage, LlmOptions, LlmProvider, Role};
 
 use crate::TestClassificationArgs;
@@ -52,13 +53,13 @@ async fn call_llm(
 
     let options = Some(LlmOptions {
         format_json: true,
-        max_tokens: Some(1024),
+        think: Some(false),
         ..Default::default()
     });
 
     for attempt in 1..=max_attempts {
         match llm.chat(model, &messages, options.clone()).await {
-            Ok(text) => match serde_json::from_str::<FactsResponse>(&text) {
+            Ok(text) => match serde_json::from_str::<FactsResponse>(strip_code_fence(&text)) {
                 Ok(parsed) => return Some(parsed.facts),
                 Err(e) => {
                     println!("  Parse error: {}", e);

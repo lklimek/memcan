@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::error::{Result, ResultExt};
 use crate::prompts::{FACT_EXTRACTION_PROMPT, MEMORY_UPDATE_PROMPT, render_prompt};
-use crate::text::truncate_with;
+use crate::text::{strip_code_fence, truncate_with};
 use crate::traits::{
     EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, TableSchema, VectorPoint,
     VectorStore,
@@ -568,16 +568,18 @@ impl Pipeline {
             });
 
             match self.llm.chat(&self.llm_model, &messages, options).await {
-                Ok(response) => match serde_json::from_str::<FactsResponse>(&response) {
-                    Ok(parsed) => all_facts.extend(parsed.facts),
-                    Err(e) if chunks.len() > 1 => {
-                        warn!(chunk_idx = i + 1, "fact extraction JSON parse failed: {e}");
+                Ok(response) => {
+                    match serde_json::from_str::<FactsResponse>(strip_code_fence(&response)) {
+                        Ok(parsed) => all_facts.extend(parsed.facts),
+                        Err(e) if chunks.len() > 1 => {
+                            warn!(chunk_idx = i + 1, "fact extraction JSON parse failed: {e}");
+                        }
+                        Err(e) => {
+                            warn!("fact extraction JSON parse failed: {e}");
+                            return Ok(None);
+                        }
                     }
-                    Err(e) => {
-                        warn!("fact extraction JSON parse failed: {e}");
-                        return Ok(None);
-                    }
-                },
+                }
                 Err(e) if e.is_llm_error() && chunks.len() > 1 => {
                     warn!(chunk_idx = i + 1, "fact extraction LLM call failed: {e}");
                 }
@@ -829,7 +831,7 @@ async fn run_dedup_llm(
     });
     let response = llm.chat(llm_model, &messages, options).await?;
     let parsed: MemoryUpdateResponse =
-        serde_json::from_str(&response).context("dedup response JSON parse")?;
+        serde_json::from_str(strip_code_fence(&response)).context("dedup response JSON parse")?;
     Ok(parsed.events)
 }
 
@@ -971,6 +973,33 @@ mod tests {
         assert_eq!(parsed.events[0].event_type, EventType::Add);
         assert_eq!(parsed.events[0].data.as_deref(), Some("new fact"));
         assert_eq!(parsed.events[1].event_type, EventType::None);
+    }
+
+    // Regression: qwen3.5:9b sometimes wraps its answer in a markdown fence
+    // even with format_json set. The raw fenced string fails a direct parse
+    // (the previous silent-drop path); strip_code_fence makes extract_facts()
+    // succeed.
+    #[test]
+    fn test_parse_facts_response_fenced() {
+        let fenced = "```json\n{\"facts\": [\"x\"]}\n```";
+        assert!(
+            serde_json::from_str::<FactsResponse>(fenced).is_err(),
+            "raw fenced input must fail direct parse — documents the failure mode"
+        );
+        let parsed: FactsResponse =
+            serde_json::from_str(crate::text::strip_code_fence(fenced)).unwrap();
+        assert_eq!(parsed.facts, vec!["x".to_string()]);
+    }
+
+    // Same fence quirk on the dedup/memory-update response path.
+    #[test]
+    fn test_parse_update_response_fenced() {
+        let fenced = "```json\n{\"events\": [{\"type\": \"ADD\", \"data\": \"new\"}]}\n```";
+        assert!(serde_json::from_str::<MemoryUpdateResponse>(fenced).is_err());
+        let parsed: MemoryUpdateResponse =
+            serde_json::from_str(crate::text::strip_code_fence(fenced)).unwrap();
+        assert_eq!(parsed.events.len(), 1);
+        assert_eq!(parsed.events[0].event_type, EventType::Add);
     }
 
     #[test]

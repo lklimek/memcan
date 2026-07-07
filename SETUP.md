@@ -4,7 +4,7 @@ Detailed setup instructions for MemCan. For a quick introduction, see the [READM
 
 ## Prerequisites
 
-- [Ollama](https://ollama.com/) — LLM inference (embeddings are handled in-process by fastembed on the server). A GPU is strongly recommended for acceptable performance with the default model (`qwen3.5:9b`).
+- [Ollama](https://ollama.com/) — LLM inference (embeddings are handled in-process by fastembed on the server). A GPU is strongly recommended for acceptable performance with the default model (`gemma4:26b-a4b-it-qat`, ~16GB VRAM). On an 8GB card, use `qwen3.5:9b` instead — see [`docs/memcan-model-guide.html`](docs/memcan-model-guide.html).
 - Docker + Docker Compose (for containerized deployment) **or** Rust toolchain (for building from source)
 
 ## Server Setup
@@ -17,7 +17,7 @@ Detailed setup instructions for MemCan. For a quick introduction, see the [READM
 docker compose up -d
 
 # Pull the default LLM model into the bundled Ollama
-docker compose exec ollama ollama pull qwen3.5:9b
+docker compose exec ollama ollama pull gemma4:26b-a4b-it-qat
 
 # Or build from the local Dockerfile
 docker compose up -d --build
@@ -48,7 +48,7 @@ Start the server (requires local Ollama):
 
 ```bash
 # Pull the default model first
-ollama pull qwen3.5:9b
+ollama pull gemma4:26b-a4b-it-qat
 
 ./target/release/memcan-server serve
 ```
@@ -85,7 +85,7 @@ cp .env.example ~/.config/memcan/.env
 | `LANCEDB_PATH` | `~/.local/share/memcan/lancedb` | LanceDB storage directory |
 | `DEFAULT_USER_ID` | `global` | Default memory scope |
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction |
-| `LLM_MODEL` | `ollama::qwen3.5:9b` | Ollama model name. Use the `ollama::` prefix (e.g. `ollama::qwen3.5:9b`). The prefix is stripped when calling the Ollama API. |
+| `LLM_MODEL` | `gemma4:26b-a4b-it-qat` | Ollama model name — bare (no prefix) by default; an `ollama::` prefix (e.g. `ollama::gemma4:26b-a4b-it-qat`) is also accepted and stripped automatically. Needs ~16GB VRAM; use `qwen3.5:9b` (~6.6GB) on smaller cards. |
 | `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings (dimensions derived automatically) |
 | `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`). Read by MemCan via `Settings` and passed to the Ollama client. |
 | `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth. Read by MemCan via `Settings` and sent with every request to Ollama. |

@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project fol
 
 ## [Unreleased]
 
+### Changed
+
+- **Default LLM model is now `gemma4:26b-a4b-it-qat`** (was `qwen3.5:9b`). Benchmarked against real engineering conversations through the production fact-extraction and dedup code paths: materially better junk-filtering precision and zero malformed responses, at the cost of needing a full 16GB-VRAM card (vs. qwen's ~6.6GB). Set `LLM_MODEL=qwen3.5:9b` to keep the previous, lighter model — recommended on 8GB cards. See `docs/memcan-model-guide.html` for the full comparison.
+
+### Fixed
+
+- LLM JSON responses wrapped in a markdown code fence (observed on qwen3.5:9b, despite `format: json`) were silently dropped as a failed parse instead of being read — a live memory or dedup decision could be lost with only a `warn!` log. Fixed via a shared fence-stripping helper applied at every LLM-JSON-parse call site (fact extraction, dedup, standards metadata extraction).
+- `test-classification` CLI tool's LLM call options didn't match the production `extract_facts` path (missing `think: false`, had a stray `max_tokens` cap) — classification benchmarks run through it could silently reflect the tool's own contract bug rather than real model behavior. Now matches production exactly.
+- `fact-extraction.md` collapse-parallel-facts rule was contradicted by one of its own worked examples, which still split two sibling symbols into separate facts — the rule text alone never fixed the actual splitting behavior. Removed the contradicting example and sharpened the rule with an explicit wrong/right contrast.
+
 ## [0.39.0] - 2026-06-26
 
 ### Added
