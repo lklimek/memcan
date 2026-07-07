@@ -52,7 +52,7 @@ pub(crate) fn compute_telemetry(
         (Some(p), Some(c)) => TelemetryResult::Full {
             prompt: p,
             completion: c,
-            total: p + c,
+            total: p.saturating_add(c),
         },
         (Some(p), None) => TelemetryResult::PromptOnly { prompt: p },
         (None, Some(c)) => TelemetryResult::CompletionOnly { completion: c },

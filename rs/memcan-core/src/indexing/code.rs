@@ -477,7 +477,9 @@ pub(crate) async fn description_input_budget(llm: &dyn LlmProvider, llm_model: &
         .await
         .unwrap_or(DEFAULT_CONTEXT_WINDOW);
 
-    let raw_budget = context_tokens.saturating_sub(RESERVED) * CHARS_PER_TOKEN;
+    let raw_budget = context_tokens
+        .saturating_sub(RESERVED)
+        .saturating_mul(CHARS_PER_TOKEN);
 
     if raw_budget < MIN_DESCRIPTION_INPUT_CHARS {
         warn!(
@@ -495,18 +497,22 @@ pub(crate) async fn description_input_budget(llm: &dyn LlmProvider, llm_model: &
 
 /// Generate a short functional description for a code symbol via the LLM.
 ///
-/// `max_input_chars` caps the symbol text before sending (see
-/// [`description_input_budget`]). If the text is oversized it is truncated to
-/// `max_input_chars` characters with a clear marker and a `warn!` is emitted.
+/// `max_input_chars` is a hard cap on the total symbol text sent to the LLM,
+/// including the truncation marker itself (see [`description_input_budget`]).
+/// If the code exceeds the cap it is truncated — keeping the head, the part
+/// most useful for description generation — to `max_input_chars - marker_len`
+/// characters so the marker still fits inside the cap, and a `warn!` is
+/// emitted.
 pub(crate) async fn generate_description(
     code: &str,
     llm: &dyn LlmProvider,
     llm_model: &str,
     max_input_chars: usize,
 ) -> Result<String> {
-    // Truncate oversized symbol text, keeping the head (signature + opening
-    // context) — that's the part most useful for description generation.
-    let truncated: Cow<str> = truncate_with(code, max_input_chars, TRUNCATION_MARKER);
+    // Reserve room for the marker so content + marker never exceeds
+    // max_input_chars — a hard cap, not a content-only cap.
+    let truncate_at = max_input_chars.saturating_sub(TRUNCATION_MARKER.chars().count());
+    let truncated: Cow<str> = truncate_with(code, truncate_at, TRUNCATION_MARKER);
     if matches!(truncated, Cow::Owned(_)) {
         warn!(
             original_chars = code.chars().count(),
@@ -1013,12 +1019,11 @@ mod tests {
             .clone()
             .expect("LLM must have received a user message");
 
-        let max_allowed = budget + TRUNCATION_MARKER.chars().count();
         assert!(
-            sent.chars().count() <= max_allowed,
-            "LLM input must be ≤ budget + marker chars: got {} > {}",
+            sent.chars().count() <= budget,
+            "LLM input must respect the hard cap (content + marker): got {} > {}",
             sent.chars().count(),
-            max_allowed
+            budget
         );
         assert!(
             sent.contains(TRUNCATION_MARKER),
@@ -1054,11 +1059,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_generate_description_truncation_appends_marker() {
-        // Direct unit test of truncate_with output shape (no LLM involved).
+    async fn test_truncate_with_appends_marker_when_cut() {
+        // Direct unit test of `truncate_with`'s own contract (no LLM
+        // involved) — independent of `generate_description`'s hard cap,
+        // which is covered by `test_generate_description_llm_receives_truncated_input`.
+        // `truncate_with(s, max, suffix)` truncates content to `max` chars
+        // and then appends `suffix`, so its own output is `max + suffix_len`
+        // — callers that need a hard cap (like `generate_description`)
+        // reserve the marker length from their own budget before calling in.
         let code = "x".repeat(500);
-        let budget = 100;
-        let truncated = truncate_with(&code, budget, TRUNCATION_MARKER);
+        let max_chars = 100;
+        let truncated = truncate_with(&code, max_chars, TRUNCATION_MARKER);
         assert!(matches!(truncated, Cow::Owned(_)), "must be truncated");
         let s = truncated.as_ref();
         assert!(
@@ -1067,8 +1078,8 @@ mod tests {
         );
         assert_eq!(
             s.chars().count(),
-            budget + TRUNCATION_MARKER.chars().count(),
-            "output length = budget + marker"
+            max_chars + TRUNCATION_MARKER.chars().count(),
+            "output length = max_chars + marker"
         );
     }
 
