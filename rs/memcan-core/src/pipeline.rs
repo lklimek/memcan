@@ -563,6 +563,7 @@ impl Pipeline {
             let options = Some(LlmOptions {
                 format_json: true,
                 think: Some(false),
+                op: "fact_extraction",
                 ..Default::default()
             });
 
@@ -825,6 +826,7 @@ async fn run_dedup_llm(
     let options = Some(LlmOptions {
         format_json: true,
         think: Some(false),
+        op: "dedup",
         ..Default::default()
     });
     let response = llm.chat(llm_model, &messages, options).await?;

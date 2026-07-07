@@ -4,6 +4,7 @@
 //! that natively supports Ollama, OpenAI, Anthropic, Gemini, and others.
 
 use crate::error::{MemcanError, Result};
+use crate::llm_telemetry;
 use crate::traits::{LlmMessage, LlmOptions, LlmProvider, Role};
 use async_trait::async_trait;
 use genai::adapter::AdapterKind;
@@ -152,6 +153,25 @@ impl LlmProvider for GenaiLlmProvider {
                 context: format!("genai chat call to model '{model}' failed"),
                 detail: e.to_string(),
             })?;
+
+        // Emit token telemetry before consuming the response.
+        // genai Usage fields are Option<i32>; cast to u64 (negative = invalid, treat as None).
+        let prompt_tokens = response
+            .usage
+            .prompt_tokens
+            .and_then(|n| u64::try_from(n).ok());
+        let completion_tokens = response
+            .usage
+            .completion_tokens
+            .and_then(|n| u64::try_from(n).ok());
+        // Mirror the ServiceTargetResolver's "ollama::" strip so the logged
+        // model name matches what was actually sent to the provider.
+        llm_telemetry::emit(
+            opts.op,
+            strip_ollama_prefix(model),
+            prompt_tokens,
+            completion_tokens,
+        );
 
         response
             .into_first_text()

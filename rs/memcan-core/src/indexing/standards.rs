@@ -210,6 +210,7 @@ pub async fn extract_metadata(
         temperature: Some(0.0),
         max_tokens: Some(512),
         think: Some(false),
+        op: "standards_metadata",
     });
     let response = llm.chat(model, &messages, options).await?;
     let stripped = strip_code_fence(&response);

@@ -4,6 +4,7 @@
 //! falls back to line-based chunking, then embeds and upserts into the vector store.
 //! Supports incremental indexing via content hashing and stale-file cleanup.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -16,8 +17,9 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::error::{MemcanError, Result, ResultExt};
-use crate::pipeline::CODE_TABLE;
+use crate::pipeline::{CHARS_PER_TOKEN, CODE_TABLE, DEFAULT_CONTEXT_WINDOW};
 use crate::prompts::CODE_DESCRIPTION_PROMPT;
+use crate::text::truncate_with;
 use crate::traits::{
     EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, TableSchema, VectorPoint,
     VectorStore,
@@ -433,11 +435,101 @@ pub async fn drop_code(
     Ok(deleted)
 }
 
+/// Marker appended to truncated symbol text so the LLM knows the code was cut.
+const TRUNCATION_MARKER: &str = "\n// ... [truncated: symbol exceeds LLM input budget]";
+
+/// Minimum symbol text characters guaranteed to reach the LLM, regardless of
+/// the detected context window.
+///
+/// 256 chars ≈ 64 tokens at [`CHARS_PER_TOKEN`] — enough to hold a complete
+/// function/method signature with parameter types and return type (e.g.
+/// `pub async fn fetch_user(conn: &PgPool, id: Uuid) -> Result<User, DbError>`).
+/// Any model whose context window is so small that the computed budget falls
+/// below this floor is too constrained to be usefully indexed; we clamp up and
+/// warn **once** at budget-computation time rather than flooding per symbol.
+pub(crate) const MIN_DESCRIPTION_INPUT_CHARS: usize = 256;
+
+/// Compute the maximum character count of symbol text that can safely be sent
+/// to the LLM in a single [`generate_description`] call.
+///
+/// Queries the provider for the model's context window (falls back to
+/// [`DEFAULT_CONTEXT_WINDOW`]) and subtracts reserved tokens for the system
+/// prompt overhead (~200 t), max output (256 t), and a safety margin (64 t).
+/// The remaining token budget is converted to characters via [`CHARS_PER_TOKEN`].
+///
+/// If the resulting budget would fall below [`MIN_DESCRIPTION_INPUT_CHARS`] (e.g.
+/// when `context_window ≤ RESERVED`), a **single** `warn!` is emitted and the
+/// budget is clamped to that floor. This prevents zero-budget panics and the
+/// per-symbol warning flood that would result from sending empty inputs.
+///
+/// Call this **once** before the indexing loop — not per symbol.
+pub(crate) async fn description_input_budget(llm: &dyn LlmProvider, llm_model: &str) -> usize {
+    /// System prompt + message-framing overhead (CODE_DESCRIPTION_PROMPT ≈ 176 t).
+    const PROMPT_OVERHEAD_TOKENS: usize = 200;
+    /// Must match `max_tokens` in [`generate_description`]'s [`LlmOptions`].
+    const MAX_OUTPUT_TOKENS: usize = 256;
+    /// Extra headroom for request framing and quantisation rounding.
+    const SAFETY_MARGIN_TOKENS: usize = 64;
+    const RESERVED: usize = PROMPT_OVERHEAD_TOKENS + MAX_OUTPUT_TOKENS + SAFETY_MARGIN_TOKENS;
+
+    let context_tokens = llm
+        .context_window(llm_model)
+        .await
+        .unwrap_or(DEFAULT_CONTEXT_WINDOW);
+
+    let raw_budget = context_tokens
+        .saturating_sub(RESERVED)
+        .saturating_mul(CHARS_PER_TOKEN);
+
+    if raw_budget < MIN_DESCRIPTION_INPUT_CHARS {
+        warn!(
+            context_tokens,
+            raw_budget_chars = raw_budget,
+            floor_chars = MIN_DESCRIPTION_INPUT_CHARS,
+            "code_description: context window too small for reliable code descriptions; \
+             clamping budget to minimum floor — descriptions may be low quality"
+        );
+        return MIN_DESCRIPTION_INPUT_CHARS;
+    }
+
+    raw_budget
+}
+
+/// Generate a short functional description for a code symbol via the LLM.
+///
+/// `max_input_chars` is a hard cap on the total symbol text sent to the LLM,
+/// including the truncation marker itself (see [`description_input_budget`]).
+/// If the code exceeds the cap it is truncated — keeping the head, the part
+/// most useful for description generation — to `max_input_chars - marker_len`
+/// characters so the marker still fits inside the cap, and a `warn!` is
+/// emitted.
 pub(crate) async fn generate_description(
     code: &str,
     llm: &dyn LlmProvider,
     llm_model: &str,
+    max_input_chars: usize,
 ) -> Result<String> {
+    // Reserve room for the marker so content + marker never exceeds
+    // max_input_chars — a hard cap, not a content-only cap. If the budget is
+    // too small to fit the marker at all, fall back to truncating without it
+    // so the cap still holds (in production this never triggers —
+    // MIN_DESCRIPTION_INPUT_CHARS is always well above the marker's length —
+    // but generate_description's own contract shouldn't rely on the caller
+    // maintaining that invariant).
+    let marker_len = TRUNCATION_MARKER.chars().count();
+    let truncated: Cow<str> = if max_input_chars < marker_len {
+        truncate_with(code, max_input_chars, "")
+    } else {
+        truncate_with(code, max_input_chars - marker_len, TRUNCATION_MARKER)
+    };
+    if matches!(truncated, Cow::Owned(_)) {
+        warn!(
+            original_chars = code.chars().count(),
+            budget_chars = max_input_chars,
+            "code_description: symbol text truncated to fit LLM context budget"
+        );
+    }
+
     let messages = vec![
         LlmMessage {
             role: Role::System,
@@ -445,13 +537,14 @@ pub(crate) async fn generate_description(
         },
         LlmMessage {
             role: Role::User,
-            content: code.to_string(),
+            content: truncated.into_owned(),
         },
     ];
     let options = Some(LlmOptions {
         temperature: Some(0.0),
         max_tokens: Some(256),
         think: Some(false),
+        op: "code_description",
         ..Default::default()
     });
     llm.chat(llm_model, &messages, options).await
@@ -520,6 +613,10 @@ pub async fn index_code(
     let files = collect_files(&project_dir);
     info!(count = files.len(), dir = %project_dir.display(), "Found source files");
 
+    // Compute input budget once — querying the context window per symbol would
+    // be wasteful; the model doesn't change between iterations.
+    let desc_budget = description_input_budget(llm, llm_model).await;
+
     let mut current_file_paths: HashSet<String> = HashSet::new();
     let mut total_upserted = 0usize;
     let mut total_skipped = 0usize;
@@ -587,21 +684,22 @@ pub async fn index_code(
                 continue;
             }
 
-            let description = match generate_description(&sym.text, llm, llm_model).await {
-                Ok(desc) => {
-                    let desc = desc.trim().to_string();
-                    if desc.is_empty() { None } else { Some(desc) }
-                }
-                Err(e) => {
-                    warn!(
-                        symbol = %sym.symbol_name,
-                        file = %rel_path,
-                        error = %e,
-                        "LLM description generation failed, indexing without description"
-                    );
-                    None
-                }
-            };
+            let description =
+                match generate_description(&sym.text, llm, llm_model, desc_budget).await {
+                    Ok(desc) => {
+                        let desc = desc.trim().to_string();
+                        if desc.is_empty() { None } else { Some(desc) }
+                    }
+                    Err(e) => {
+                        warn!(
+                            symbol = %sym.symbol_name,
+                            file = %rel_path,
+                            error = %e,
+                            "LLM description generation failed, indexing without description"
+                        );
+                        None
+                    }
+                };
 
             let embed_text = if let Some(ref desc) = description {
                 format!("# Description: {desc}\n{data}")
@@ -725,6 +823,305 @@ pub async fn index_code(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Mock LLM helpers ─────────────────────────────────────────────────────
+
+    /// Simple mock: fixed response, optional context window.
+    struct MockDescLlm {
+        response: String,
+        context_window_tokens: Option<usize>,
+    }
+
+    impl MockDescLlm {
+        fn with_response(r: impl Into<String>) -> Self {
+            Self {
+                response: r.into(),
+                context_window_tokens: None,
+            }
+        }
+        fn with_context(tokens: usize) -> Self {
+            Self {
+                response: "description".into(),
+                context_window_tokens: Some(tokens),
+            }
+        }
+        fn without_context() -> Self {
+            Self {
+                response: "description".into(),
+                context_window_tokens: None,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::traits::LlmProvider for MockDescLlm {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: &[crate::traits::LlmMessage],
+            _options: Option<crate::traits::LlmOptions>,
+        ) -> crate::error::Result<String> {
+            Ok(self.response.clone())
+        }
+        async fn context_window(&self, _model: &str) -> Option<usize> {
+            self.context_window_tokens
+        }
+    }
+
+    /// Capturing mock: records the user message content actually sent to chat().
+    struct CapturingMockDescLlm {
+        response: String,
+        context_window_tokens: Option<usize>,
+        /// Populated with the user-role message content after each chat() call.
+        captured_user_input: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    }
+
+    impl CapturingMockDescLlm {
+        fn new(
+            response: impl Into<String>,
+        ) -> (Self, std::sync::Arc<std::sync::Mutex<Option<String>>>) {
+            let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let llm = Self {
+                response: response.into(),
+                context_window_tokens: None,
+                captured_user_input: captured.clone(),
+            };
+            (llm, captured)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::traits::LlmProvider for CapturingMockDescLlm {
+        async fn chat(
+            &self,
+            _model: &str,
+            messages: &[crate::traits::LlmMessage],
+            _options: Option<crate::traits::LlmOptions>,
+        ) -> crate::error::Result<String> {
+            // Capture the first User-role message content.
+            let user_content = messages
+                .iter()
+                .find(|m| matches!(m.role, crate::traits::Role::User))
+                .map(|m| m.content.clone());
+            *self.captured_user_input.lock().unwrap() = user_content;
+            Ok(self.response.clone())
+        }
+        async fn context_window(&self, _model: &str) -> Option<usize> {
+            self.context_window_tokens
+        }
+    }
+
+    // ── description_input_budget tests ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_budget_uses_provided_context_window() {
+        let llm = MockDescLlm::with_context(8192);
+        let budget = description_input_budget(&llm, "model").await;
+        // RESERVED = 200 + 256 + 64 = 520
+        let expected = (8192usize - 520) * CHARS_PER_TOKEN;
+        assert_eq!(budget, expected);
+    }
+
+    #[tokio::test]
+    async fn test_budget_falls_back_to_default_when_no_context_window() {
+        let llm = MockDescLlm::without_context();
+        let budget = description_input_budget(&llm, "model").await;
+        let expected = (DEFAULT_CONTEXT_WINDOW - 520) * CHARS_PER_TOKEN;
+        assert_eq!(budget, expected);
+    }
+
+    // ── QA-002: boundary tests at degenerate context window sizes ────────────
+
+    #[tokio::test]
+    async fn test_budget_floored_at_context_256() {
+        // 256 ≤ RESERVED (520) → saturating_sub = 0 → raw_budget = 0 → floor kicks in.
+        let llm = MockDescLlm::with_context(256);
+        let budget = description_input_budget(&llm, "model").await;
+        assert_eq!(
+            budget, MIN_DESCRIPTION_INPUT_CHARS,
+            "context_window=256 must clamp to MIN_DESCRIPTION_INPUT_CHARS (not 0)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_budget_floored_at_context_exactly_reserved_520() {
+        // 520 - 520 = 0 → raw_budget = 0 → floor kicks in.
+        let llm = MockDescLlm::with_context(520);
+        let budget = description_input_budget(&llm, "model").await;
+        assert_eq!(
+            budget, MIN_DESCRIPTION_INPUT_CHARS,
+            "context_window=520 (== RESERVED) gives zero budget → must floor"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_budget_floored_at_context_521_still_below_min() {
+        // 521 - 520 = 1 token × 4 chars = 4 chars < MIN_DESCRIPTION_INPUT_CHARS → floor.
+        let llm = MockDescLlm::with_context(521);
+        let budget = description_input_budget(&llm, "model").await;
+        assert_eq!(
+            budget, MIN_DESCRIPTION_INPUT_CHARS,
+            "context_window=521 gives only 4 chars < floor → must clamp"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_budget_not_floored_when_above_min() {
+        // Floor condition: (ctx − 520) × 4 < 256  ↔  ctx < 584.
+        // At ctx ≥ 584, raw_budget ≥ MIN_DESCRIPTION_INPUT_CHARS (strict <), no floor applied.
+        // Use 600 for a clear margin above the 584 boundary.
+        let llm = MockDescLlm::with_context(600);
+        let budget = description_input_budget(&llm, "model").await;
+        let expected = (600 - 520) * CHARS_PER_TOKEN; // 80 * 4 = 320 > 256 → no floor
+        assert_eq!(
+            budget, expected,
+            "context_window=600 should not trigger the floor"
+        );
+        assert!(
+            budget >= MIN_DESCRIPTION_INPUT_CHARS,
+            "must be at or above MIN_DESCRIPTION_INPUT_CHARS"
+        );
+    }
+
+    // ── generate_description truncation tests ────────────────────────────────
+
+    #[tokio::test]
+    async fn test_generate_description_truncates_oversized_symbol() {
+        let large_code = "fn big() {\n".to_string() + &"    let x = 1;\n".repeat(200) + "}";
+        assert!(
+            large_code.chars().count() > 100,
+            "precondition: code must be large"
+        );
+
+        let llm = MockDescLlm::with_response("A big function.");
+        let result = generate_description(&large_code, &llm, "model", 100).await;
+
+        assert!(result.is_ok(), "truncation must not cause an error");
+        assert_eq!(result.unwrap(), "A big function.");
+    }
+
+    #[tokio::test]
+    async fn test_generate_description_no_truncation_when_fits() {
+        let small_code = "fn foo() { 42 }";
+        let llm = MockDescLlm::with_response("Returns 42.");
+        let result = generate_description(small_code, &llm, "model", 10_000).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "Returns 42.");
+    }
+
+    /// QA-004: assert the input ACTUALLY HANDED TO THE LLM is truncated (not just
+    /// that we get a response back). Captures the user message via CapturingMockDescLlm.
+    #[tokio::test]
+    async fn test_generate_description_llm_receives_truncated_input() {
+        let large_code = "x".repeat(500);
+        let budget = 100;
+
+        let (llm, captured) = CapturingMockDescLlm::new("desc");
+        generate_description(&large_code, &llm, "model", budget)
+            .await
+            .expect("must succeed");
+
+        let sent = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("LLM must have received a user message");
+
+        assert!(
+            sent.chars().count() <= budget,
+            "LLM input must respect the hard cap (content + marker): got {} > {}",
+            sent.chars().count(),
+            budget
+        );
+        assert!(
+            sent.contains(TRUNCATION_MARKER),
+            "truncation marker must be present in the input handed to the LLM"
+        );
+    }
+
+    /// Regression: when the budget is smaller than the marker itself, the
+    /// hard cap must still hold — falls back to truncating without the
+    /// marker rather than emitting marker-only output that overflows budget.
+    #[tokio::test]
+    async fn test_generate_description_budget_smaller_than_marker() {
+        let large_code = "x".repeat(500);
+        let budget = 10; // well below TRUNCATION_MARKER's ~52 chars
+
+        let (llm, captured) = CapturingMockDescLlm::new("desc");
+        generate_description(&large_code, &llm, "model", budget)
+            .await
+            .expect("must succeed");
+
+        let sent = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("LLM must have received a user message");
+
+        assert!(
+            sent.chars().count() <= budget,
+            "hard cap must hold even when budget < marker length: got {} > {}",
+            sent.chars().count(),
+            budget
+        );
+        assert!(
+            !sent.contains(TRUNCATION_MARKER),
+            "marker must be dropped, not truncated itself, when it can't fit"
+        );
+    }
+
+    /// QA-004 (complement): when the code fits, the LLM receives it verbatim.
+    #[tokio::test]
+    async fn test_generate_description_llm_receives_full_input_when_fits() {
+        let code = "fn foo() {}";
+        let budget = 10_000;
+
+        let (llm, captured) = CapturingMockDescLlm::new("desc");
+        generate_description(code, &llm, "model", budget)
+            .await
+            .expect("must succeed");
+
+        let sent = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("LLM must have received a user message");
+
+        assert_eq!(
+            sent, code,
+            "LLM must receive the full code when it fits in budget"
+        );
+        assert!(
+            !sent.contains(TRUNCATION_MARKER),
+            "no truncation marker when code fits"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_truncate_with_appends_marker_when_cut() {
+        // Direct unit test of `truncate_with`'s own contract (no LLM
+        // involved) — independent of `generate_description`'s hard cap,
+        // which is covered by `test_generate_description_llm_receives_truncated_input`.
+        // `truncate_with(s, max, suffix)` truncates content to `max` chars
+        // and then appends `suffix`, so its own output is `max + suffix_len`
+        // — callers that need a hard cap (like `generate_description`)
+        // reserve the marker length from their own budget before calling in.
+        let code = "x".repeat(500);
+        let max_chars = 100;
+        let truncated = truncate_with(&code, max_chars, TRUNCATION_MARKER);
+        assert!(matches!(truncated, Cow::Owned(_)), "must be truncated");
+        let s = truncated.as_ref();
+        assert!(
+            s.ends_with(TRUNCATION_MARKER),
+            "truncation marker must be present"
+        );
+        assert_eq!(
+            s.chars().count(),
+            max_chars + TRUNCATION_MARKER.chars().count(),
+            "output length = max_chars + marker"
+        );
+    }
 
     #[test]
     fn test_ext_to_lang() {

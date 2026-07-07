@@ -3,12 +3,14 @@
 use async_trait::async_trait;
 use ollama_rs::Ollama;
 use ollama_rs::generation::chat::ChatMessage;
+use ollama_rs::generation::chat::ChatMessageFinalResponseData;
 use ollama_rs::generation::chat::request::ChatMessageRequest;
 use ollama_rs::generation::parameters::{FormatType, ThinkType};
 use ollama_rs::models::ModelOptions;
 
 use crate::config::Settings;
 use crate::error::{MemcanError, Result};
+use crate::llm_telemetry;
 use crate::ollama::strip_ollama_prefix;
 use crate::traits::{LlmMessage, LlmOptions, LlmProvider, Role};
 
@@ -75,6 +77,20 @@ impl OllamaRsLlmProvider {
     /// Return the Ollama base URL (for diagnostics).
     pub fn url(&self) -> &str {
         self.client.url_str()
+    }
+}
+
+/// Extract `(prompt_tokens, completion_tokens)` from Ollama's final response data.
+///
+/// Returns `(None, None)` when `final_data` is absent (e.g. streaming mode or
+/// a provider that omits usage). Both fields are `Some` when the non-streaming
+/// `/api/chat` endpoint returns a complete `done: true` response.
+pub(crate) fn extract_token_counts(
+    final_data: Option<&ChatMessageFinalResponseData>,
+) -> (Option<u64>, Option<u64>) {
+    match final_data {
+        Some(d) => (Some(d.prompt_eval_count), Some(d.eval_count)),
+        None => (None, None),
     }
 }
 
@@ -176,6 +192,10 @@ impl LlmProvider for OllamaRsLlmProvider {
                     detail: e.to_string(),
                 })?;
 
+        // Emit structured token telemetry before consuming the response.
+        let (prompt_tokens, completion_tokens) = extract_token_counts(response.final_data.as_ref());
+        llm_telemetry::emit(opts.op, model_name, prompt_tokens, completion_tokens);
+
         let text = response.message.content;
         tracing::trace!(
             model = model_name,
@@ -245,6 +265,118 @@ impl LlmProvider for OllamaRsLlmProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::traits::{LlmMessage, LlmProvider, Role};
+
+    // ── extract_token_counts unit tests ─────────────────────────────────────
+
+    #[test]
+    fn test_extract_token_counts_with_final_data() {
+        let d = ChatMessageFinalResponseData {
+            total_duration: 1_000_000,
+            load_duration: 100_000,
+            prompt_eval_count: 42,
+            prompt_eval_duration: 500_000,
+            eval_count: 15,
+            eval_duration: 400_000,
+        };
+        let (p, c) = extract_token_counts(Some(&d));
+        assert_eq!(p, Some(42));
+        assert_eq!(c, Some(15));
+    }
+
+    #[test]
+    fn test_extract_token_counts_none_when_no_final_data() {
+        let (p, c) = extract_token_counts(None);
+        assert_eq!(p, None);
+        assert_eq!(c, None);
+    }
+
+    // ── chat() with token counts — mockito integration ────────────────────
+
+    /// Verify chat() returns the assistant text AND handles token-count fields
+    /// in the Ollama response without panicking. (Telemetry is a log side-effect;
+    /// we assert the function contract: correct text returned, mock hit once.)
+    #[tokio::test]
+    async fn test_chat_returns_text_and_handles_token_counts() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "model": "test-model",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "message": {"role": "assistant", "content": "Incremental code indexer."},
+                    "done": true,
+                    "total_duration": 1000000,
+                    "load_duration": 100000,
+                    "prompt_eval_count": 42,
+                    "prompt_eval_duration": 500000,
+                    "eval_count": 15,
+                    "eval_duration": 400000
+                }"#,
+            )
+            .create_async()
+            .await;
+
+        let provider = provider_at(&server.url(), "test-model");
+        let messages = vec![LlmMessage {
+            role: Role::User,
+            content: "Describe this function.".into(),
+        }];
+        let opts = Some(crate::traits::LlmOptions {
+            op: "code_description",
+            ..Default::default()
+        });
+
+        let result = provider.chat("test-model", &messages, opts).await;
+
+        assert!(result.is_ok(), "chat should succeed: {:?}", result);
+        assert_eq!(result.unwrap(), "Incremental code indexer.");
+        mock.assert_async().await;
+    }
+
+    /// Verify chat() handles a response with no token-count fields gracefully
+    /// (final_data absent — older Ollama versions or truncated responses).
+    #[tokio::test]
+    async fn test_chat_handles_missing_token_counts() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "model": "test-model",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "message": {"role": "assistant", "content": "result text"},
+                    "done": true
+                }"#,
+            )
+            .create_async()
+            .await;
+
+        let provider = provider_at(&server.url(), "test-model");
+        let messages = vec![LlmMessage {
+            role: Role::User,
+            content: "hi".into(),
+        }];
+        let opts = Some(crate::traits::LlmOptions {
+            op: "dedup",
+            ..Default::default()
+        });
+
+        let result = provider.chat("test-model", &messages, opts).await;
+
+        assert!(
+            result.is_ok(),
+            "should handle missing token counts: {:?}",
+            result
+        );
+        assert_eq!(result.unwrap(), "result text");
+        mock.assert_async().await;
+    }
 
     #[test]
     fn test_default_model() {
