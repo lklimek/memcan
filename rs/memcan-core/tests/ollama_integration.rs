@@ -7,6 +7,7 @@
 
 use memcan_core::config::Settings;
 use memcan_core::llm_ollama_rs::OllamaRsLlmProvider;
+use memcan_core::text::strip_code_fence;
 use memcan_core::traits::{LlmMessage, LlmOptions, LlmProvider, Role};
 use serial_test::serial;
 
@@ -35,24 +36,6 @@ fn msg(role: Role, content: &str) -> LlmMessage {
         role,
         content: content.into(),
     }
-}
-
-/// Strip markdown code fences (```json ... ```) from LLM output.
-///
-/// Some models wrap JSON in fences even when format_json is set.
-/// The pipeline test needs to handle this gracefully.
-#[allow(dead_code)] // Used by #[ignore] tests only
-fn strip_code_fences(text: &str) -> &str {
-    let trimmed = text.trim();
-    if let Some(rest) = trimmed.strip_prefix("```") {
-        // Skip optional language tag on first line
-        let rest = rest.strip_prefix("json").unwrap_or(rest);
-        let rest = rest.trim_start_matches('\n');
-        if let Some(body) = rest.strip_suffix("```") {
-            return body.trim();
-        }
-    }
-    trimmed
 }
 
 // ---------------------------------------------------------------------------
@@ -719,7 +702,7 @@ Keep single-fact inputs as one item. Preserve all specific details."#;
 
     // Then: valid JSON with a "facts" array containing multiple items
     // Strip markdown code fences if the model wraps JSON despite format_json
-    let clean = strip_code_fences(&text);
+    let clean = strip_code_fence(&text);
     let parsed: serde_json::Value =
         serde_json::from_str(clean).unwrap_or_else(|e| panic!("not valid JSON: {e}\nraw: {text}"));
 
@@ -789,7 +772,7 @@ For greetings or filler with no information, return {"facts": []}"#;
     eprintln!("[response] {text}");
 
     // Then: valid JSON with empty or near-empty facts array
-    let clean = strip_code_fences(&text);
+    let clean = strip_code_fence(&text);
     let parsed: serde_json::Value =
         serde_json::from_str(clean).unwrap_or_else(|e| panic!("not valid JSON: {e}\nraw: {text}"));
     let facts = parsed

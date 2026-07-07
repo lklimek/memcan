@@ -14,6 +14,7 @@ use uuid::Uuid;
 use crate::error::{MemcanError, Result, ResultExt};
 use crate::pipeline::{STANDARDS_TABLE, chunk_content, resolve_context_budget};
 use crate::prompts::{METADATA_EXTRACTION_PROMPT, render_prompt};
+use crate::text::{strip_code_fence, truncate_with};
 use crate::traits::{
     EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, Role, TableSchema, VectorPoint,
     VectorStore,
@@ -211,12 +212,13 @@ pub async fn extract_metadata(
         think: Some(false),
     });
     let response = llm.chat(model, &messages, options).await?;
-    let meta: ChunkMetadata = serde_json::from_str(&response).with_context(|| {
-        format!(
-            "Failed to parse metadata: {}",
-            &response[..response.len().min(200)]
-        )
-    })?;
+    let meta: ChunkMetadata =
+        serde_json::from_str(strip_code_fence(&response)).with_context(|| {
+            format!(
+                "Failed to parse metadata: {}",
+                truncate_with(&response, 200, "…")
+            )
+        })?;
     Ok(validate_metadata(meta))
 }
 

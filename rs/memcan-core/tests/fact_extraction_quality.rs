@@ -11,6 +11,7 @@
 use memcan_core::config::Settings;
 use memcan_core::llm_ollama_rs::OllamaRsLlmProvider;
 use memcan_core::prompts::{FACT_EXTRACTION_PROMPT, render_prompt};
+use memcan_core::text::strip_code_fence;
 use memcan_core::traits::{LlmMessage, LlmOptions, LlmProvider, Role};
 use serial_test::serial;
 
@@ -48,17 +49,8 @@ fn extraction_opts() -> LlmOptions {
 
 /// Parse `{"facts": [...]}` JSON; panics with a helpful message on failure.
 fn parse_facts(raw: &str) -> Vec<String> {
-    // Strip optional markdown code fences (some models wrap JSON despite format_json).
-    let trimmed = raw.trim();
-    let clean = if let Some(rest) = trimmed.strip_prefix("```") {
-        let rest = rest
-            .strip_prefix("json")
-            .unwrap_or(rest)
-            .trim_start_matches('\n');
-        rest.strip_suffix("```").unwrap_or(rest).trim()
-    } else {
-        trimmed
-    };
+    // Some models wrap JSON in a markdown fence despite format_json.
+    let clean = strip_code_fence(raw);
 
     let parsed: serde_json::Value =
         serde_json::from_str(clean).unwrap_or_else(|e| panic!("not valid JSON: {e}\nraw: {raw}"));

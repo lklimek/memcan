@@ -41,6 +41,39 @@ pub fn truncate_with<'a>(s: &'a str, max: usize, suffix: &str) -> Cow<'a, str> {
     }
 }
 
+/// Strip a surrounding markdown code fence from `s`, returning the inner body.
+///
+/// Some LLMs wrap their answer in a ` ```json … ``` ` (or bare ` ``` … ``` `)
+/// fence even when asked for raw JSON output. This removes a single leading
+/// fence line — including an optional language tag such as `json` — and the
+/// matching trailing fence, so the body can be parsed directly. Input that is
+/// not fenced is returned trimmed and otherwise unchanged (no-op passthrough).
+///
+/// The returned slice always borrows from `s`; no allocation is performed.
+///
+/// # Examples
+/// ```
+/// use memcan_core::text::strip_code_fence;
+///
+/// assert_eq!(strip_code_fence("```json\n{\"a\":1}\n```"), "{\"a\":1}");
+/// assert_eq!(strip_code_fence("```\n{\"a\":1}\n```"), "{\"a\":1}");
+/// assert_eq!(strip_code_fence("{\"a\":1}"), "{\"a\":1}");
+/// ```
+pub fn strip_code_fence(s: &str) -> &str {
+    let trimmed = s.trim();
+    let Some(after_open) = trimmed.strip_prefix("```") else {
+        return trimmed;
+    };
+    // Discard the rest of the opening fence line (an optional language tag such
+    // as `json`); on single-line input strip only a leading alphanumeric tag.
+    let body = match after_open.split_once('\n') {
+        Some((_tag, rest)) => rest,
+        None => after_open.trim_start_matches(|c: char| c.is_ascii_alphanumeric()),
+    };
+    let body = body.trim();
+    body.strip_suffix("```").map_or(body, str::trim)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,5 +161,66 @@ mod tests {
     fn test_zero_max() {
         let result = truncate_with("hello", 0, "…");
         assert_eq!(&*result, "…");
+    }
+
+    // --- strip_code_fence ---------------------------------------------------
+
+    // Fenced with a `json` language tag — the observed Ollama quirk.
+    #[test]
+    fn test_fence_with_lang_tag() {
+        let input = "```json\n{\"facts\": [\"x\"]}\n```";
+        assert_eq!(strip_code_fence(input), "{\"facts\": [\"x\"]}");
+    }
+
+    // Fenced without a language tag.
+    #[test]
+    fn test_fence_without_lang_tag() {
+        let input = "```\n{\"facts\": [\"x\"]}\n```";
+        assert_eq!(strip_code_fence(input), "{\"facts\": [\"x\"]}");
+    }
+
+    // Already-bare JSON — no-op passthrough.
+    #[test]
+    fn test_fence_bare_passthrough() {
+        let input = "{\"facts\": [\"x\"]}";
+        assert_eq!(strip_code_fence(input), "{\"facts\": [\"x\"]}");
+    }
+
+    // Leading/trailing whitespace around the fence is stripped.
+    #[test]
+    fn test_fence_surrounding_whitespace() {
+        let input = "  \n ```json\n{\"facts\": []}\n```  \n ";
+        assert_eq!(strip_code_fence(input), "{\"facts\": []}");
+    }
+
+    // Non-`json` language tag (e.g. uppercase) is also discarded.
+    #[test]
+    fn test_fence_other_lang_tag() {
+        assert_eq!(strip_code_fence("```JSON\n{\"a\":1}\n```"), "{\"a\":1}");
+    }
+
+    // Multiline (pretty-printed) body keeps its internal newlines intact.
+    #[test]
+    fn test_fence_multiline_body_preserved() {
+        let input = "```json\n{\n  \"a\": 1\n}\n```";
+        assert_eq!(strip_code_fence(input), "{\n  \"a\": 1\n}");
+    }
+
+    // Single-line fence with a language tag and no body newline.
+    #[test]
+    fn test_fence_single_line_with_tag() {
+        assert_eq!(strip_code_fence("```json {\"a\":1} ```"), "{\"a\":1}");
+    }
+
+    // Bare (unfenced) text with surrounding whitespace is only trimmed.
+    #[test]
+    fn test_fence_bare_with_whitespace() {
+        assert_eq!(strip_code_fence("  {\"a\":1}\n"), "{\"a\":1}");
+    }
+
+    // Empty input — trimmed to empty, no panic.
+    #[test]
+    fn test_fence_empty() {
+        assert_eq!(strip_code_fence("   "), "");
     }
 }
