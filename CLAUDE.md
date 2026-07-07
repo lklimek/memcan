@@ -215,7 +215,7 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction |
 | `COMPACT_ON_STARTUP` | `true` | Run full table compaction (`OptimizeAction::All`) on boot before serving; over-fragmented tables only (tables ≤ `COMPACT_FRAGMENT_THRESHOLD` fragments are skipped). Set `false` to avoid boot latency on very large databases. |
 | `COMPACT_FRAGMENT_THRESHOLD` | `64` | Auto-compact a table after a write once it reaches this many data fragments; also the startup-compaction skip threshold. `0` disables auto-compaction. |
-| `LLM_MODEL` | `gemma4:26b-a4b-it-qat` | LLM model name (`ollama::` prefix accepted for backward compat). Needs ~16GB VRAM; use `qwen3.5:9b` (~6.6GB) on smaller cards — see `docs/memcan-model-guide.html` |
+| `LLM_MODEL` | `lklimek/gemma4-text:26b-a4b-it-qat` | LLM model name (`ollama::` prefix accepted for backward compat). Needs ~16GB VRAM (projector-free build achieves 100% GPU residency on a 16GB card, vs. partial CPU offload on the stock `gemma4:26b-a4b-it-qat`); use `qwen3.5:9b` (~6.6GB) on smaller cards — see `docs/memcan-model-guide.html` |
 | `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings (dimensions derived automatically) |
 | `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`). Injected into the LLM client (ollama-rs default; or genai via `ServiceTargetResolver`). |
 | `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth (sent as `Authorization: Bearer $key`) |
