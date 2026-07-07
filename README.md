@@ -37,7 +37,7 @@ The Claude Code plugin connects to the server via HTTP MCP transport (Streamable
 
 - **LanceDB** — embedded vector database (no server needed, data stored locally)
 - **fastembed** — in-process ONNX embeddings (`MultilingualE5Large`, 1024 dimensions, ~1.3 GB model downloaded on first use)
-- **Ollama** — LLM inference (`qwen3.5:9b` by default, via [ollama-rs](https://github.com/pepperoni21/ollama-rs)); MemCan reads `OLLAMA_HOST` and `OLLAMA_API_KEY` from settings and passes them to the Ollama client. A GPU is recommended for best performance.
+- **Ollama** — LLM inference (`gemma4:26b-a4b-it-qat` by default, via [ollama-rs](https://github.com/pepperoni21/ollama-rs)); MemCan reads `OLLAMA_HOST` and `OLLAMA_API_KEY` from settings and passes them to the Ollama client. A GPU is recommended for best performance. The default needs ~16GB VRAM — on smaller cards (e.g. 8GB), set `LLM_MODEL=qwen3.5:9b` instead. See [`docs/memcan-model-guide.html`](docs/memcan-model-guide.html) for the trade-offs.
 - **rmcp 1.1** — Rust MCP SDK with Streamable HTTP transport
 - **axum** — HTTP framework mounting MCP service + health endpoint + auth middleware
 - **DISTILL_MEMORIES** — when enabled (default: `true`), the LLM extracts structured facts from raw text before storing
@@ -80,14 +80,14 @@ The user rule created by `/setup-memcan` lives in `~/.claude/rules/memcan.md` �
 
 ## Ollama
 
-MemCan uses [Ollama](https://ollama.com/) for local LLM inference (fact extraction and deduplication). **A GPU is strongly recommended** — the default model (`qwen3.5:9b`) runs too slowly on CPU for interactive use.
+MemCan uses [Ollama](https://ollama.com/) for local LLM inference (fact extraction and deduplication). **A GPU is strongly recommended** — the default model (`gemma4:26b-a4b-it-qat`) runs too slowly on CPU for interactive use, and needs ~16GB VRAM. On an 8GB card, set `LLM_MODEL=qwen3.5:9b` instead (see [`docs/memcan-model-guide.html`](docs/memcan-model-guide.html)).
 
 ### Using the bundled Ollama (docker compose)
 
 The setup skill writes `COMPOSE_PROFILES=ollama` to the server `.env`, which enables the bundled Ollama container. After `docker compose up -d`, pull the model into it:
 
 ```bash
-docker compose exec ollama ollama pull qwen3.5:9b
+docker compose exec ollama ollama pull gemma4:26b-a4b-it-qat
 ```
 
 **Disable bundled Ollama:** In the server `.env` (`~/.config/memcan/server/.env`), set `COMPOSE_PROFILES=` (empty) or remove the line entirely, then restart with `docker compose up -d`. Point MemCan at an external Ollama via `OLLAMA_HOST` if needed.
@@ -112,7 +112,7 @@ docker compose exec ollama ollama pull qwen3.5:9b
 
 ```bash
 # Install Ollama, then pull the default model
-ollama pull qwen3.5:9b
+ollama pull gemma4:26b-a4b-it-qat
 ```
 
 If Ollama runs on a different machine, point MemCan at it:

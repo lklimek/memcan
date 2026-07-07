@@ -92,7 +92,7 @@ impl Default for Settings {
             tech_stack: String::new(),
             distill_memories: true,
             log_file: "~/.claude/logs/memcan-mcp.log".into(),
-            llm_model: "qwen3.5:9b".into(),
+            llm_model: "gemma4:26b-a4b-it-qat".into(),
             embed_model: "MultilingualE5Large".into(),
             embed_dims: 1024,
             ollama_host: None,
@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn test_defaults() {
         let d = Settings::default();
-        assert_eq!(d.llm_model, "qwen3.5:9b");
+        assert_eq!(d.llm_model, "gemma4:26b-a4b-it-qat");
         assert_eq!(d.embed_model, "MultilingualE5Large");
         assert_eq!(d.embed_dims, 1024);
         assert!(d.distill_memories);
