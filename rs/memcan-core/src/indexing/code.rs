@@ -510,9 +510,18 @@ pub(crate) async fn generate_description(
     max_input_chars: usize,
 ) -> Result<String> {
     // Reserve room for the marker so content + marker never exceeds
-    // max_input_chars — a hard cap, not a content-only cap.
-    let truncate_at = max_input_chars.saturating_sub(TRUNCATION_MARKER.chars().count());
-    let truncated: Cow<str> = truncate_with(code, truncate_at, TRUNCATION_MARKER);
+    // max_input_chars — a hard cap, not a content-only cap. If the budget is
+    // too small to fit the marker at all, fall back to truncating without it
+    // so the cap still holds (in production this never triggers —
+    // MIN_DESCRIPTION_INPUT_CHARS is always well above the marker's length —
+    // but generate_description's own contract shouldn't rely on the caller
+    // maintaining that invariant).
+    let marker_len = TRUNCATION_MARKER.chars().count();
+    let truncated: Cow<str> = if max_input_chars < marker_len {
+        truncate_with(code, max_input_chars, "")
+    } else {
+        truncate_with(code, max_input_chars - marker_len, TRUNCATION_MARKER)
+    };
     if matches!(truncated, Cow::Owned(_)) {
         warn!(
             original_chars = code.chars().count(),
@@ -1028,6 +1037,37 @@ mod tests {
         assert!(
             sent.contains(TRUNCATION_MARKER),
             "truncation marker must be present in the input handed to the LLM"
+        );
+    }
+
+    /// Regression: when the budget is smaller than the marker itself, the
+    /// hard cap must still hold — falls back to truncating without the
+    /// marker rather than emitting marker-only output that overflows budget.
+    #[tokio::test]
+    async fn test_generate_description_budget_smaller_than_marker() {
+        let large_code = "x".repeat(500);
+        let budget = 10; // well below TRUNCATION_MARKER's ~52 chars
+
+        let (llm, captured) = CapturingMockDescLlm::new("desc");
+        generate_description(&large_code, &llm, "model", budget)
+            .await
+            .expect("must succeed");
+
+        let sent = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("LLM must have received a user message");
+
+        assert!(
+            sent.chars().count() <= budget,
+            "hard cap must hold even when budget < marker length: got {} > {}",
+            sent.chars().count(),
+            budget
+        );
+        assert!(
+            !sent.contains(TRUNCATION_MARKER),
+            "marker must be dropped, not truncated itself, when it can't fit"
         );
     }
 

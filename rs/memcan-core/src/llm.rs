@@ -164,7 +164,14 @@ impl LlmProvider for GenaiLlmProvider {
             .usage
             .completion_tokens
             .and_then(|n| u64::try_from(n).ok());
-        llm_telemetry::emit(opts.op, model, prompt_tokens, completion_tokens);
+        // Mirror the ServiceTargetResolver's "ollama::" strip so the logged
+        // model name matches what was actually sent to the provider.
+        llm_telemetry::emit(
+            opts.op,
+            strip_ollama_prefix(model),
+            prompt_tokens,
+            completion_tokens,
+        );
 
         response
             .into_first_text()
