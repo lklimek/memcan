@@ -4,17 +4,34 @@ All notable changes to this project are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.0.0] - 2026-07-07
+
+### BREAKING
+
+- `LlmOptions` (public struct, `memcan-core`) gains a new `op: &'static str` field for per-call telemetry labeling. Source-breaking for external consumers constructing it via exhaustive struct-literal syntax instead of `..Default::default()`.
+
+### Added
+
+- Per-call LLM token telemetry — every LLM chat call now emits a structured `debug` line at target `memcan::llm::telemetry`, tagged with an `op` label (`fact_extraction`, `dedup`, `code_description`, `standards_metadata`). Covers both the default ollama-rs backend and the optional genai backend; the genai backend logs the `ollama::`-stripped model name so it matches what's actually sent to the provider.
+- Input-budget guard for code-symbol descriptions — `description_input_budget()` queries the model's context window and caps symbol text sent to the LLM accordingly (floored at 256 chars so a tiny `num_ctx` can never zero out the budget), truncating with a marker and a single `warn!` per indexing run instead of silently overflowing the context.
+- `docs/memcan-model-guide.html` — plain-language comparison guide for picking the LLM model by available VRAM.
 
 ### Changed
 
 - **Default LLM model is now `gemma4:26b-a4b-it-qat`** (was `qwen3.5:9b`). Benchmarked against real engineering conversations through the production fact-extraction and dedup code paths: materially better junk-filtering precision and zero malformed responses, at the cost of needing a full 16GB-VRAM card (vs. qwen's ~6.6GB). Set `LLM_MODEL=qwen3.5:9b` to keep the previous, lighter model — recommended on 8GB cards. See `docs/memcan-model-guide.html` for the full comparison.
+- `fact-extraction.md` / `memory-update.md` prompts sharpened for distillation quality: self-containment, don't-fragment, collapse-parallel-facts, and timeless-present-tense rules; dedup overlap detection now explicitly covers sibling-symbol claims and same-batch near-duplicates.
+- Fact batches are pre-filtered with an O(n) exact-duplicate removal pass (`dedup_facts_exact`) before the LLM-backed dedup call.
 
 ### Fixed
 
-- LLM JSON responses wrapped in a markdown code fence (observed on qwen3.5:9b, despite `format: json`) were silently dropped as a failed parse instead of being read — a live memory or dedup decision could be lost with only a `warn!` log. Fixed via a shared fence-stripping helper applied at every LLM-JSON-parse call site (fact extraction, dedup, standards metadata extraction).
+- LLM JSON responses wrapped in a markdown code fence (observed on qwen3.5:9b, despite `format: json`) were silently dropped as a failed parse instead of being read — a live memory or dedup decision could be lost with only a `warn!` log. Fixed via a shared fence-stripping helper (`strip_code_fence`) applied at every LLM-JSON-parse call site (fact extraction, dedup, standards metadata extraction). A follow-up fix closed a real gap in that same helper: a fence whose body starts on the same line as the language tag but closes on a later line returned an empty string instead of the JSON content.
 - `test-classification` CLI tool's LLM call options didn't match the production `extract_facts` path (missing `think: false`, had a stray `max_tokens` cap) — classification benchmarks run through it could silently reflect the tool's own contract bug rather than real model behavior. Now matches production exactly.
 - `fact-extraction.md` collapse-parallel-facts rule was contradicted by one of its own worked examples, which still split two sibling symbols into separate facts — the rule text alone never fixed the actual splitting behavior. Removed the contradicting example and sharpened the rule with an explicit wrong/right contrast.
+- `generate_description()`'s truncation cap was content-only, not content-plus-marker — output could exceed the computed budget by the marker's length. Now a genuine hard cap, with a marker-less fallback for the (production-unreachable) case where the budget can't fit the marker at all.
+
+### Security
+
+- Bump transitive `crossbeam-epoch` 0.9.18 → 0.9.20 (RUSTSEC-2026-0204 — invalid pointer dereference in `fmt::Pointer` for `Atomic`/`Shared`).
 
 ## [0.39.0] - 2026-06-26
 
