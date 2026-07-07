@@ -85,7 +85,7 @@ cp .env.example ~/.config/memcan/.env
 | `LANCEDB_PATH` | `~/.local/share/memcan/lancedb` | LanceDB storage directory |
 | `DEFAULT_USER_ID` | `global` | Default memory scope |
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction |
-| `LLM_MODEL` | `ollama::gemma4:26b-a4b-it-qat` | Ollama model name. Use the `ollama::` prefix (e.g. `ollama::gemma4:26b-a4b-it-qat`). The prefix is stripped when calling the Ollama API. Needs ~16GB VRAM; use `qwen3.5:9b` (~6.6GB) on smaller cards. |
+| `LLM_MODEL` | `gemma4:26b-a4b-it-qat` | Ollama model name — bare (no prefix) by default; an `ollama::` prefix (e.g. `ollama::gemma4:26b-a4b-it-qat`) is also accepted and stripped automatically. Needs ~16GB VRAM; use `qwen3.5:9b` (~6.6GB) on smaller cards. |
 | `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings (dimensions derived automatically) |
 | `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`). Read by MemCan via `Settings` and passed to the Ollama client. |
 | `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth. Read by MemCan via `Settings` and sent with every request to Ollama. |
