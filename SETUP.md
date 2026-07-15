@@ -47,8 +47,11 @@ Binaries are placed in `target/release/`:
 Start the server (requires local Ollama):
 
 ```bash
-# Pull the default model first
+# Pull the recommended (projector-free) model. It is NOT yet memcan-server's
+# compiled-in default (config.rs still defaults to gemma4:26b-a4b-it-qat), so
+# also set LLM_MODEL to actually use it:
 ollama pull lklimek/gemma4-text:26b-a4b-it-qat
+export LLM_MODEL=lklimek/gemma4-text:26b-a4b-it-qat
 
 ./target/release/memcan-server serve
 ```
