@@ -738,7 +738,7 @@ mod tests {
     fn test_schema_creation() {
         let ts = MemcanTableSchema;
         let schema = LanceDbStore::build_arrow_schema(768, &ts).unwrap();
-        assert_eq!(schema.fields().len(), 12);
+        assert_eq!(schema.fields().len(), 13);
         assert_eq!(schema.field(0).name(), "id");
         assert_eq!(schema.field(1).name(), "vector");
         assert_eq!(schema.field(2).name(), "payload");
@@ -752,6 +752,7 @@ mod tests {
         assert_eq!(schema.field(9).name(), "content_hash");
         assert_eq!(schema.field(10).name(), "status");
         assert_eq!(schema.field(11).name(), "priority");
+        assert_eq!(schema.field(12).name(), "owner");
         match schema.field(1).data_type() {
             DataType::FixedSizeList(_, size) => assert_eq!(*size, 768),
             other => panic!("unexpected type: {:?}", other),
@@ -779,7 +780,7 @@ mod tests {
         }];
         let batch = LanceDbStore::points_to_batch(&points, dims, &ts).unwrap();
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(batch.num_columns(), 12);
+        assert_eq!(batch.num_columns(), 13);
     }
 
     #[test]

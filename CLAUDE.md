@@ -122,10 +122,11 @@ Server exposes these MCP tools (via HTTP at `/mcp`):
 | `index_standards` | Index a standards document (async, returns operation_id) |
 | `drop_indexed_standards` | Drop all indexed data for a standard_id |
 | `add_todo` | Add a per-project TODO item |
-| `list_todos` | List TODO items for a project |
-| `update_todo` | Update a TODO item's fields |
+| `list_todos` | List TODO items for a project, optionally filtered by owner or status |
+| `update_todo` | Update a TODO item's fields; statuses are `pending`, `done`, `in_progress`, `blocked`, `postponed`, or `cancelled` |
 | `complete_todo` | Mark a TODO item as done |
 | `delete_todo` | Delete a TODO item by ID |
+| `get_todo` | Fetch a single TODO item by ID |
 | `export_collection` | Export a collection as JSONL (paginated, no vectors) |
 | `_import_records` | Import JSONL records: embed + upsert (internal/hidden) |
 | `index_code_files` | Index source code files: symbol extraction + LLM + embedding |
