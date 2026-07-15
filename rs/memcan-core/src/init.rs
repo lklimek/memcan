@@ -126,9 +126,10 @@ fn build_backend(
     }
 }
 
-#[cfg(all(test, any(feature = "ollama-rs-llm", not(feature = "genai-llm"))))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(any(feature = "ollama-rs-llm", not(feature = "genai-llm")))]
     use crate::config::LlmProviderKind;
     use crate::health::DependencyHealth;
 
@@ -168,5 +169,32 @@ mod tests {
             .err()
             .unwrap();
         assert!(error.to_string().contains("genai-llm"));
+    }
+
+    #[cfg(not(any(feature = "ollama-rs-llm", feature = "genai-llm")))]
+    #[test]
+    fn ollama_requires_llm_feature_when_disabled() {
+        let error = create_llm_provider(
+            &Settings::default(),
+            Arc::new(DependencyHealth::with_defaults()),
+        )
+        .err()
+        .unwrap();
+
+        assert!(error.to_string().contains("LLM provider feature"));
+    }
+
+    #[cfg(all(feature = "genai-llm", not(feature = "ollama-rs-llm")))]
+    #[test]
+    fn genai_only_ollama_backend_is_available() {
+        let settings = Settings {
+            llm_model: "ollama::qwen3.5:9b".into(),
+            ..Settings::default()
+        };
+
+        let (_, model) =
+            create_llm_provider(&settings, Arc::new(DependencyHealth::with_defaults())).unwrap();
+
+        assert_eq!(model, "ollama::qwen3.5:9b");
     }
 }

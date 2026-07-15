@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -98,6 +98,7 @@ impl DepState {
 /// Lock-free circuit breaker for dependency health.
 pub struct DependencyHealth {
     deps: HashMap<DependencyId, DepState>,
+    openrouter_configured: AtomicBool,
     recovery_timeout: Duration,
     epoch: Instant,
 }
@@ -111,6 +112,7 @@ impl DependencyHealth {
         }
         Self {
             deps,
+            openrouter_configured: AtomicBool::new(false),
             recovery_timeout,
             epoch: Instant::now(),
         }
@@ -127,6 +129,12 @@ impl DependencyHealth {
 
     fn dep(&self, id: DependencyId) -> &DepState {
         &self.deps[&id]
+    }
+
+    pub(crate) fn mark_configured(&self, id: DependencyId) {
+        if id == DependencyId::OpenRouter {
+            self.openrouter_configured.store(true, Ordering::Release);
+        }
     }
 
     /// Check whether a dependency is available. Returns `Ok(())` if healthy
@@ -171,6 +179,7 @@ impl DependencyHealth {
 
     /// Record a failure for a dependency. Transitions to Down.
     pub fn report_failure(&self, id: DependencyId, error: &str) {
+        self.mark_configured(id);
         let dep = self.dep(id);
         dep.state.store(DependencyStatus::DOWN, Ordering::Release);
         dep.last_checked_nanos
@@ -180,6 +189,7 @@ impl DependencyHealth {
 
     /// Record a success for a dependency. Transitions to Healthy.
     pub fn report_success(&self, id: DependencyId) {
+        self.mark_configured(id);
         let dep = self.dep(id);
         dep.state
             .store(DependencyStatus::HEALTHY, Ordering::Release);
@@ -194,6 +204,10 @@ impl DependencyHealth {
         let mut result = HashMap::new();
 
         for id in DependencyId::ALL {
+            if id == DependencyId::OpenRouter && !self.openrouter_configured.load(Ordering::Acquire)
+            {
+                continue;
+            }
             let dep = self.dep(id);
             let state = DependencyStatus::from_u8(dep.state.load(Ordering::Acquire));
             let last_nanos = dep.last_checked_nanos.load(Ordering::Acquire);
@@ -328,12 +342,12 @@ mod tests {
     }
 
     #[test]
-    fn status_snapshot_includes_all_deps() {
+    fn status_snapshot_omits_unconfigured_openrouter() {
         let health = DependencyHealth::with_defaults();
         let status = health.status();
 
         assert!(status.contains_key("ollama"));
-        assert!(status.contains_key("openrouter"));
+        assert!(!status.contains_key("openrouter"));
         assert!(status.contains_key("lancedb"));
         assert!(status.contains_key("embedding"));
 

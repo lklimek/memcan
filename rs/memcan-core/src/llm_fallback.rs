@@ -43,6 +43,10 @@ impl FallbackLlmProvider {
                 })
             }
         });
+        health.mark_configured(primary_dep);
+        if let Some(fallback) = &fallback {
+            health.mark_configured(fallback.dep);
+        }
 
         Self {
             primary,
@@ -170,6 +174,8 @@ impl LlmProvider for FallbackLlmProvider {
         match self.primary.init().await {
             Ok(()) => Ok(()),
             Err(primary_error) => {
+                self.health
+                    .report_failure(self.primary_dep, &primary_error.to_string());
                 let Some(fallback) = &self.fallback else {
                     return Err(primary_error);
                 };
@@ -319,6 +325,17 @@ mod tests {
         assert_eq!(primary.chat_calls(), 1);
         assert_eq!(fallback.chat_calls(), 0);
         assert_eq!(health.status()["ollama"].status, DependencyStatus::Healthy);
+    }
+
+    #[test]
+    fn configured_openrouter_is_included_in_health_status() {
+        let primary = Arc::new(MockLlmProvider::new([]));
+        let fallback = Arc::new(MockLlmProvider::new([]));
+        let health = Arc::new(DependencyHealth::with_defaults());
+
+        let _provider = wrapper(primary, Some(fallback), health.clone());
+
+        assert!(health.status().contains_key("openrouter"));
     }
 
     #[tokio::test]
@@ -477,16 +494,19 @@ mod tests {
         let primary = Arc::new(
             MockLlmProvider::new([]).with_init(MockResult::Failure("primary init failed")),
         );
-        let fallback = Arc::new(MockLlmProvider::new([]));
-        let provider = wrapper(
-            primary.clone(),
-            Some(fallback.clone()),
-            Arc::new(DependencyHealth::with_defaults()),
-        );
+        let fallback = Arc::new(MockLlmProvider::new([MockResult::Success("fallback")]));
+        let health = Arc::new(DependencyHealth::new(Duration::from_secs(60)));
+        let provider = wrapper(primary.clone(), Some(fallback.clone()), health.clone());
 
         assert!(provider.init().await.is_ok());
         assert_eq!(primary.init_calls(), 1);
         assert_eq!(fallback.init_calls(), 1);
+        assert_eq!(health.status()["ollama"].status, DependencyStatus::Down);
+        assert!(health.check(DependencyId::Ollama).is_err());
+
+        assert_eq!(chat(&provider).await.unwrap(), "fallback");
+        assert_eq!(primary.chat_calls(), 0);
+        assert_eq!(fallback.chat_calls(), 1);
     }
 
     #[tokio::test]

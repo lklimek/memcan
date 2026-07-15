@@ -291,25 +291,28 @@ impl Settings {
 
         let openrouter_participates = self.llm_provider == LlmProviderKind::OpenRouter
             || self.llm_fallback_provider == Some(LlmProviderKind::OpenRouter);
-        if openrouter_participates && self.openrouter_api_key.is_none() {
-            return Err(MemcanError::Config(
-                "OPENROUTER_API_KEY is required when OpenRouter is configured".into(),
-            ));
-        }
-        if openrouter_participates && self.openrouter_model.is_empty() {
-            return Err(MemcanError::Config(
-                "OPENROUTER_MODEL is required when OpenRouter is configured".into(),
-            ));
-        }
+        if openrouter_participates {
+            if self.openrouter_api_key.is_none() {
+                return Err(MemcanError::Config(
+                    "OPENROUTER_API_KEY is required when OpenRouter is configured".into(),
+                ));
+            }
+            if self.openrouter_model.is_empty() {
+                return Err(MemcanError::Config(
+                    "OPENROUTER_MODEL is required when OpenRouter is configured".into(),
+                ));
+            }
 
-        let openrouter_url = reqwest::Url::parse(&self.openrouter_base_url).map_err(|error| {
-            MemcanError::Config(format!("OPENROUTER_BASE_URL is invalid: {error}"))
-        })?;
-        if openrouter_url.scheme() != "https" {
-            warn!(
-                openrouter_base_url = %self.openrouter_base_url,
-                "OPENROUTER_BASE_URL does not use HTTPS"
-            );
+            let openrouter_url =
+                reqwest::Url::parse(&self.openrouter_base_url).map_err(|error| {
+                    MemcanError::Config(format!("OPENROUTER_BASE_URL is invalid: {error}"))
+                })?;
+            if openrouter_url.scheme() != "https" {
+                warn!(
+                    openrouter_base_url = %self.openrouter_base_url,
+                    "OPENROUTER_BASE_URL does not use HTTPS"
+                );
+            }
         }
         if self.llm_fallback_provider == Some(self.llm_provider) {
             warn!(
@@ -430,6 +433,16 @@ mod tests {
                 .to_string()
                 .contains("OPENROUTER_MODEL")
         );
+    }
+
+    #[test]
+    fn unused_openrouter_base_url_is_not_validated() {
+        let settings = Settings {
+            openrouter_base_url: "not-a-url".into(),
+            ..Settings::default()
+        };
+
+        assert!(settings.validate().is_ok());
     }
 
     #[test]
