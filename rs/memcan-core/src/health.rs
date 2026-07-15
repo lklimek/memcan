@@ -14,6 +14,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DependencyId {
     Ollama,
+    OpenRouter,
     LanceDb,
     Embedding,
 }
@@ -22,12 +23,18 @@ impl DependencyId {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Ollama => "ollama",
+            Self::OpenRouter => "openrouter",
             Self::LanceDb => "lancedb",
             Self::Embedding => "embedding",
         }
     }
 
-    const ALL: [DependencyId; 3] = [Self::Ollama, Self::LanceDb, Self::Embedding];
+    const ALL: [DependencyId; 4] = [
+        Self::Ollama,
+        Self::OpenRouter,
+        Self::LanceDb,
+        Self::Embedding,
+    ];
 }
 
 impl std::fmt::Display for DependencyId {
@@ -326,6 +333,7 @@ mod tests {
         let status = health.status();
 
         assert!(status.contains_key("ollama"));
+        assert!(status.contains_key("openrouter"));
         assert!(status.contains_key("lancedb"));
         assert!(status.contains_key("embedding"));
 
@@ -391,6 +399,7 @@ mod tests {
     #[test]
     fn dependency_id_display() {
         assert_eq!(DependencyId::Ollama.to_string(), "ollama");
+        assert_eq!(DependencyId::OpenRouter.to_string(), "openrouter");
         assert_eq!(DependencyId::LanceDb.to_string(), "lancedb");
         assert_eq!(DependencyId::Embedding.to_string(), "embedding");
     }

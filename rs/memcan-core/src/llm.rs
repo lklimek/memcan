@@ -1,7 +1,6 @@
-//! Multi-provider LLM chat via the [`genai`] crate.
+//! OpenRouter LLM chat via the [`genai`] crate.
 //!
-//! Replaces the old Ollama-only HTTP client with a provider-agnostic interface
-//! that natively supports Ollama, OpenAI, Anthropic, Gemini, and others.
+//! Ollama is served separately by `OllamaRsLlmProvider`.
 
 use crate::error::{MemcanError, Result};
 use crate::llm_telemetry;
@@ -41,7 +40,7 @@ impl GenaiLlmProvider {
     /// Build from application settings.
     ///
     /// Always installs a `ServiceTargetResolver` that:
-    /// 1. Strips the `"ollama::"` prefix from model names (genai v0.3.5 bug workaround)
+    /// 1. Strips the `"ollama::"` prefix from model names (genai 0.5 compatibility)
     /// 2. Applies `OLLAMA_HOST` endpoint override when configured
     /// 3. Applies `OLLAMA_API_KEY` bearer auth when configured
     ///
@@ -62,7 +61,7 @@ impl GenaiLlmProvider {
         let client = Client::builder()
             .with_service_target_resolver_fn(move |mut st: genai::ServiceTarget| {
                 if st.model.adapter_kind == AdapterKind::Ollama {
-                    // genai v0.3.5 keeps the "ollama::" prefix in model_name,
+                    // genai 0.5 keeps the "ollama::" prefix in model_name,
                     // which Ollama rejects with "model is required".
                     let raw_name: &str = &st.model.model_name;
                     let stripped = strip_ollama_prefix(raw_name);
@@ -86,6 +85,34 @@ impl GenaiLlmProvider {
             default_model: settings.llm_model.clone(),
             ollama_host: settings.ollama_host.clone(),
             ollama_api_key: settings.ollama_api_key.clone(),
+        }
+    }
+
+    /// Build an OpenRouter client; context-window discovery is unsupported.
+    pub fn from_openrouter_settings(settings: &crate::config::Settings) -> Self {
+        let endpoint = Endpoint::from_owned(format!(
+            "{}/",
+            settings.openrouter_base_url.trim_end_matches('/')
+        ));
+        let auth_key = settings.openrouter_api_key.clone().unwrap_or_default();
+        let resolver_key = auth_key.clone();
+
+        let client = Client::builder()
+            // genai 0.5 resolves auth before applying the target override.
+            .with_auth_resolver_fn(move |_| Ok(Some(AuthData::Key(auth_key.clone()))))
+            .with_service_target_resolver_fn(move |mut st: genai::ServiceTarget| {
+                st.endpoint = endpoint.clone();
+                st.model = ModelIden::new(AdapterKind::OpenAI, st.model.model_name.clone());
+                st.auth = AuthData::Key(resolver_key.clone());
+                Ok(st)
+            })
+            .build();
+
+        Self {
+            client,
+            default_model: settings.openrouter_model.clone(),
+            ollama_host: None,
+            ollama_api_key: None,
         }
     }
 
@@ -220,6 +247,65 @@ impl LlmProvider for GenaiLlmProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn tc13_openrouter_uses_openai_endpoint_auth_and_usage_response() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .match_header("authorization", "Bearer test-openrouter-key")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "model": "openai/gpt-4o-mini"
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "openai/gpt-4o-mini",
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "from openrouter"},
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {
+                        "prompt_tokens": 7,
+                        "completion_tokens": 3,
+                        "total_tokens": 10
+                    }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let settings = crate::config::Settings {
+            openrouter_api_key: Some("test-openrouter-key".into()),
+            openrouter_model: "openai/gpt-4o-mini".into(),
+            openrouter_base_url: server.url(),
+            ..crate::config::Settings::default()
+        };
+        let provider = GenaiLlmProvider::from_openrouter_settings(&settings);
+
+        let result = provider
+            .chat(
+                provider.default_model(),
+                &[LlmMessage {
+                    role: Role::User,
+                    content: "hello".into(),
+                }],
+                Some(LlmOptions {
+                    op: "tc13_openrouter",
+                    ..LlmOptions::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, "from openrouter");
+        mock.assert_async().await;
+    }
 
     #[test]
     fn test_default_model() {

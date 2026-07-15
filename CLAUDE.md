@@ -215,12 +215,17 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction |
 | `COMPACT_ON_STARTUP` | `true` | Run full table compaction (`OptimizeAction::All`) on boot before serving; over-fragmented tables only (tables ≤ `COMPACT_FRAGMENT_THRESHOLD` fragments are skipped). Set `false` to avoid boot latency on very large databases. |
 | `COMPACT_FRAGMENT_THRESHOLD` | `64` | Auto-compact a table after a write once it reaches this many data fragments; also the startup-compaction skip threshold. `0` disables auto-compaction. |
-| `LLM_MODEL` | `gemma4:26b-a4b-it-qat` | LLM model name (`ollama::` prefix accepted for backward compat). Needs ~16GB VRAM; use `qwen3.5:9b` (~6.6GB) on smaller cards — see `docs/memcan-model-guide.html` |
+| `LLM_PROVIDER` | `ollama` | Primary backend: `ollama` \| `openrouter`. |
+| `LLM_FALLBACK_PROVIDER` | *(unset)* | Optional fallback backend; unset keeps single-provider behavior. |
+| `LLM_MODEL` | `gemma4:26b-a4b-it-qat` | Ollama model name (`ollama::` prefix accepted for backward compat). Needs ~16GB VRAM; use `qwen3.5:9b` (~6.6GB) on smaller cards — see `docs/memcan-model-guide.html` |
+| `OPENROUTER_API_KEY` | *(none)* | OpenRouter bearer key. Required when OpenRouter is primary or fallback; never logged. |
+| `OPENROUTER_MODEL` | *(none)* | OpenRouter model slug, e.g. `openai/gpt-4o-mini`. Required when OpenRouter participates. |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | Endpoint override for testing or self-hosted OpenAI-compatible gateways. |
 | `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings (dimensions derived automatically) |
 | `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`). Injected into the LLM client (ollama-rs default; or genai via `ServiceTargetResolver`). |
 | `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth (sent as `Authorization: Bearer $key`) |
 
-> **Note:** Neither ollama-rs nor genai reads `OLLAMA_HOST` or `OLLAMA_API_KEY` from the environment automatically — MemCan reads them via `Settings` and injects them into each LLM client at construction time.
+> **Note:** MemCan injects Ollama and OpenRouter endpoint credentials into each LLM client at construction time. For Ollama-primary with OpenRouter fallback, set `LLM_PROVIDER=ollama`, `LLM_FALLBACK_PROVIDER=openrouter`, `OPENROUTER_API_KEY=…`, and `OPENROUTER_MODEL=…`. The `/health` endpoint reports `openrouter` separately.
 
 ## LLM Token Telemetry
 

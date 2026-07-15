@@ -1,8 +1,11 @@
 //! CLI wrapper for code indexing. Delegates to `memcan_core::indexing::code`.
 
+use std::sync::Arc;
+
 use tracing::info;
 
 use memcan_core::error::{MemcanError, Result as MemcanResult};
+use memcan_core::health::DependencyHealth;
 use memcan_core::indexing::code::{IndexCodeParams, drop_code, index_code};
 use memcan_core::init::{MemcanContext, create_llm_provider};
 use memcan_core::schema::MemcanTableSchema;
@@ -22,7 +25,8 @@ pub async fn run(args: &IndexCodeArgs) -> MemcanResult<()> {
         MemcanError::Other("--tech-stack is required unless --drop is specified".into())
     })?;
 
-    let (llm, llm_model) = create_llm_provider(&ctx.settings);
+    let health = Arc::new(DependencyHealth::with_defaults());
+    let (llm, llm_model) = create_llm_provider(&ctx.settings, health)?;
 
     let params = IndexCodeParams {
         project_dir: args.project_dir.clone(),

@@ -1,4 +1,5 @@
 // Comprehensive integration tests for OllamaRsLlmProvider.
+#![cfg(feature = "ollama-rs-llm")]
 //
 // All tests require a real Ollama server and are marked #[ignore].
 // Run with:

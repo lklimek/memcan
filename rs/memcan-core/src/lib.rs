@@ -23,8 +23,10 @@ pub mod init;
 pub mod lancedb_store;
 #[cfg(feature = "genai-llm")]
 pub mod llm;
+mod llm_fallback;
 #[cfg(feature = "ollama-rs-llm")]
 pub mod llm_ollama_rs;
+#[cfg(any(feature = "ollama-rs-llm", feature = "genai-llm"))]
 pub(crate) mod llm_telemetry;
 pub mod manifest_guard;
 pub mod ollama;
@@ -42,6 +44,3 @@ pub use error::VectorStoreError;
 pub use schema::MemcanTableSchema;
 pub use traits::{MinimalTableSchema, TableSchema};
 pub use typed_table::TypedTable;
-
-#[cfg(not(any(feature = "ollama-rs-llm", feature = "genai-llm")))]
-compile_error!("At least one LLM feature must be enabled: ollama-rs-llm or genai-llm");

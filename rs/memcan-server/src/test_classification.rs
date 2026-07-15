@@ -1,10 +1,13 @@
 //! Replay hook data log for prompt tuning (moved from `memcan-test-classification`).
 
+use std::sync::Arc;
+
 use chrono::Utc;
 use serde::Deserialize;
 
 use memcan_core::config::Settings;
 use memcan_core::error::{MemcanError, Result as MemcanResult, ResultExt};
+use memcan_core::health::DependencyHealth;
 use memcan_core::init::create_llm_provider;
 use memcan_core::text::strip_code_fence;
 use memcan_core::traits::{LlmMessage, LlmOptions, LlmProvider, Role};
@@ -87,7 +90,8 @@ async fn call_llm(
 pub async fn run(args: &TestClassificationArgs) -> MemcanResult<()> {
     let settings = Settings::load()?;
     settings.ensure_log_dir()?;
-    let (llm, _default_model) = create_llm_provider(&settings);
+    let health = Arc::new(DependencyHealth::with_defaults());
+    let (llm, _default_model) = create_llm_provider(&settings, health)?;
 
     if !args.prompt.is_file() {
         return Err(MemcanError::Other(format!(

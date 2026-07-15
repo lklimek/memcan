@@ -6,7 +6,7 @@ license.workspace = true
 publish = false
 
 [features]
-default = ["ollama-rs-llm"]
+default = ["ollama-rs-llm", "genai-llm"]
 ollama-rs-llm = ["dep:ollama-rs"]
 genai-llm = ["dep:genai"]
 
