@@ -240,6 +240,31 @@ pub async fn list_todos(
     Ok(todos)
 }
 
+/// List TODO items across every project, optionally filtered by status.
+pub async fn list_all_todos(
+    store: &dyn VectorStore,
+    status_filter: Option<&str>,
+    limit: usize,
+) -> Result<Vec<TodoItem>> {
+    if let Some(status) = status_filter {
+        validate_status(status)?;
+    }
+
+    let filter = status_filter.map(|status| format!("status = '{}'", sanitize_eq(status)));
+    let results = store
+        .scroll(TODOS_TABLE, filter.as_deref(), limit, 0)
+        .await?;
+
+    let mut todos: Vec<TodoItem> = results.iter().map(parse_todo).collect();
+    todos.sort_by(|a, b| {
+        priority_rank(&a.priority)
+            .cmp(&priority_rank(&b.priority))
+            .then_with(|| a.created_at.cmp(&b.created_at))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(todos)
+}
+
 pub async fn update_todo(
     store: &dyn VectorStore,
     embedder: &dyn EmbeddingProvider,
@@ -381,6 +406,18 @@ mod tests {
                 last_filter: Mutex::new(None),
             }
         }
+
+        fn with_results(results: impl IntoIterator<Item = SearchResult>) -> Self {
+            Self {
+                records: Mutex::new(
+                    results
+                        .into_iter()
+                        .map(|result| (result.id.clone(), result))
+                        .collect(),
+                ),
+                last_filter: Mutex::new(None),
+            }
+        }
     }
 
     #[async_trait]
@@ -433,14 +470,22 @@ mod tests {
             _offset: usize,
         ) -> Result<Vec<SearchResult>> {
             *self.last_filter.lock().unwrap() = filter.map(String::from);
-            Ok(self
-                .records
-                .lock()
-                .unwrap()
-                .values()
-                .take(limit)
-                .cloned()
-                .collect())
+            let mut records: Vec<_> = self.records.lock().unwrap().values().cloned().collect();
+            if let Some(filter) = filter
+                && let Some(status) = filter
+                    .strip_prefix("status = '")
+                    .and_then(|value| value.strip_suffix('\''))
+            {
+                records.retain(|record| {
+                    record
+                        .payload
+                        .get("status")
+                        .and_then(|value| value.as_str())
+                        == Some(status)
+                });
+            }
+            records.truncate(limit);
+            Ok(records)
         }
 
         async fn count(&self, _table: &str, _filter: Option<&str>) -> Result<usize> {
@@ -485,6 +530,26 @@ mod tests {
                 "created_at": "2026-01-01T00:00:00Z",
                 "completed_at": completed_at,
                 "collection": "todos",
+            }),
+        }
+    }
+
+    fn listed_todo(
+        id: &str,
+        project: &str,
+        priority: &str,
+        status: &str,
+        created_at: &str,
+    ) -> SearchResult {
+        SearchResult {
+            id: id.into(),
+            score: 0.0,
+            payload: json!({
+                "title": id,
+                "project": project,
+                "priority": priority,
+                "status": status,
+                "created_at": created_at,
             }),
         }
     }
@@ -769,6 +834,92 @@ mod tests {
             store.last_filter.lock().unwrap().as_deref(),
             Some("project = 'memcan' AND owner = 'bilby''s'")
         );
+    }
+
+    #[tokio::test]
+    async fn test_list_all_todos_returns_cross_project_rows() {
+        let store = MockStore::with_results([
+            listed_todo(
+                "backend",
+                "backend",
+                "medium",
+                "pending",
+                "2026-01-01T00:00:00Z",
+            ),
+            listed_todo(
+                "memcan",
+                "memcan",
+                "medium",
+                "pending",
+                "2026-01-01T00:00:00Z",
+            ),
+        ]);
+
+        let listed = list_all_todos(&store, None, 50).await.unwrap();
+
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().any(|item| item.project == "backend"));
+        assert!(listed.iter().any(|item| item.project == "memcan"));
+        assert!(store.last_filter.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_list_all_todos_filters_valid_status() {
+        let store = MockStore::with_results([
+            listed_todo(
+                "pending",
+                "memcan",
+                "medium",
+                "pending",
+                "2026-01-01T00:00:00Z",
+            ),
+            listed_todo("done", "backend", "high", "done", "2026-01-02T00:00:00Z"),
+        ]);
+
+        let listed = list_all_todos(&store, Some("pending"), 50).await.unwrap();
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "pending");
+        assert_eq!(
+            store.last_filter.lock().unwrap().as_deref(),
+            Some("status = 'pending'")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_list_all_todos_empty_store_is_empty() {
+        let listed = list_all_todos(&MockStore::default(), None, 50)
+            .await
+            .unwrap();
+
+        assert!(listed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_all_todos_has_deterministic_priority_created_id_order() {
+        let store = MockStore::with_results([
+            listed_todo("z-low", "a", "low", "pending", "2026-01-01T00:00:00Z"),
+            listed_todo("b-medium", "a", "medium", "pending", "2026-01-01T00:00:00Z"),
+            listed_todo("a-medium", "b", "medium", "pending", "2026-01-01T00:00:00Z"),
+            listed_todo("high", "a", "high", "pending", "2026-01-03T00:00:00Z"),
+        ]);
+
+        let listed = list_all_todos(&store, None, 50).await.unwrap();
+        let ids: Vec<_> = listed.iter().map(|item| item.id.as_str()).collect();
+
+        assert_eq!(ids, ["high", "a-medium", "b-medium", "z-low"]);
+    }
+
+    #[tokio::test]
+    async fn test_list_all_todos_rejects_invalid_status_before_store_access() {
+        let store = MockStore::default();
+
+        let error = list_all_todos(&store, Some("archived"), 50)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("invalid status"));
+        assert!(store.last_filter.lock().unwrap().is_none());
     }
 
     #[tokio::test]

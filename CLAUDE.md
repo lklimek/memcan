@@ -209,6 +209,8 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 |---|---|---|
 | `MEMCAN_LISTEN` | `127.0.0.1:8191` | Server bind address (Docker overrides to `0.0.0.0:8191`) |
 | `MEMCAN_API_KEY` | *(none)* | Bearer token auth for MCP API. Required to use destructive tools (`delete_code_records` is refused when unset). |
+| `WEBUI_USERNAME` | *(none)* | Shared username for the read-only task UI. `/ui*` is not mounted unless both WebUI credentials are non-empty. |
+| `WEBUI_PASSWORD` | *(none)* | Shared password for the read-only task UI. Empty means unset; the value is masked in `Settings` debug output. |
 | `MEMCAN_URL` | `http://localhost:8190` | Server URL for thin clients (`memcan`) |
 | `MEMCAN_LOG_FILE` | *(none = stdout)* | Log file path (renamed from `LOG_FILE`) |
 | `LANCEDB_PATH` | `~/.local/share/memcan/lancedb` | LanceDB storage directory |
@@ -222,6 +224,18 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 | `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth (sent as `Authorization: Bearer $key`) |
 
 > **Note:** Neither ollama-rs nor genai reads `OLLAMA_HOST` or `OLLAMA_API_KEY` from the environment automatically — MemCan reads them via `Settings` and injects them into each LLM client at construction time.
+
+### Tasks web UI deployment
+
+The read-only task browser is available at `/ui/tasks` only when both `WEBUI_USERNAME` and
+`WEBUI_PASSWORD` are non-empty. TLS termination in front of MemCan, such as a correctly configured
+Traefik HTTPS router, is required before enabling it. Exposing `/ui*` over plain HTTP on
+`0.0.0.0` is unsupported and insecure because Basic Auth credentials are merely base64-encoded.
+
+Application-level login throttling is deferred for this trusted-network MVP. Rate limiting belongs
+at the proxy or network layer, where the deployment has an established client-IP trust model;
+revisit this decision before exposing the UI beyond trusted networks. Basic Auth also has no
+application logout operation: browsers retain the shared credentials for their session.
 
 ## LLM Token Telemetry
 

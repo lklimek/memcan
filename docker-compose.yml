@@ -40,6 +40,8 @@ services:
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-ollama::gemma4:26b-a4b-it-qat}
       MEMCAN_API_KEY: ${MEMCAN_API_KEY}
+      WEBUI_USERNAME: ${WEBUI_USERNAME:-}
+      WEBUI_PASSWORD: ${WEBUI_PASSWORD:-}
       RUST_LOG: ${RUST_LOG:-info,memcan_core=debug,memcan_server=debug}
       MEMCAN_LOG_FILE: ""
       MEMCAN_LISTEN: 0.0.0.0:8191
@@ -53,6 +55,8 @@ services:
       - backend
     # No ports: mapping — memcan is NOT directly accessible from host.
     # External access is only through Traefik (:8190).
+    # Do not set WEBUI_* until /ui* is behind TLS; plain-HTTP Basic Auth is insecure.
+    # Apply login throttling at the trusted proxy/network layer, not in this container.
     labels:
       - "traefik.instance=ollama"
       - "traefik.enable=true"

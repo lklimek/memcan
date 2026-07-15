@@ -56,6 +56,9 @@ use memcan_core::{
 
 use crate::ServeArgs;
 
+#[path = "ui/mod.rs"]
+mod ui;
+
 /// Maximum content size for standards indexing (500 KB).
 const MAX_STANDARDS_CONTENT_SIZE: usize = 500 * 1024;
 
@@ -2231,6 +2234,16 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
             )
             .merge(mcp_router);
 
+        let app = match ui::router(&ctx.settings) {
+            Some(ui) => app.merge(ui),
+            None => {
+                warn!("web UI disabled: set WEBUI_USERNAME and WEBUI_PASSWORD to enable /ui*");
+                app
+            }
+        };
+
+        let app = app.layer(axum::Extension(Arc::clone(&shared.store)));
+
         let listener = TcpListener::bind(&listen_addr)
             .await
             .map_err(|e| MemcanError::Other(format!("failed to bind {listen_addr}: {e}")))?;
@@ -2368,6 +2381,8 @@ mod tests {
             config: memcan_core::config::Settings {
                 listen: "127.0.0.1:0".into(),
                 api_key: None,
+                webui_username: None,
+                webui_password: None,
                 lancedb_path: "/tmp/test".into(),
                 default_user_id: "global".into(),
                 tech_stack: String::new(),
