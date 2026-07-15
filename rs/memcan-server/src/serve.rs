@@ -56,9 +56,6 @@ use memcan_core::{
 
 use crate::ServeArgs;
 
-#[path = "ui/mod.rs"]
-mod ui;
-
 /// Maximum content size for standards indexing (500 KB).
 const MAX_STANDARDS_CONTENT_SIZE: usize = 500 * 1024;
 
@@ -2234,7 +2231,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
             )
             .merge(mcp_router);
 
-        let app = match ui::router(&ctx.settings) {
+        let app = match crate::ui::router(&ctx.settings) {
             Some(ui) => app.merge(ui),
             None => {
                 warn!("web UI disabled: set WEBUI_USERNAME and WEBUI_PASSWORD to enable /ui*");

@@ -35,7 +35,7 @@ pub(super) async fn task(
         .into_response(),
         Ok(None) => not_found(),
         Err(source) => {
-            error!(error = %source, task_id = %id, "web UI task detail could not load");
+            error!(error = %source, task_id = ?id, "web UI task detail could not load");
             service_unavailable()
         }
     }
@@ -70,7 +70,9 @@ fn task_markup(item: &TodoItem) -> Markup {
             }
             section aria-labelledby="description-heading" {
                 h2 id="description-heading" { "Description" }
-                div class="description" { (item.description.as_deref().unwrap_or("—")) }
+                div class="description" {
+                    (item.description.as_deref().filter(|description| !description.is_empty()).unwrap_or("—"))
+                }
             }
             @if !item.blocked_by.is_empty() {
                 section aria-labelledby="blocked-heading" {
@@ -171,7 +173,7 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn detail_view_omits_empty_blocked_by_and_uses_optional_placeholders() {
-        let task = item(
+        let mut task = item(
             "LEGACY",
             "Legacy task",
             "memcan",
@@ -180,6 +182,7 @@ mod tests {
             None,
             "not-a-date",
         );
+        task.description = Some(String::new());
         let app = app_with_items(vec![task]).await;
         let (status, body) = get(&app.router, "/ui/tasks/LEGACY").await;
 
@@ -187,6 +190,7 @@ mod tests {
         assert!(!body.contains("Blocked by"));
         assert!(body.contains("<dt>Owner</dt><dd>—</dd>"));
         assert!(body.contains("<dt>Completed</dt><dd>—</dd>"));
+        assert!(body.contains("class=\"description\">—</div>"));
         assert!(body.contains("not-a-date"));
     }
 

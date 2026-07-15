@@ -24,7 +24,7 @@ use subtle::ConstantTimeEq;
 
 const AUTH_CHALLENGE: HeaderValue = HeaderValue::from_static("Basic realm=\"MemCan Tasks\"");
 const CONTENT_SECURITY_POLICY: HeaderValue = HeaderValue::from_static(
-    "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'",
+    "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
 );
 const STYLES: &str = r#"
 :root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.5; }
@@ -338,7 +338,7 @@ mod tests {
             );
             assert_eq!(
                 response.headers().get("content-security-policy").unwrap(),
-                "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'"
+                "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
             );
         }
     }

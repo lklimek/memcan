@@ -39,8 +39,12 @@ Set both `WEBUI_USERNAME` and `WEBUI_PASSWORD` to mount the task browser at `/ui
 either value unset or empty keeps every `/ui*` route unmounted. The password is masked in settings
 debug output.
 
-Terminate TLS in front of MemCan before enabling the UI. A direct, plain-HTTP `0.0.0.0` exposure is
-unsupported and insecure because Basic Auth sends base64-encoded, not encrypted, credentials.
+The bundled Docker Compose entrypoint is plain HTTP and does not provide TLS out of the box. Its
+dedicated `/ui*` router bypasses the API's Bearer middleware so the application's Basic Auth can
+work, but `TRAEFIK_IP_ALLOWLIST` must remain at its default localhost-only setting until TLS is
+added. Exposing `/ui*` beyond localhost requires an operator-configured Traefik TLS entrypoint and
+certificate resolver, or an upstream TLS-terminating reverse proxy. Plain-HTTP Basic Auth sends
+base64-encoded, not encrypted, credentials.
 Login throttling is intentionally delegated to the trusted proxy/network layer, where client IPs
 can be identified safely, and must be revisited before broader exposure. The shared Basic Auth
 account has no application logout; credentials normally persist for the browser session.

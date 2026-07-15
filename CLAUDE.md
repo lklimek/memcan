@@ -209,7 +209,7 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 |---|---|---|
 | `MEMCAN_LISTEN` | `127.0.0.1:8191` | Server bind address (Docker overrides to `0.0.0.0:8191`) |
 | `MEMCAN_API_KEY` | *(none)* | Bearer token auth for MCP API. Required to use destructive tools (`delete_code_records` is refused when unset). |
-| `WEBUI_USERNAME` | *(none)* | Shared username for the read-only task UI. `/ui*` is not mounted unless both WebUI credentials are non-empty. |
+| `WEBUI_USERNAME` | *(none)* | Shared username for the read-only task UI. Empty means unset; `/ui*` is not mounted unless both WebUI credentials are non-empty. |
 | `WEBUI_PASSWORD` | *(none)* | Shared password for the read-only task UI. Empty means unset; the value is masked in `Settings` debug output. |
 | `MEMCAN_URL` | `http://localhost:8190` | Server URL for thin clients (`memcan`) |
 | `MEMCAN_LOG_FILE` | *(none = stdout)* | Log file path (renamed from `LOG_FILE`) |
@@ -228,9 +228,14 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 ### Tasks web UI deployment
 
 The read-only task browser is available at `/ui/tasks` only when both `WEBUI_USERNAME` and
-`WEBUI_PASSWORD` are non-empty. TLS termination in front of MemCan, such as a correctly configured
-Traefik HTTPS router, is required before enabling it. Exposing `/ui*` over plain HTTP on
-`0.0.0.0` is unsupported and insecure because Basic Auth credentials are merely base64-encoded.
+`WEBUI_PASSWORD` are non-empty. The bundled Docker Compose entrypoint is plain HTTP and does not
+provide TLS out of the box. Its dedicated `/ui*` router bypasses the API's Bearer middleware so
+the application's Basic Auth can work, but it remains restricted by `TRAEFIK_IP_ALLOWLIST`.
+
+Keep the allowlist at its default localhost-only setting (`127.0.0.1/32,::1/128`) until TLS is
+configured. Exposing `/ui*` beyond localhost requires the operator to add a Traefik TLS entrypoint
+and certificate resolver, or place another TLS-terminating reverse proxy upstream. Plain-HTTP
+Basic Auth is insecure because its credentials are merely base64-encoded.
 
 Application-level login throttling is deferred for this trusted-network MVP. Rate limiting belongs
 at the proxy or network layer, where the deployment has an established client-IP trust model;

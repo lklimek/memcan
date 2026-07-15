@@ -17,12 +17,13 @@ pub const TODOS_TABLE: &str = "memcan_todos";
 const VALID_PRIORITIES: &[&str] = &["low", "medium", "high"];
 const VALID_STATUSES: &[&str] = &[
     "pending",
-    "done",
     "in_progress",
     "blocked",
+    "done",
     "postponed",
     "cancelled",
 ];
+const MAX_LIST_ALL_TODOS_SCAN: usize = 10_000;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AddTodoParams {
@@ -73,14 +74,19 @@ pub fn validate_priority(p: &str) -> Result<()> {
 }
 
 pub fn validate_status(s: &str) -> Result<()> {
-    if !VALID_STATUSES.contains(&s) {
+    if !valid_statuses().contains(&s) {
         return Err(crate::error::MemcanError::Other(format!(
             "invalid status '{}', must be one of: {}",
             s,
-            VALID_STATUSES.join(", ")
+            valid_statuses().join(", ")
         )));
     }
     Ok(())
+}
+
+/// Return the canonical TODO status vocabulary in display order.
+pub fn valid_statuses() -> &'static [&'static str] {
+    VALID_STATUSES
 }
 
 fn is_terminal(status: &str) -> bool {
@@ -162,7 +168,8 @@ fn parse_todo(r: &SearchResult) -> TodoItem {
     }
 }
 
-fn priority_rank(p: &str) -> u8 {
+/// Return the default display rank for a TODO priority.
+pub fn priority_rank(p: &str) -> u8 {
     match p {
         "high" => 0,
         "medium" => 1,
@@ -183,7 +190,9 @@ pub async fn add_todo(
     let item = TodoItem {
         id: Uuid::new_v4().to_string(),
         title: params.title,
-        description: params.description,
+        description: params
+            .description
+            .filter(|description| !description.is_empty()),
         project: params.project,
         priority: priority.to_string(),
         status: "pending".to_string(),
@@ -241,6 +250,8 @@ pub async fn list_todos(
 }
 
 /// List TODO items across every project, optionally filtered by status.
+///
+/// The caller's limit is applied after sorting the bounded full-table scan.
 pub async fn list_all_todos(
     store: &dyn VectorStore,
     status_filter: Option<&str>,
@@ -252,7 +263,7 @@ pub async fn list_all_todos(
 
     let filter = status_filter.map(|status| format!("status = '{}'", sanitize_eq(status)));
     let results = store
-        .scroll(TODOS_TABLE, filter.as_deref(), limit, 0)
+        .scroll(TODOS_TABLE, filter.as_deref(), MAX_LIST_ALL_TODOS_SCAN, 0)
         .await?;
 
     let mut todos: Vec<TodoItem> = results.iter().map(parse_todo).collect();
@@ -262,6 +273,7 @@ pub async fn list_all_todos(
             .then_with(|| a.created_at.cmp(&b.created_at))
             .then_with(|| a.id.cmp(&b.id))
     });
+    todos.truncate(limit);
     Ok(todos)
 }
 
@@ -798,14 +810,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_add_todo_empty_owner_is_normalized_to_none() {
+    async fn test_add_todo_empty_optional_text_is_normalized_to_none() {
         let added = add_todo(
             &MockStore::default(),
             &MockEmbedder,
             &MinimalTableSchema,
             AddTodoParams {
                 title: "Unassigned work".into(),
-                description: None,
+                description: Some(String::new()),
                 project: "memcan".into(),
                 priority: None,
                 owner: Some(String::new()),
@@ -816,6 +828,7 @@ mod tests {
         .unwrap();
 
         assert!(added.owner.is_none());
+        assert!(added.description.is_none());
     }
 
     #[tokio::test]
@@ -908,6 +921,21 @@ mod tests {
         let ids: Vec<_> = listed.iter().map(|item| item.id.as_str()).collect();
 
         assert_eq!(ids, ["high", "a-medium", "b-medium", "z-low"]);
+    }
+
+    #[tokio::test]
+    async fn test_list_all_todos_applies_limit_after_sorting() {
+        let store = MockStore::with_results([
+            listed_todo("z-low", "a", "low", "pending", "2026-01-01T00:00:00Z"),
+            listed_todo("b-medium", "a", "medium", "pending", "2026-01-01T00:00:00Z"),
+            listed_todo("a-medium", "b", "medium", "pending", "2026-01-01T00:00:00Z"),
+            listed_todo("high", "a", "high", "pending", "2026-01-03T00:00:00Z"),
+        ]);
+
+        let listed = list_all_todos(&store, None, 2).await.unwrap();
+        let ids: Vec<_> = listed.iter().map(|item| item.id.as_str()).collect();
+
+        assert_eq!(ids, ["high", "a-medium"]);
     }
 
     #[tokio::test]

@@ -7,7 +7,7 @@ use axum::{
 };
 use maud::{Markup, html};
 use memcan_core::{
-    todo::{TodoItem, list_all_todos, validate_status},
+    todo::{TodoItem, list_all_todos, priority_rank, valid_statuses, validate_status},
     traits::VectorStore,
 };
 use serde::Deserialize;
@@ -16,14 +16,6 @@ use tracing::error;
 use super::{detail, fmt_date_short, layout, priority_badge, status_badge};
 
 const LIMIT: usize = 500;
-const STATUS_OPTIONS: &[&str] = &[
-    "pending",
-    "in_progress",
-    "blocked",
-    "done",
-    "postponed",
-    "cancelled",
-];
 
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct FilterParams {
@@ -64,7 +56,7 @@ pub(super) async fn tasks(
     Extension(store): Extension<Arc<dyn VectorStore>>,
     Query(params): Query<FilterParams>,
 ) -> Response {
-    let all = match list_all_todos(store.as_ref(), None, LIMIT).await {
+    let all = match list_all_todos(store.as_ref(), None, usize::MAX).await {
         Ok(items) => items,
         Err(source) => {
             error!(error = %source, "web UI task list could not load");
@@ -89,6 +81,7 @@ pub(super) async fn tasks(
         .cloned()
         .collect();
     sort_items(&mut displayed, selected_sort);
+    displayed.truncate(LIMIT);
 
     layout(
         "MemCan · Tasks",
@@ -126,7 +119,7 @@ fn list_markup(
                 label for="status" { "Status" }
                 select id="status" name="status" {
                     option value="" selected[selected_status.is_none()] { "all" }
-                    @for status in STATUS_OPTIONS {
+                    @for status in valid_statuses() {
                         option value=(status) selected[selected_status == Some(*status)] { (status) }
                     }
                 }
@@ -186,22 +179,25 @@ fn list_markup(
 }
 
 fn sort_items(items: &mut [TodoItem], sort: Sort) {
-    items.sort_by(|left, right| match sort {
-        Sort::Priority => default_order(left, right),
-        Sort::Created => left
-            .created_at
-            .cmp(&right.created_at)
-            .then_with(|| left.id.cmp(&right.id)),
-        Sort::Project => left
-            .project
-            .to_ascii_lowercase()
-            .cmp(&right.project.to_ascii_lowercase())
-            .then_with(|| default_order(left, right)),
-        Sort::Status => left
-            .status
-            .cmp(&right.status)
-            .then_with(|| default_order(left, right)),
-    });
+    match sort {
+        Sort::Priority => {}
+        Sort::Created => items.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        }),
+        Sort::Project => items.sort_by(|left, right| {
+            left.project
+                .to_ascii_lowercase()
+                .cmp(&right.project.to_ascii_lowercase())
+                .then_with(|| default_order(left, right))
+        }),
+        Sort::Status => items.sort_by(|left, right| {
+            left.status
+                .cmp(&right.status)
+                .then_with(|| default_order(left, right))
+        }),
+    }
 }
 
 fn default_order(left: &TodoItem, right: &TodoItem) -> Ordering {
@@ -209,15 +205,6 @@ fn default_order(left: &TodoItem, right: &TodoItem) -> Ordering {
         .cmp(&priority_rank(&right.priority))
         .then_with(|| left.created_at.cmp(&right.created_at))
         .then_with(|| left.id.cmp(&right.id))
-}
-
-fn priority_rank(priority: &str) -> u8 {
-    match priority {
-        "high" => 0,
-        "medium" => 1,
-        "low" => 2,
-        _ => 3,
-    }
 }
 
 #[cfg(test)]
@@ -421,6 +408,38 @@ mod tests {
 
         assert!(body.contains("500 tasks · limit 500"));
         assert!(!body.contains("pagination"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn list_view_filter_finds_match_beyond_display_limit() {
+        let mut items: Vec<_> = (0..501)
+            .map(|index| {
+                item(
+                    &format!("NOISE-{index:03}"),
+                    &format!("Noise task {index}"),
+                    "noise-project",
+                    "medium",
+                    "pending",
+                    None,
+                    "2026-01-01T00:00:00Z",
+                )
+            })
+            .collect();
+        items.push(item(
+            "TARGET-1",
+            "Target task",
+            "target-project",
+            "high",
+            "pending",
+            None,
+            "2026-01-01T00:00:00Z",
+        ));
+        let app = app_with_items(items).await;
+        let (_, body) = get(&app.router, "/ui/tasks?project=target-project").await;
+
+        assert!(body.contains("TARGET-1"));
+        assert!(body.contains("1 tasks · limit 500"));
     }
 
     #[tokio::test]
