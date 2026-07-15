@@ -1483,7 +1483,9 @@ impl MemcanService {
         )]))
     }
 
-    #[tool(description = "Update a TODO item's title, description, priority, or status.")]
+    #[tool(
+        description = "Update a TODO item's title, description, priority, status, owner, or blocked_by."
+    )]
     async fn update_todo(
         &self,
         Parameters(params): Parameters<UpdateTodoParams>,
@@ -2254,7 +2256,10 @@ mod tests {
             VectorPoint, VectorStore,
         };
 
-        struct MockStore;
+        #[derive(Default)]
+        struct MockStore {
+            records: StdMutex<HashMap<String, SearchResult>>,
+        }
         #[async_trait::async_trait]
         impl VectorStore for MockStore {
             async fn ensure_table(
@@ -2268,9 +2273,20 @@ mod tests {
             async fn upsert(
                 &self,
                 _: &str,
-                _: &[VectorPoint],
+                points: &[VectorPoint],
                 _: &dyn TableSchema,
             ) -> memcan_core::error::Result<()> {
+                let mut records = self.records.lock().unwrap();
+                for point in points {
+                    records.insert(
+                        point.id.clone(),
+                        SearchResult {
+                            id: point.id.clone(),
+                            score: 0.0,
+                            payload: point.payload.clone(),
+                        },
+                    );
+                }
                 Ok(())
             }
             async fn search(
@@ -2308,9 +2324,13 @@ mod tests {
             async fn get(
                 &self,
                 _: &str,
-                _: &[String],
+                ids: &[String],
             ) -> memcan_core::error::Result<Vec<SearchResult>> {
-                Ok(vec![])
+                let records = self.records.lock().unwrap();
+                Ok(ids
+                    .iter()
+                    .filter_map(|id| records.get(id).cloned())
+                    .collect())
             }
         }
 
@@ -2342,7 +2362,7 @@ mod tests {
         }
 
         let state = Arc::new(SharedState {
-            store: Arc::new(MockStore),
+            store: Arc::new(MockStore::default()),
             embedder: Arc::new(MockEmbedder),
             llm: Arc::new(MockLlm),
             config: memcan_core::config::Settings {
@@ -2471,6 +2491,55 @@ mod tests {
 
         assert_eq!(response["error"], "todo not found");
         assert_eq!(response["todo_id"], "missing-id");
+    }
+
+    #[tokio::test]
+    async fn get_todo_success_returns_serialized_item_fields() {
+        let service = make_test_service();
+        let added = service
+            .add_todo(Parameters(AddTodoParams {
+                title: "Blocked work".into(),
+                description: None,
+                project: "memcan".into(),
+                priority: None,
+                owner: Some("bilby".into()),
+                blocked_by: Some(vec!["dependency-a".into(), "dependency-b".into()]),
+            }))
+            .await
+            .unwrap();
+        let added: serde_json::Value = serde_json::from_str(
+            added.content[0]
+                .as_text()
+                .expect("text response")
+                .text
+                .as_ref(),
+        )
+        .unwrap();
+        let todo_id = added["id"].as_str().expect("todo id").to_string();
+
+        let fetched = service
+            .get_todo(Parameters(GetTodoParams {
+                todo_id: todo_id.clone(),
+            }))
+            .await
+            .unwrap();
+        let response: serde_json::Value = serde_json::from_str(
+            fetched.content[0]
+                .as_text()
+                .expect("text response")
+                .text
+                .as_ref(),
+        )
+        .unwrap();
+
+        assert_eq!(response["id"], todo_id);
+        assert_eq!(response["title"], "Blocked work");
+        assert_eq!(response["owner"], "bilby");
+        assert_eq!(
+            response["blocked_by"],
+            serde_json::json!(["dependency-a", "dependency-b"])
+        );
+        assert_eq!(response["status"], "pending");
     }
 
     #[test]

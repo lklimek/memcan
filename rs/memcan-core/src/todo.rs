@@ -46,7 +46,8 @@ pub struct TodoItem {
     #[serde(default)]
     pub blocked_by: Vec<String>,
     pub created_at: String,
-    /// Timestamp when the task reached a terminal state (`done` or `cancelled`).
+    /// Timestamp when the task first reached a terminal state (`done` or `cancelled`).
+    /// A terminal-to-terminal change (e.g. `cancelled` to `done`) keeps the earlier timestamp.
     pub completed_at: Option<String>,
 }
 
@@ -186,7 +187,7 @@ pub async fn add_todo(
         project: params.project,
         priority: priority.to_string(),
         status: "pending".to_string(),
-        owner: params.owner,
+        owner: params.owner.filter(|owner| !owner.is_empty()),
         blocked_by: params.blocked_by.unwrap_or_default(),
         created_at: Utc::now().to_rfc3339(),
         completed_at: None,
@@ -729,6 +730,27 @@ mod tests {
         assert_eq!(listed[0].id, added.id);
         assert_eq!(listed[0].owner.as_deref(), Some("bilby"));
         assert_eq!(listed[0].blocked_by, vec!["id-a", "id-b"]);
+    }
+
+    #[tokio::test]
+    async fn test_add_todo_empty_owner_is_normalized_to_none() {
+        let added = add_todo(
+            &MockStore::default(),
+            &MockEmbedder,
+            &MinimalTableSchema,
+            AddTodoParams {
+                title: "Unassigned work".into(),
+                description: None,
+                project: "memcan".into(),
+                priority: None,
+                owner: Some(String::new()),
+                blocked_by: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(added.owner.is_none());
     }
 
     #[tokio::test]
