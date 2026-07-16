@@ -332,15 +332,17 @@ pub struct DeleteCodeRecordsParams {
 pub struct AddTodoParams {
     /// Short title of the TODO item.
     pub title: String,
-    /// Optional longer description.
+    /// Optional longer description; trimmed, and dropped if empty or whitespace-only.
     pub description: Option<String>,
     /// Project this TODO belongs to (required).
     pub project: String,
     /// Priority: "low", "medium", or "high". Defaults to "medium".
     pub priority: Option<String>,
-    /// Optional agent or coordinator responsible for the TODO.
+    /// Optional agent or coordinator responsible for the TODO; trimmed, and dropped
+    /// if empty or whitespace-only.
     pub owner: Option<String>,
-    /// Optional TODO IDs that block this item.
+    /// Optional TODO IDs that block this item; each entry is trimmed, empties dropped,
+    /// duplicates removed (first occurrence wins).
     pub blocked_by: Option<Vec<String>>,
 }
 
@@ -350,7 +352,8 @@ pub struct ListTodosParams {
     pub project: String,
     /// Filter by status: pending, done, in_progress, blocked, postponed, or cancelled.
     pub status: Option<String>,
-    /// Filter by owner. Omit for all owners.
+    /// Filter by owner; trimmed before matching. Omit — or pass an empty or
+    /// whitespace-only string — for all owners. There is no filter for unowned TODOs.
     pub owner: Option<String>,
     /// Max results (default 50, max 200).
     pub limit: Option<u32>,
@@ -368,9 +371,11 @@ pub struct UpdateTodoParams {
     pub priority: Option<String>,
     /// New status: pending, done, in_progress, blocked, postponed, or cancelled.
     pub status: Option<String>,
-    /// New owner; an empty string clears the owner.
+    /// New owner; trimmed. An empty or whitespace-only string clears the owner.
     pub owner: Option<String>,
-    /// Replacement TODO IDs that block this item; an empty list clears them.
+    /// Replacement TODO IDs that block this item; each entry is trimmed, empties
+    /// dropped, duplicates removed (first occurrence wins). An empty list — or one
+    /// holding only empty/whitespace entries — clears them.
     pub blocked_by: Option<Vec<String>>,
 }
 
