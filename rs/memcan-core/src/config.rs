@@ -325,15 +325,6 @@ impl Settings {
             );
         }
 
-        // -- llm_model format check (warn only, genai-llm needs provider prefix) --
-        #[cfg(all(feature = "genai-llm", not(feature = "ollama-rs-llm")))]
-        if !self.llm_model.contains("::") {
-            warn!(
-                "LLM_MODEL '{}' is missing a provider prefix (e.g. 'ollama::model-name')",
-                self.llm_model
-            );
-        }
-
         // -- log_file parent directory (warn only, don't create) --
         let log_path = Path::new(&self.log_file);
         if let Some(parent) = log_path.parent()

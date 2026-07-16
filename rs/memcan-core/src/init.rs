@@ -88,7 +88,10 @@ fn build_backend(
             #[cfg(all(feature = "genai-llm", not(feature = "ollama-rs-llm")))]
             {
                 let provider = crate::llm::GenaiLlmProvider::from_settings(settings);
-                let model = provider.default_model().to_string();
+                // genai selects its adapter from the model name; namespacing
+                // pins it to Ollama, which the operator selected explicitly.
+                let model =
+                    crate::ollama::ensure_ollama_prefix(provider.default_model()).into_owned();
                 Ok((Arc::new(provider), model, DependencyId::Ollama))
             }
             #[cfg(not(any(feature = "ollama-rs-llm", feature = "genai-llm")))]
@@ -188,5 +191,34 @@ mod tests {
             create_llm_provider(&settings, Arc::new(DependencyHealth::with_defaults())).unwrap();
 
         assert_eq!(model, "ollama::qwen3.5:9b");
+    }
+
+    /// genai picks its adapter from the model name, so an unprefixed name can
+    /// route away from Ollama (`command-r7b` -> Cohere) even though the
+    /// operator selected `LLM_PROVIDER=ollama`.
+    #[cfg(all(feature = "genai-llm", not(feature = "ollama-rs-llm")))]
+    #[test]
+    fn genai_only_ollama_backend_normalizes_unprefixed_model() {
+        for raw in [
+            Settings::default().llm_model.as_str(),
+            "command-r7b",
+            "glm4:9b",
+        ] {
+            let settings = Settings {
+                llm_provider: LlmProviderKind::Ollama,
+                llm_model: raw.into(),
+                ..Settings::default()
+            };
+
+            let (_, model) =
+                create_llm_provider(&settings, Arc::new(DependencyHealth::with_defaults()))
+                    .unwrap();
+
+            assert_eq!(
+                model,
+                format!("ollama::{raw}"),
+                "unprefixed model '{raw}' must resolve to the Ollama adapter"
+            );
+        }
     }
 }
