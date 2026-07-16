@@ -3,7 +3,7 @@
 //! TODOs persist across sessions, are project-scoped, and searchable via
 //! unified search. Stored in LanceDB with embeddings for semantic search.
 
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 
 use chrono::Utc;
@@ -119,6 +119,15 @@ fn normalize_optional_text(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+fn normalize_id_list(values: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    values
+        .into_iter()
+        .filter_map(normalize_optional_text)
+        .filter(|value| seen.insert(value.clone()))
+        .collect()
+}
+
 fn build_data(title: &str, description: Option<&str>) -> String {
     match description {
         Some(d) if !d.is_empty() => format!("{title}\n{d}"),
@@ -220,7 +229,7 @@ pub async fn add_todo(
         priority: priority.to_string(),
         status: "pending".to_string(),
         owner: params.owner.and_then(normalize_optional_text),
-        blocked_by: params.blocked_by.unwrap_or_default(),
+        blocked_by: normalize_id_list(params.blocked_by.unwrap_or_default()),
         created_at: Utc::now().to_rfc3339(),
         completed_at: None,
     };
@@ -319,7 +328,7 @@ pub async fn update_todo(
         item.owner = normalize_optional_text(owner);
     }
     if let Some(blocked_by) = updates.blocked_by {
-        item.blocked_by = blocked_by;
+        item.blocked_by = normalize_id_list(blocked_by);
     }
     if let Some(status) = updates.status {
         let was_terminal = is_terminal(&item.status);
@@ -819,6 +828,93 @@ mod tests {
         .unwrap();
 
         assert!(added.owner.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_add_todo_normalizes_blocked_by() {
+        let added = add_todo(
+            &MockStore::default(),
+            &MockEmbedder,
+            &MinimalTableSchema,
+            AddTodoParams {
+                title: "Blocked work".into(),
+                description: None,
+                project: "memcan".into(),
+                priority: None,
+                owner: None,
+                blocked_by: Some(vec![" id-a ".into(), "".into(), "id-a".into()]),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(added.blocked_by, vec!["id-a"]);
+    }
+
+    #[tokio::test]
+    async fn test_update_todo_normalizes_blocked_by() {
+        let store = MockStore::with_result(todo_result("pending", None));
+        let write_locks = TodoWriteLocks::default();
+        let updated = update_todo(
+            &store,
+            &MockEmbedder,
+            &MinimalTableSchema,
+            &write_locks,
+            "todo-id",
+            UpdateTodoFields {
+                blocked_by: Some(vec![" id-a ".into(), "".into(), "id-a".into()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(updated.blocked_by, vec!["id-a"]);
+    }
+
+    #[tokio::test]
+    async fn test_add_and_update_todo_normalize_blocked_by_the_same_way_and_preserve_order() {
+        let blocked_by = vec![
+            " id-b ".into(),
+            "".into(),
+            "id-a".into(),
+            "id-b".into(),
+            " id-c ".into(),
+        ];
+        let created = add_todo(
+            &MockStore::default(),
+            &MockEmbedder,
+            &MinimalTableSchema,
+            AddTodoParams {
+                title: "Blocked work".into(),
+                description: None,
+                project: "memcan".into(),
+                priority: None,
+                owner: None,
+                blocked_by: Some(blocked_by.clone()),
+            },
+        )
+        .await
+        .unwrap();
+
+        let store = MockStore::with_result(todo_result("pending", None));
+        let write_locks = TodoWriteLocks::default();
+        let updated = update_todo(
+            &store,
+            &MockEmbedder,
+            &MinimalTableSchema,
+            &write_locks,
+            "todo-id",
+            UpdateTodoFields {
+                blocked_by: Some(blocked_by),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(created.blocked_by, vec!["id-b", "id-a", "id-c"]);
+        assert_eq!(created.blocked_by, updated.blocked_by);
     }
 
     #[tokio::test]
