@@ -6,11 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project fol
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-16
+
 ### Added
 
 - `get_todo` MCP tool for fetching a single TODO item by ID.
 - `owner` and `blocked_by` fields on TODO items, accepted by both `add_todo` and `update_todo`.
 - TODO statuses `in_progress`, `blocked`, `postponed`, and `cancelled`, expanding the status set to six values alongside `pending` and `done`.
+- Read-only Tasks web UI (`memcan-server`) — `GET /ui` (redirects to `/ui/tasks`), `GET /ui/tasks` (filterable/sortable list), `GET /ui/tasks/{id}` (detail, with `blocked_by` cross-links). Server-rendered, auto-escaping. Mounted only when both `MEMCAN_WEBUI_USERNAME` and `MEMCAN_WEBUI_PASSWORD` are set (opt-in, fail-closed single shared HTTP Basic-Auth account); Docker Compose gives it a dedicated Traefik router that excludes the Bearer-token API middleware.
+- OpenRouter LLM backend with a runtime-selectable primary/fallback provider — `LLM_PROVIDER` (`ollama` | `openrouter`) and `LLM_FALLBACK_PROVIDER` select which backend serves each call and which one takes over on an availability fault (connection failure, timeout, 5xx); `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, and `OPENROUTER_BASE_URL` configure the OpenRouter side. `/health` reports `openrouter` as a dependency separately from `ollama`. **Note:** this adds `MemcanError::LlmUnavailable`, a new variant on the public, non-`#[non_exhaustive]` `MemcanError` enum — an external consumer with an exhaustive `match` (no wildcard arm) on `MemcanError` will need to add a arm for it.
 
 ### Changed
 
