@@ -306,7 +306,14 @@ impl Settings {
         let openrouter_participates = self.llm_provider == LlmProviderKind::OpenRouter
             || self.llm_fallback_provider == Some(LlmProviderKind::OpenRouter);
         if openrouter_participates {
-            if self.openrouter_api_key.is_none() {
+            // A blank key is a missing key: it would otherwise pass validation
+            // and reach the HTTP client as an empty bearer token, turning a
+            // startup error into a 401 on every request.
+            let api_key_is_blank = self
+                .openrouter_api_key
+                .as_ref()
+                .is_none_or(|key| key.trim().is_empty());
+            if api_key_is_blank {
                 return Err(MemcanError::Config(
                     "OPENROUTER_API_KEY is required when OpenRouter is configured".into(),
                 ));
@@ -457,6 +464,29 @@ mod tests {
                 .to_string()
                 .contains("OPENROUTER_MODEL")
         );
+    }
+
+    #[test]
+    fn blank_openrouter_api_key_is_rejected_like_a_missing_one() {
+        // An empty or whitespace key would otherwise reach the HTTP client as an
+        // empty bearer token and 401 on every request instead of at startup.
+        for key in ["", "   "] {
+            let settings = Settings {
+                llm_provider: LlmProviderKind::OpenRouter,
+                openrouter_api_key: Some(key.into()),
+                openrouter_model: "openai/gpt-4o-mini".into(),
+                ..Settings::default()
+            };
+
+            assert!(
+                settings
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("OPENROUTER_API_KEY"),
+                "a {key:?} key must be rejected at startup"
+            );
+        }
     }
 
     #[test]
