@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use serde::Deserialize;
+use tracing::warn;
 
 use memcan_core::config::Settings;
 use memcan_core::error::{MemcanError, Result as MemcanResult, ResultExt};
@@ -87,10 +88,29 @@ async fn call_llm(
     None
 }
 
+/// Strip the fallback backend so only `--model` can answer.
+///
+/// This subcommand reports accuracy and precision under the model named on the
+/// command line, and those numbers gate prompt changes. A fallback backend
+/// answers as its own model while the report keeps the requested label, which
+/// silently measures one model and blames another. A benchmark wants a hard
+/// failure, not a rescue.
+fn single_model_settings(mut settings: Settings) -> Settings {
+    if let Some(fallback) = settings.llm_fallback_provider.take() {
+        warn!(
+            %fallback,
+            "Ignoring configured LLM fallback: test-classification measures only the requested model"
+        );
+    }
+    settings
+}
+
 pub async fn run(args: &TestClassificationArgs) -> MemcanResult<()> {
-    let settings = Settings::load()?;
+    let settings = single_model_settings(Settings::load()?);
     settings.ensure_log_dir()?;
-    let health = Arc::new(DependencyHealth::with_defaults());
+    // Every vector must reach the model; a suppressed call would be scored as
+    // an error the model never earned.
+    let health = Arc::new(DependencyHealth::without_circuit_breaking());
     let (llm, _default_model) = create_llm_provider(&settings, health)?;
 
     if !args.prompt.is_file() {
@@ -230,4 +250,35 @@ pub async fn run(args: &TestClassificationArgs) -> MemcanResult<()> {
     println!("Recall:         {:.1}%", recall);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use memcan_core::config::{LlmProviderKind, Settings};
+
+    use super::single_model_settings;
+
+    #[test]
+    fn configured_fallback_is_dropped_so_only_the_named_model_answers() {
+        let settings = single_model_settings(Settings {
+            llm_provider: LlmProviderKind::Ollama,
+            llm_fallback_provider: Some(LlmProviderKind::OpenRouter),
+            ..Settings::default()
+        });
+
+        assert_eq!(settings.llm_fallback_provider, None);
+    }
+
+    #[test]
+    fn primary_backend_selection_is_untouched() {
+        let settings = single_model_settings(Settings {
+            llm_provider: LlmProviderKind::OpenRouter,
+            llm_fallback_provider: Some(LlmProviderKind::Ollama),
+            ..Settings::default()
+        });
+
+        // Only substitution is refused; the operator's chosen backend stands.
+        assert_eq!(settings.llm_provider, LlmProviderKind::OpenRouter);
+        assert_eq!(settings.llm_fallback_provider, None);
+    }
 }
