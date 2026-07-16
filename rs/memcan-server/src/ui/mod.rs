@@ -35,8 +35,7 @@ main { padding-bottom: 3rem; }
 a { color: #075985; }
 a:focus-visible, button:focus-visible, select:focus-visible { outline: 3px solid #f59e0b; outline-offset: 2px; }
 .panel { background: white; border: 1px solid #cbd5e1; border-radius: .5rem; padding: 1rem; }
-.filters { margin-block: 1rem; }
-.filters form { display: flex; flex-wrap: wrap; gap: .65rem; align-items: end; }
+.filters { margin-block: 1rem; display: flex; flex-wrap: wrap; gap: .65rem; align-items: end; }
 label { font-weight: 650; }
 select, button { font: inherit; padding: .35rem .5rem; }
 .table-wrap { overflow-x: auto; padding: 0; }
@@ -259,8 +258,10 @@ mod tests {
     async fn webui_auth_rejects_missing_and_wrong_credentials_with_exact_challenge() {
         for authorization in [
             None,
+            Some(basic("").as_str()),
             Some(basic("testuser:wrong").as_str()),
             Some(basic("wrong:testpass").as_str()),
+            Some(basic("TestUser:testpass").as_str()),
         ] {
             let response = mounted(&credentials())
                 .oneshot(request("/ui/tasks", authorization))

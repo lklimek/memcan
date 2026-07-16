@@ -251,7 +251,9 @@ pub async fn list_todos(
 
 /// List TODO items across every project, optionally filtered by status.
 ///
-/// The caller's limit is applied after sorting the bounded full-table scan.
+/// The store scan is hard-capped at 10,000 rows in store-defined order before sorting.
+/// Once matching rows reach that cap, results can silently omit TODOs outside the scan.
+/// The caller's limit is applied after sorting the bounded scan.
 pub async fn list_all_todos(
     store: &dyn VectorStore,
     status_filter: Option<&str>,
@@ -265,6 +267,13 @@ pub async fn list_all_todos(
     let results = store
         .scroll(TODOS_TABLE, filter.as_deref(), MAX_LIST_ALL_TODOS_SCAN, 0)
         .await?;
+    if results.len() == MAX_LIST_ALL_TODOS_SCAN {
+        tracing::warn!(
+            scan_limit = MAX_LIST_ALL_TODOS_SCAN,
+            status_filter = status_filter.unwrap_or("all"),
+            "TODO list scan reached the hard cap; results may omit stored tasks"
+        );
+    }
 
     let mut todos: Vec<TodoItem> = results.iter().map(parse_todo).collect();
     todos.sort_by(|a, b| {

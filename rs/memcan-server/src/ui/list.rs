@@ -2,7 +2,7 @@ use std::{cmp::Ordering, collections::BTreeSet, sync::Arc};
 
 use axum::{
     Extension,
-    extract::Query,
+    extract::{Query, rejection::QueryRejection},
     response::{IntoResponse, Response},
 };
 use maud::{Markup, html};
@@ -54,8 +54,9 @@ impl Sort {
 
 pub(super) async fn tasks(
     Extension(store): Extension<Arc<dyn VectorStore>>,
-    Query(params): Query<FilterParams>,
+    params: Result<Query<FilterParams>, QueryRejection>,
 ) -> Response {
+    let params = params.map_or_else(|_| FilterParams::default(), |Query(params)| params);
     let all = match list_all_todos(store.as_ref(), None, usize::MAX).await {
         Ok(items) => items,
         Err(source) => {
@@ -107,36 +108,34 @@ fn list_markup(
 ) -> Markup {
     html! {
         h1 { "MemCan · Tasks" }
-        nav aria-label="Task filters" class="panel filters" {
-            form method="get" action="/ui/tasks" {
-                label for="project" { "Project" }
-                select id="project" name="project" {
-                    option value="" selected[selected_project.is_none()] { "all" }
-                    @for project in projects {
-                        option value=(project) selected[selected_project == Some(*project)] { (project) }
-                    }
+        form role="search" aria-label="Task filters" class="panel filters" method="get" action="/ui/tasks" {
+            label for="project" { "Project" }
+            select id="project" name="project" {
+                option value="" selected[selected_project.is_none()] { "all" }
+                @for project in projects {
+                    option value=(project) selected[selected_project == Some(*project)] { (project) }
                 }
-                label for="status" { "Status" }
-                select id="status" name="status" {
-                    option value="" selected[selected_status.is_none()] { "all" }
-                    @for status in valid_statuses() {
-                        option value=(status) selected[selected_status == Some(*status)] { (status) }
-                    }
-                }
-                label for="sort" { "Sort" }
-                select id="sort" name="sort" {
-                    @for (value, label) in [
-                        ("priority", "priority"),
-                        ("created", "created"),
-                        ("project", "project"),
-                        ("status", "status"),
-                    ] {
-                        option value=(value) selected[selected_sort.value() == value] { (label) }
-                    }
-                }
-                button type="submit" { "Apply" }
-                a href="/ui/tasks" { "Clear" }
             }
+            label for="status" { "Status" }
+            select id="status" name="status" {
+                option value="" selected[selected_status.is_none()] { "all" }
+                @for status in valid_statuses() {
+                    option value=(status) selected[selected_status == Some(*status)] { (status) }
+                }
+            }
+            label for="sort" { "Sort" }
+            select id="sort" name="sort" {
+                @for (value, label) in [
+                    ("priority", "priority"),
+                    ("created", "created"),
+                    ("project", "project"),
+                    ("status", "status"),
+                ] {
+                    option value=(value) selected[selected_sort.value() == value] { (label) }
+                }
+            }
+            button type="submit" { "Apply" }
+            a href="/ui/tasks" { "Clear" }
         }
 
         @if all.is_empty() {
@@ -236,7 +235,10 @@ mod tests {
             &body,
             &["T-HIGH-1", "T-BLK-A", "T-MED-1", "T-LOW-1", "T-BLK-B"],
         );
-        assert!(body.contains("<form method=\"get\" action=\"/ui/tasks\">"));
+        assert!(body.contains(
+            "<form role=\"search\" aria-label=\"Task filters\" class=\"panel filters\" method=\"get\" action=\"/ui/tasks\">"
+        ));
+        assert!(!body.contains("<nav aria-label=\"Task filters\""));
         assert!(body.contains("<select id=\"project\" name=\"project\">"));
         assert!(body.contains("<select id=\"status\" name=\"status\">"));
         assert!(body.contains("<select id=\"sort\" name=\"sort\">"));
@@ -310,6 +312,25 @@ mod tests {
         assert!(!body.contains("bogus_field"));
         assert!(!body.contains("bogus"));
         assert!(body.contains("value=\"priority\" selected"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn list_view_ignores_duplicate_query_params_inside_page_shell() {
+        let app = app_with_items(base_items()).await;
+
+        for uri in [
+            "/ui/tasks?project=backend&project=memcan",
+            "/ui/tasks?status=pending&status=done",
+        ] {
+            let (status, body) = get(&app.router, uri).await;
+
+            assert_eq!(status, StatusCode::OK);
+            assert!(body.starts_with("<!DOCTYPE html>"));
+            assert!(body.contains("<title>MemCan · Tasks</title>"));
+            assert!(body.contains("5 tasks · limit 500"));
+            assert!(!body.contains("Failed to deserialize query string"));
+        }
     }
 
     #[tokio::test]
