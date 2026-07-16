@@ -248,6 +248,9 @@ pub async fn list_todos(
     if let Some(s) = status_filter {
         validate_status(s)?;
     }
+    let owner_filter = owner_filter
+        .map(str::to_owned)
+        .and_then(normalize_optional_text);
 
     let safe_project = sanitize_eq(project);
     let mut filter = format!("project = '{safe_project}'");
@@ -255,7 +258,7 @@ pub async fn list_todos(
         let safe_status = sanitize_eq(status);
         filter.push_str(&format!(" AND status = '{safe_status}'"));
     }
-    if let Some(owner) = owner_filter {
+    if let Some(owner) = owner_filter.as_deref() {
         let safe_owner = sanitize_eq(owner);
         filter.push_str(&format!(" AND owner = '{safe_owner}'"));
     }
@@ -834,6 +837,24 @@ mod tests {
             store.last_filter.lock().unwrap().as_deref(),
             Some("project = 'memcan' AND owner = 'bilby''s'")
         );
+    }
+
+    #[tokio::test]
+    async fn test_list_todos_empty_owner_filter_is_omitted() {
+        let store = MockStore::with_result(todo_result("pending", None));
+
+        for owner_filter in ["", "   "] {
+            let listed = list_todos(&store, "memcan", None, Some(owner_filter), 50)
+                .await
+                .unwrap();
+
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].id, "todo-id");
+            assert_eq!(
+                store.last_filter.lock().unwrap().as_deref(),
+                Some("project = 'memcan'")
+            );
+        }
     }
 
     #[tokio::test]
