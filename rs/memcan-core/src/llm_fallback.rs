@@ -496,6 +496,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn context_window_uses_the_primary_when_the_fallback_breaker_is_open() {
+        // An open fallback breaker is indistinguishable from "cannot report" at
+        // this layer, and chat() will not reach that fallback anyway — so the
+        // primary's window is the one callers should size against.
+        let primary = Arc::new(MockLlmProvider::new([]).with_context_window(Some(32_768)));
+        let fallback = Arc::new(MockLlmProvider::new([]).with_context_window(Some(8_192)));
+        let health = Arc::new(DependencyHealth::with_defaults());
+        let provider = wrapper(primary, Some(fallback.clone()), health.clone());
+
+        health.report_failure(DependencyId::OpenRouter, "fallback is down");
+
+        assert_eq!(provider.context_window("qwen3.5:9b").await, Some(32_768));
+        assert_eq!(
+            fallback.context_window_calls(),
+            0,
+            "must not query a fallback the breaker already knows is down"
+        );
+    }
+
+    #[tokio::test]
     async fn context_window_without_fallback_delegates_to_primary() {
         let primary = Arc::new(MockLlmProvider::new([]).with_context_window(Some(32_768)));
         let health = Arc::new(DependencyHealth::with_defaults());
