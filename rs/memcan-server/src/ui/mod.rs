@@ -151,6 +151,14 @@ async fn security_headers(request: Request, next: Next) -> Response {
     response
         .headers_mut()
         .insert(header::CONTENT_SECURITY_POLICY, CONTENT_SECURITY_POLICY);
+    // Pages are authenticated and may show task metadata; keep them out of
+    // browser/proxy caches rather than relying on cache defaults.
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+        .headers_mut()
+        .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
     response
 }
 
@@ -449,6 +457,8 @@ mod tests {
                 response.headers().get("content-security-policy").unwrap(),
                 "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
             );
+            assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+            assert_eq!(response.headers().get("pragma").unwrap(), "no-cache");
         }
     }
 
