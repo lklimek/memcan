@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use ollama_rs::Ollama;
+use ollama_rs::error::OllamaError;
 use ollama_rs::generation::chat::ChatMessage;
 use ollama_rs::generation::chat::ChatMessageFinalResponseData;
 use ollama_rs::generation::chat::request::ChatMessageRequest;
@@ -18,6 +19,28 @@ use crate::traits::{LlmMessage, LlmOptions, LlmProvider, Role};
 pub struct OllamaRsLlmProvider {
     client: Ollama,
     default_model: String,
+}
+
+/// Sort a chat failure into the availability class or the content class.
+///
+/// Only [`OllamaError::ReqwestError`] proves the daemon was unreachable, so it
+/// is the one variant mapped to [`MemcanError::LlmUnavailable`].
+///
+/// `send_chat_messages` collapses **every** non-2xx response into
+/// `OllamaError::Other`, discarding the status code, so a 400
+/// (context-length-exceeded) is indistinguishable from a 503 (model failed to
+/// load) without parsing the body text. Both therefore stay in the
+/// availability class: guessing from prose would be worse than the status quo,
+/// and treating a real 5xx as a content fault would silently disable failover.
+fn classify_chat_error(error: &OllamaError, model_name: &str) -> MemcanError {
+    let context = format!("ollama-rs chat call to model '{model_name}' failed");
+    let detail = error.to_string();
+    match error {
+        OllamaError::ReqwestError(_) | OllamaError::Other(_) | OllamaError::JsonError(_) => {
+            MemcanError::LlmUnavailable { context, detail }
+        }
+        _ => MemcanError::LlmChat { context, detail },
+    }
 }
 
 impl OllamaRsLlmProvider {
@@ -183,14 +206,11 @@ impl LlmProvider for OllamaRsLlmProvider {
             None => {}
         }
 
-        let response =
-            self.client
-                .send_chat_messages(request)
-                .await
-                .map_err(|e| MemcanError::LlmChat {
-                    context: format!("ollama-rs chat call to model '{model_name}' failed"),
-                    detail: e.to_string(),
-                })?;
+        let response = self
+            .client
+            .send_chat_messages(request)
+            .await
+            .map_err(|e| classify_chat_error(&e, model_name))?;
 
         // Emit structured token telemetry before consuming the response.
         let (prompt_tokens, completion_tokens) = extract_token_counts(response.final_data.as_ref());
@@ -267,6 +287,33 @@ mod tests {
     use super::*;
     use crate::traits::{LlmMessage, LlmProvider, Role};
 
+    // ── classify_chat_error unit tests ──────────────────────────────────────
+
+    #[test]
+    fn non_2xx_response_is_classified_unavailable() {
+        // send_chat_messages funnels every non-2xx into Other(body) without the
+        // status, so this bucket cannot be narrowed without parsing prose.
+        let error = OllamaError::Other("model is loading".into());
+        assert!(classify_chat_error(&error, "qwen3.5:9b").is_llm_unavailable());
+    }
+
+    #[test]
+    fn malformed_response_body_is_classified_unavailable() {
+        let json_error = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        let error = OllamaError::JsonError(json_error);
+        assert!(classify_chat_error(&error, "qwen3.5:9b").is_llm_unavailable());
+    }
+
+    #[test]
+    fn classified_error_keeps_the_model_name_in_context() {
+        let error = OllamaError::Other("boom".into());
+        assert!(
+            classify_chat_error(&error, "qwen3.5:9b")
+                .to_string()
+                .contains("qwen3.5:9b")
+        );
+    }
+
     // ── extract_token_counts unit tests ─────────────────────────────────────
 
     #[test]
@@ -334,6 +381,76 @@ mod tests {
 
         assert!(result.is_ok(), "chat should succeed: {:?}", result);
         assert_eq!(result.unwrap(), "Incremental code indexer.");
+        mock.assert_async().await;
+    }
+
+    /// An empty completion is a content fault: the daemon answered, so it must
+    /// not be reported as unavailable (which would divert the prompt to a
+    /// third-party backend and mark a healthy Ollama Down).
+    #[tokio::test]
+    async fn test_chat_empty_response_is_a_content_fault() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "model": "test-model",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "message": {"role": "assistant", "content": ""},
+                    "done": true
+                }"#,
+            )
+            .create_async()
+            .await;
+
+        let provider = provider_at(&server.url(), "test-model");
+        let messages = vec![LlmMessage {
+            role: Role::User,
+            content: "Describe this function.".into(),
+        }];
+
+        let error = provider
+            .chat("test-model", &messages, None)
+            .await
+            .unwrap_err();
+
+        assert!(error.is_llm_error());
+        assert!(
+            !error.is_llm_unavailable(),
+            "an empty completion says nothing about availability: {error:?}"
+        );
+        mock.assert_async().await;
+    }
+
+    /// A 5xx means the daemon could not serve the request, which is exactly
+    /// what the fallback and the circuit breaker exist for.
+    #[tokio::test]
+    async fn test_chat_server_error_is_an_availability_fault() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .with_status(503)
+            .with_body("model is loading")
+            .create_async()
+            .await;
+
+        let provider = provider_at(&server.url(), "test-model");
+        let messages = vec![LlmMessage {
+            role: Role::User,
+            content: "Describe this function.".into(),
+        }];
+
+        let error = provider
+            .chat("test-model", &messages, None)
+            .await
+            .unwrap_err();
+
+        assert!(
+            error.is_llm_unavailable(),
+            "expected availability: {error:?}"
+        );
         mock.assert_async().await;
     }
 

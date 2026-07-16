@@ -90,6 +90,18 @@ impl std::fmt::Debug for FallbackLlmProvider {
 
 #[async_trait]
 impl LlmProvider for FallbackLlmProvider {
+    /// Serve a chat request from the primary, falling back only when the
+    /// primary is *unavailable*.
+    ///
+    /// Only [`MemcanError::LlmUnavailable`] is an availability signal. A
+    /// content fault ([`MemcanError::LlmChat`] — empty response, rejected
+    /// prompt) returns to the caller unchanged: it would fail identically on
+    /// the fallback, so re-sending would leak `messages` to a third party for
+    /// nothing, and reporting it to the breaker would mark a serving backend
+    /// Down for a fault it did not cause.
+    ///
+    /// This keeps egress scoped to genuine outages, so caller-supplied content
+    /// cannot itself trigger a cross-provider send.
     async fn chat(
         &self,
         model: &str,
@@ -102,6 +114,14 @@ impl LlmProvider for FallbackLlmProvider {
                     self.health.report_success(self.primary_dep);
                     return Ok(response);
                 }
+                Err(primary_error) if !primary_error.is_llm_unavailable() => {
+                    debug!(
+                        primary = %self.primary_dep,
+                        error = %primary_error,
+                        "Primary LLM rejected the request; keeping it local because the backend is healthy"
+                    );
+                    return Err(primary_error);
+                }
                 Err(primary_error) => {
                     self.health
                         .report_failure(self.primary_dep, &primary_error.to_string());
@@ -110,14 +130,15 @@ impl LlmProvider for FallbackLlmProvider {
                     }
                     warn!(
                         primary = %self.primary_dep,
-                        "Primary LLM request failed; attempting configured fallback"
+                        error = %primary_error,
+                        "Primary LLM backend is unavailable; attempting configured fallback"
                     );
                     primary_error
                 }
             },
             Err(primary_error) => {
                 if self.fallback.is_none() {
-                    return Err(MemcanError::LlmChat {
+                    return Err(MemcanError::LlmUnavailable {
                         context: format!("LLM backend '{}' is unavailable", self.primary_dep),
                         detail: primary_error.to_string(),
                     });
@@ -142,6 +163,11 @@ impl LlmProvider for FallbackLlmProvider {
             return Err(self.combined_error(fallback, &primary_error, &fallback_error));
         }
 
+        warn!(
+            primary = %self.primary_dep,
+            fallback = %fallback.dep,
+            "LLM fallback engaged: request content is being sent to the fallback provider"
+        );
         match fallback
             .provider
             .chat(&fallback.model, messages, options)
@@ -149,16 +175,13 @@ impl LlmProvider for FallbackLlmProvider {
         {
             Ok(response) => {
                 self.health.report_success(fallback.dep);
-                warn!(
-                    primary = %self.primary_dep,
-                    fallback = %fallback.dep,
-                    "Fallback LLM request succeeded after primary became unavailable"
-                );
                 Ok(response)
             }
             Err(fallback_error) => {
-                self.health
-                    .report_failure(fallback.dep, &fallback_error.to_string());
+                if fallback_error.is_llm_unavailable() {
+                    self.health
+                        .report_failure(fallback.dep, &fallback_error.to_string());
+                }
                 error!(
                     primary = %self.primary_dep,
                     fallback = %fallback.dep,
@@ -272,7 +295,27 @@ mod tests {
     #[derive(Clone, Copy)]
     enum MockResult {
         Success(&'static str),
+        /// A content fault: the backend answered but the prompt yielded no
+        /// usable text. Carries no availability signal.
         Failure(&'static str),
+        /// An availability fault: the backend could not be reached.
+        Unavailable(&'static str),
+    }
+
+    impl MockResult {
+        fn into_result(self, context: &str) -> Result<String> {
+            match self {
+                MockResult::Success(text) => Ok(text.into()),
+                MockResult::Failure(detail) => Err(MemcanError::LlmChat {
+                    context: context.into(),
+                    detail: detail.into(),
+                }),
+                MockResult::Unavailable(detail) => Err(MemcanError::LlmUnavailable {
+                    context: context.into(),
+                    detail: detail.into(),
+                }),
+            }
+        }
     }
 
     struct MockLlmProvider {
@@ -334,13 +377,7 @@ mod tests {
                 .unwrap()
                 .pop_front()
                 .unwrap_or(MockResult::Success("default success"));
-            match result {
-                MockResult::Success(text) => Ok(text.into()),
-                MockResult::Failure(detail) => Err(MemcanError::LlmChat {
-                    context: "mock provider".into(),
-                    detail: detail.into(),
-                }),
-            }
+            result.into_result("mock provider")
         }
 
         async fn context_window(&self, _model: &str) -> Option<usize> {
@@ -350,13 +387,7 @@ mod tests {
 
         async fn init(&self) -> Result<()> {
             self.init_calls.fetch_add(1, Ordering::SeqCst);
-            match self.init_result {
-                MockResult::Success(_) => Ok(()),
-                MockResult::Failure(detail) => Err(MemcanError::LlmChat {
-                    context: "mock init".into(),
-                    detail: detail.into(),
-                }),
-            }
+            self.init_result.into_result("mock init").map(|_| ())
         }
     }
 
@@ -461,8 +492,78 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tc2_primary_failure_calls_healthy_fallback() {
+    async fn content_fault_is_not_shipped_to_the_fallback_provider() {
+        // A prompt the primary cannot answer fails identically everywhere, so
+        // re-sending it to a third-party backend would leak the content without
+        // any prospect of success.
         let primary = Arc::new(MockLlmProvider::new([MockResult::Failure(
+            "empty response from LLM",
+        )]));
+        let fallback = Arc::new(MockLlmProvider::new([MockResult::Success("fallback")]));
+        let health = Arc::new(DependencyHealth::with_defaults());
+        let provider = wrapper(primary.clone(), Some(fallback.clone()), health.clone());
+
+        let error = chat(&provider).await.unwrap_err();
+        assert!(matches!(
+            error,
+            MemcanError::LlmChat { ref detail, .. } if detail == "empty response from LLM"
+        ));
+        assert_eq!(primary.chat_calls(), 1);
+        assert_eq!(
+            fallback.chat_calls(),
+            0,
+            "content faults must never egress to the fallback provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn content_fault_does_not_trip_the_primary_breaker() {
+        // The prompt is at fault, not the backend; marking a serving backend
+        // Down would corrupt the operator's health signal and arm egress for
+        // every request in the recovery window.
+        let primary = Arc::new(MockLlmProvider::new([
+            MockResult::Failure("empty response from LLM"),
+            MockResult::Success("primary still serving"),
+        ]));
+        let fallback = Arc::new(MockLlmProvider::new([MockResult::Success("fallback")]));
+        let health = Arc::new(DependencyHealth::new(Duration::from_secs(60)));
+        let provider = wrapper(primary, Some(fallback.clone()), health.clone());
+
+        assert!(chat(&provider).await.is_err());
+        assert_eq!(
+            health.status()["ollama"].status,
+            DependencyStatus::Healthy,
+            "a content fault must leave the primary breaker closed"
+        );
+
+        // The breaker stayed closed, so the next request still reaches the primary.
+        assert_eq!(chat(&provider).await.unwrap(), "primary still serving");
+        assert_eq!(fallback.chat_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn content_fault_from_the_fallback_does_not_trip_its_breaker() {
+        let primary = Arc::new(MockLlmProvider::new([MockResult::Unavailable(
+            "connection refused",
+        )]));
+        let fallback = Arc::new(MockLlmProvider::new([MockResult::Failure(
+            "empty response from LLM",
+        )]));
+        let health = Arc::new(DependencyHealth::new(Duration::from_secs(60)));
+        let provider = wrapper(primary, Some(fallback), health.clone());
+
+        assert!(chat(&provider).await.is_err());
+        assert_eq!(health.status()["ollama"].status, DependencyStatus::Down);
+        assert_eq!(
+            health.status()["openrouter"].status,
+            DependencyStatus::Healthy,
+            "the fallback answered; only the prompt failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn tc2_primary_failure_calls_healthy_fallback() {
+        let primary = Arc::new(MockLlmProvider::new([MockResult::Unavailable(
             "primary failed",
         )]));
         let fallback = Arc::new(MockLlmProvider::new([MockResult::Success("fallback")]));
@@ -481,10 +582,10 @@ mod tests {
 
     #[tokio::test]
     async fn tc3_both_provider_failures_name_both_backends() {
-        let primary = Arc::new(MockLlmProvider::new([MockResult::Failure(
+        let primary = Arc::new(MockLlmProvider::new([MockResult::Unavailable(
             "primary failed",
         )]));
-        let fallback = Arc::new(MockLlmProvider::new([MockResult::Failure(
+        let fallback = Arc::new(MockLlmProvider::new([MockResult::Unavailable(
             "fallback failed",
         )]));
         let health = Arc::new(DependencyHealth::with_defaults());
@@ -527,7 +628,9 @@ mod tests {
 
     #[tokio::test]
     async fn tc5b_half_open_primary_probe_failure_uses_fallback() {
-        let primary = Arc::new(MockLlmProvider::new([MockResult::Failure("still down")]));
+        let primary = Arc::new(MockLlmProvider::new([MockResult::Unavailable(
+            "still down",
+        )]));
         let fallback = Arc::new(MockLlmProvider::new([MockResult::Success("fallback")]));
         let health = Arc::new(DependencyHealth::new(Duration::from_millis(5)));
         health.report_failure(DependencyId::Ollama, "down");
@@ -550,8 +653,24 @@ mod tests {
 
     #[tokio::test]
     async fn tc7_no_fallback_returns_primary_error_unchanged() {
-        let primary = Arc::new(MockLlmProvider::new([MockResult::Failure("exact failure")]));
+        let primary = Arc::new(MockLlmProvider::new([MockResult::Unavailable(
+            "exact failure",
+        )]));
         let health = Arc::new(DependencyHealth::with_defaults());
+        let provider = wrapper(primary, None, health.clone());
+
+        let error = chat(&provider).await.unwrap_err();
+        assert!(matches!(
+            error,
+            MemcanError::LlmUnavailable { ref detail, .. } if detail == "exact failure"
+        ));
+        assert_eq!(health.status()["ollama"].status, DependencyStatus::Down);
+    }
+
+    #[tokio::test]
+    async fn tc7b_no_fallback_content_fault_leaves_breaker_closed() {
+        let primary = Arc::new(MockLlmProvider::new([MockResult::Failure("exact failure")]));
+        let health = Arc::new(DependencyHealth::new(Duration::from_secs(60)));
         let provider = wrapper(primary, None, health.clone());
 
         let error = chat(&provider).await.unwrap_err();
@@ -559,7 +678,7 @@ mod tests {
             error,
             MemcanError::LlmChat { ref detail, .. } if detail == "exact failure"
         ));
-        assert_eq!(health.status()["ollama"].status, DependencyStatus::Down);
+        assert_eq!(health.status()["ollama"].status, DependencyStatus::Healthy);
     }
 
     #[tokio::test]
@@ -602,7 +721,7 @@ mod tests {
     #[tokio::test]
     async fn tc9_wrapper_drives_down_half_open_healthy_transition() {
         let primary = Arc::new(MockLlmProvider::new([
-            MockResult::Failure("first failure"),
+            MockResult::Unavailable("first failure"),
             MockResult::Success("recovered"),
         ]));
         let health = Arc::new(DependencyHealth::new(Duration::from_millis(5)));

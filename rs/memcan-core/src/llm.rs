@@ -14,6 +14,48 @@ use genai::{Client, ModelIden};
 
 pub use crate::ollama::strip_ollama_prefix;
 
+/// Sort a chat failure into the availability class or the content class.
+///
+/// Transport faults and statuses that a retry elsewhere could survive (5xx,
+/// 408, 429) map to [`MemcanError::LlmUnavailable`]. Every other failure —
+/// 4xx, malformed requests, missing credentials — is deterministic for this
+/// prompt and maps to [`MemcanError::LlmChat`], because another backend would
+/// reject it too.
+fn classify_chat_error(error: &genai::Error, model: &str) -> MemcanError {
+    use genai::webc::Error as WebcError;
+
+    let unavailable = match error {
+        genai::Error::WebAdapterCall { webc_error, .. }
+        | genai::Error::WebModelCall { webc_error, .. } => match webc_error {
+            WebcError::Reqwest(_) => true,
+            WebcError::ResponseFailedStatus { status, .. } => {
+                status_is_unavailable(status.as_u16())
+            }
+            _ => false,
+        },
+        genai::Error::HttpError { status, .. } => status_is_unavailable(status.as_u16()),
+        genai::Error::WebStream { .. } => true,
+        _ => false,
+    };
+
+    let context = format!("genai chat call to model '{model}' failed");
+    let detail = error.to_string();
+    if unavailable {
+        MemcanError::LlmUnavailable { context, detail }
+    } else {
+        MemcanError::LlmChat { context, detail }
+    }
+}
+
+/// `true` for statuses that indicate the backend — not the prompt — is at
+/// fault, so another backend may still serve the request.
+///
+/// Takes a raw code rather than a `StatusCode`: genai links its own `reqwest`,
+/// which need not be the one this crate depends on.
+fn status_is_unavailable(status: u16) -> bool {
+    (500..600).contains(&status) || status == 408 || status == 429
+}
+
 /// LLM provider backed by [`genai::Client`].
 ///
 /// The model name string (e.g. `"ollama::qwen3.5:4b"`, `"gpt-4o"`,
@@ -177,10 +219,7 @@ impl LlmProvider for GenaiLlmProvider {
             .client
             .exec_chat(model, req, Some(&chat_opts))
             .await
-            .map_err(|e| MemcanError::LlmChat {
-                context: format!("genai chat call to model '{model}' failed"),
-                detail: e.to_string(),
-            })?;
+            .map_err(|e| classify_chat_error(&e, model))?;
 
         // Emit token telemetry before consuming the response.
         // genai Usage fields are Option<i32>; cast to u64 (negative = invalid, treat as None).
