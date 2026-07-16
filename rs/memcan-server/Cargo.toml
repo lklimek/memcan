@@ -27,6 +27,7 @@ uuid = { workspace = true }
 axum = { workspace = true }
 base64 = { workspace = true }
 maud = { workspace = true }
+percent-encoding = { workspace = true }
 subtle = { workspace = true }
 sha2 = { workspace = true }
 regex = { workspace = true }

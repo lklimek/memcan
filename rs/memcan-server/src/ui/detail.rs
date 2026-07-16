@@ -11,9 +11,16 @@ use memcan_core::{
     todo::{TodoItem, get_todo},
     traits::VectorStore,
 };
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use tracing::error;
 
 use super::{fmt_date_long, layout, priority_badge, status_badge};
+
+const PATH_SEGMENT_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
 
 pub(super) async fn redirect() -> Response {
     (
@@ -79,7 +86,12 @@ fn task_markup(item: &TodoItem) -> Markup {
                     h2 id="blocked-heading" { "Blocked by" }
                     ul {
                         @for blocker in &item.blocked_by {
-                            li { a href=(format!("/ui/tasks/{blocker}")) { (blocker) } }
+                            li {
+                                a href=(format!(
+                                    "/ui/tasks/{}",
+                                    utf8_percent_encode(blocker, PATH_SEGMENT_ENCODE_SET)
+                                )) { (blocker) }
+                            }
                         }
                     }
                 }
@@ -206,12 +218,14 @@ mod tests {
             None,
             "2026-01-01T00:00:00Z",
         );
-        task.blocked_by = vec!["does-not-exist".into()];
+        task.blocked_by = vec!["dep/one?x#frag%é".into()];
         let app = app_with_items(vec![task]).await;
         let (status, body) = get(&app.router, "/ui/tasks/BLOCKED").await;
 
         assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("href=\"/ui/tasks/does-not-exist\">does-not-exist</a>"));
+        assert!(
+            body.contains("href=\"/ui/tasks/dep%2Fone%3Fx%23frag%25%C3%A9\">dep/one?x#frag%é</a>")
+        );
     }
 
     #[tokio::test]

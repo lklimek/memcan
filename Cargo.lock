@@ -4219,6 +4219,7 @@ dependencies = [
  "lru 0.16.4",
  "maud",
  "memcan-core",
+ "percent-encoding",
  "regex",
  "rmcp",
  "schemars 0.8.22",

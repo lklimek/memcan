@@ -57,7 +57,11 @@ pub(super) async fn tasks(
     params: Result<Query<FilterParams>, QueryRejection>,
 ) -> Response {
     let params = params.map_or_else(|_| FilterParams::default(), |Query(params)| params);
-    let all = match list_all_todos(store.as_ref(), None, usize::MAX).await {
+    let selected_status = params
+        .status
+        .as_deref()
+        .filter(|status| validate_status(status).is_ok());
+    let all = match list_all_todos(store.as_ref(), selected_status, usize::MAX).await {
         Ok(items) => items,
         Err(source) => {
             error!(error = %source, "web UI task list could not load");
@@ -65,20 +69,16 @@ pub(super) async fn tasks(
         }
     };
 
-    let selected_status = params
-        .status
-        .as_deref()
-        .filter(|status| validate_status(status).is_ok());
     let selected_project = params.project.as_deref().filter(|value| !value.is_empty());
     let selected_sort = Sort::from_query(params.sort.as_deref());
-    let projects: BTreeSet<_> = all.iter().map(|item| item.project.as_str()).collect();
+    let mut projects: BTreeSet<_> = all.iter().map(|item| item.project.as_str()).collect();
+    if let Some(selected_project) = selected_project {
+        projects.insert(selected_project);
+    }
 
     let mut displayed: Vec<_> = all
         .iter()
-        .filter(|item| {
-            selected_project.is_none_or(|project| item.project == project)
-                && selected_status.is_none_or(|status| item.status == status)
-        })
+        .filter(|item| selected_project.is_none_or(|project| item.project == project))
         .cloned()
         .collect();
     sort_items(&mut displayed, selected_sort);
@@ -138,7 +138,7 @@ fn list_markup(
             a href="/ui/tasks" { "Clear" }
         }
 
-        @if all.is_empty() {
+        @if all.is_empty() && selected_project.is_none() && selected_status.is_none() {
             section class="panel empty-state" { p { "No tasks yet." } }
         } @else if displayed.is_empty() {
             section class="panel empty-state" {
@@ -187,8 +187,9 @@ fn sort_items(items: &mut [TodoItem], sort: Sort) {
         }),
         Sort::Project => items.sort_by(|left, right| {
             left.project
-                .to_ascii_lowercase()
-                .cmp(&right.project.to_ascii_lowercase())
+                .bytes()
+                .map(|byte| byte.to_ascii_lowercase())
+                .cmp(right.project.bytes().map(|byte| byte.to_ascii_lowercase()))
                 .then_with(|| default_order(left, right))
         }),
         Sort::Status => items.sort_by(|left, right| {
@@ -208,10 +209,82 @@ fn default_order(left: &TodoItem, right: &TodoItem) -> Ordering {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
     use axum::http::StatusCode;
+    use memcan_core::{
+        error::Result,
+        traits::{SearchResult, TableSchema, VectorPoint},
+    };
     use serial_test::serial;
 
     use super::super::test_support::{app_with_error_store, app_with_items, base_items, get, item};
+    use super::*;
+
+    #[derive(Default)]
+    struct RecordingStore {
+        last_filter: Mutex<Option<String>>,
+    }
+
+    #[async_trait]
+    impl VectorStore for RecordingStore {
+        async fn ensure_table(
+            &self,
+            _name: &str,
+            _dims: usize,
+            _schema: &dyn TableSchema,
+        ) -> Result<()> {
+            panic!("unexpected ensure_table call")
+        }
+
+        async fn upsert(
+            &self,
+            _table: &str,
+            _points: &[VectorPoint],
+            _schema: &dyn TableSchema,
+        ) -> Result<()> {
+            panic!("unexpected upsert call")
+        }
+
+        async fn search(
+            &self,
+            _table: &str,
+            _vector: &[f32],
+            _filter: Option<&str>,
+            _limit: usize,
+            _offset: usize,
+        ) -> Result<Vec<SearchResult>> {
+            panic!("unexpected search call")
+        }
+
+        async fn scroll(
+            &self,
+            _table: &str,
+            filter: Option<&str>,
+            _limit: usize,
+            _offset: usize,
+        ) -> Result<Vec<SearchResult>> {
+            *self.last_filter.lock().unwrap() = filter.map(String::from);
+            Ok(Vec::new())
+        }
+
+        async fn count(&self, _table: &str, _filter: Option<&str>) -> Result<usize> {
+            panic!("unexpected count call")
+        }
+
+        async fn delete(&self, _table: &str, _ids: &[String]) -> Result<()> {
+            panic!("unexpected delete call")
+        }
+
+        async fn delete_by_filter(&self, _table: &str, _filter: &str) -> Result<usize> {
+            panic!("unexpected delete_by_filter call")
+        }
+
+        async fn get(&self, _table: &str, _ids: &[String]) -> Result<Vec<SearchResult>> {
+            panic!("unexpected get call")
+        }
+    }
 
     fn ordered(body: &str, ids: &[&str]) {
         let positions: Vec<_> = ids
@@ -291,6 +364,69 @@ mod tests {
         );
     }
 
+    #[test]
+    fn project_sort_is_ascii_case_insensitive_with_default_tie_breaking() {
+        let mut items = vec![
+            item(
+                "LOWER-LOW",
+                "Lowercase low priority",
+                "alpha",
+                "low",
+                "pending",
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            item(
+                "UPPER-HIGH",
+                "Uppercase high priority",
+                "ALPHA",
+                "high",
+                "pending",
+                None,
+                "2026-01-02T00:00:00Z",
+            ),
+            item(
+                "ZEBRA",
+                "Zebra project",
+                "Zebra",
+                "high",
+                "pending",
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+        ];
+
+        sort_items(&mut items, Sort::Project);
+
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["UPPER-HIGH", "LOWER-LOW", "ZEBRA"]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_view_applies_valid_status_filter_in_store_query() {
+        let store = Arc::new(RecordingStore::default());
+        let extension: Arc<dyn VectorStore> = store.clone();
+        let response = tasks(
+            Extension(extension),
+            Ok(Query(FilterParams {
+                status: Some("done".into()),
+                ..FilterParams::default()
+            })),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            store.last_filter.lock().unwrap().as_deref(),
+            Some("status = 'done'")
+        );
+    }
+
     #[tokio::test]
     #[serial]
     async fn list_view_ignores_invalid_status_sort_and_unknown_query_params() {
@@ -345,6 +481,14 @@ mod tests {
         let (_, filtered_body) = get(&filtered.router, "/ui/tasks?project=missing").await;
         assert!(filtered_body.contains("No tasks match this filter."));
         assert!(filtered_body.contains("href=\"/ui/tasks\">Clear"));
+
+        let (_, status_filtered_body) = get(&filtered.router, "/ui/tasks?status=postponed").await;
+        assert!(status_filtered_body.contains("No tasks match this filter."));
+        assert!(!status_filtered_body.contains("No tasks yet."));
+
+        let (_, cross_filtered_body) =
+            get(&filtered.router, "/ui/tasks?project=backend&status=done").await;
+        assert!(cross_filtered_body.contains("value=\"backend\" selected"));
     }
 
     #[tokio::test]

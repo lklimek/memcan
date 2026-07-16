@@ -75,6 +75,9 @@ pub fn router(settings: &Settings) -> Option<Router> {
     ) else {
         return None;
     };
+    if username.contains(':') {
+        return None;
+    }
 
     let expected = format!("{username}:{password}").into_bytes();
     // Login throttling belongs at the TLS proxy layer, where trusted client IPs are available.
@@ -315,6 +318,34 @@ mod tests {
 
             assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
         }
+    }
+
+    #[test]
+    fn webui_router_refuses_username_containing_basic_auth_separator() {
+        for username in [":user", "user:name", "user:"] {
+            let settings = Settings {
+                webui_username: Some(username.into()),
+                webui_password: Some("testpass".into()),
+                ..Settings::default()
+            };
+
+            assert!(router(&settings).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn webui_auth_allows_colons_in_password() {
+        let settings = Settings {
+            webui_username: Some("testuser".into()),
+            webui_password: Some("test:pass".into()),
+            ..Settings::default()
+        };
+        let response = mounted(&settings)
+            .oneshot(request("/ui/tasks", Some(&basic("testuser:test:pass"))))
+            .await
+            .unwrap();
+
+        assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
