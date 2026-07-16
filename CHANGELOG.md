@@ -12,6 +12,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project fol
 - `owner` and `blocked_by` fields on TODO items, accepted by both `add_todo` and `update_todo`.
 - TODO statuses `in_progress`, `blocked`, `postponed`, and `cancelled`, expanding the status set to six values alongside `pending` and `done`.
 
+### Changed
+
+- **Default LLM model is now `lklimek/gemma4-text:26b-a4b-it-qat`** (was `gemma4:26b-a4b-it-qat`) — a projector-free build of the same Google QAT `Q4_0` checkpoint with the unused vision projector stripped at the manifest level. MemCan is text-only and never sends images, so the projector was pure overhead: on a 16GB card it forced partial CPU offload of the text model itself (~87% GPU residency, 56–75s cold load). The projector-free build achieves 100% GPU residency and ~7.6s cold load at identical text quality. See `docs/memcan-model-guide.html` and `ollama-models/gemma4-text-26b-a4b-it-qat/`.
+
 ## [1.0.0] - 2026-07-07
 
 ### BREAKING

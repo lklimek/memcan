@@ -406,8 +406,31 @@
         those parameters per response (that's why it isn't much slower) — but the <em>full</em>
         26B still has to be sitting in memory, all the time. On a 16&nbsp;GB card, that leaves
         almost nothing for anything else — no browser tabs eating GPU memory, no second model,
-        no game in the background. On an 8&nbsp;GB card it simply won't load.
+        no game in the background. On an 8&nbsp;GB card it simply won't load. Pull the
+        text-only build below to make sure every byte of that 16&nbsp;GB actually lands on
+        the GPU.
       </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>The 16&nbsp;GB pick just got better</h2>
+      <p class="section-sub">
+        Ollama unconditionally tries to GPU-offload gemma4's vision projector — even though
+        MemCan is text-only and never sends it a single image.
+      </p>
+    </div>
+    <div class="tie-callout">
+      On a 16&nbsp;GB card, that reserved-but-unused projector pushed some of the <em>text</em>
+      model's own MoE-expert layers onto CPU too — the stock
+      <span class="m-gemma">gemma4:26b-a4b-it-qat</span> measured only ~87% GPU residency there.
+      <span class="m-gemma">lklimek/gemma4-text:26b-a4b-it-qat</span> strips the unused
+      projector at the manifest level — same text weights, byte-identical Google QAT checkpoint,
+      <code class="mono">Q4_0</code> storage — and measured <b>100%</b> GPU residency on the same
+      card, with cold-load time dropping from 56–75s to ~7.6s. Same quality, no downside: this is
+      now the default MemCan pulls, and the recommended way to run gemma4 on any GPU.
+      <span class="tag tag-good">recommended default</span>
     </div>
   </section>
 
@@ -495,10 +518,11 @@
         </ul>
       </div>
       <div class="decide-card for-gemma">
-        <p class="decide-title">Choose <span class="m-gemma">gemma4:26b-a4b-it-qat</span> if —</p>
+        <p class="decide-title">Choose <span class="m-gemma">lklimek/gemma4-text:26b-a4b-it-qat</span> if —</p>
         <ul>
           <li>You have a full 16&nbsp;GB card (not 8&nbsp;GB) free for this</li>
           <li>Accuracy and reliability matter more than squeezing into a smaller card</li>
+          <li>This is the default — the text-only build, so it lands at 100% GPU residency</li>
         </ul>
       </div>
     </div>

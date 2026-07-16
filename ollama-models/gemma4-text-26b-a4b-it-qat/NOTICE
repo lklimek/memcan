@@ -1,0 +1,28 @@
+This directory builds and documents a modified redistribution of Google's
+Gemma 4 model (gemma4:26b-a4b-it-qat), licensed under the Apache License,
+Version 2.0 (see LICENSE in this directory). This NOTICE is provided per
+Section 4(b)/4(d) of that license.
+
+Original work:
+  gemma4:26b-a4b-it-qat, https://ollama.com/library/gemma4:26b-a4b-it-qat
+  Copyright Google. Licensed under Apache License 2.0.
+
+Modification made:
+  The bundled multimodal vision projector layer (architecture "clip",
+  projector type "gemma4v", ~1.2 GB) was removed. The text-model weights
+  themselves are byte-identical to the original — reused directly from the
+  same underlying blob, not re-quantized, re-trained, or otherwise altered.
+  No other component was changed.
+
+Why:
+  MemCan (https://github.com/lklimek/memcan) is a text-only application and
+  never sends images. Ollama loads and attempts to GPU-offload a model's
+  vision projector unconditionally whenever one is present, which can force
+  partial CPU offload of the *text* model on VRAM-constrained GPUs even when
+  the text model alone would fit entirely in VRAM. Removing the unused
+  projector layer eliminates that overhead with no effect on text-generation
+  quality, since none of the text model's weights are touched.
+
+Reproduction:
+  See build_text_only.py in this directory and README.md for the exact,
+  scripted process used to produce this derivative from the official model.
