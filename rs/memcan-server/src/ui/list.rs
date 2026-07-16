@@ -16,6 +16,10 @@ use tracing::error;
 use super::{detail, encode_task_id, fmt_date_short, layout, priority_badge, status_badge};
 
 const LIMIT: usize = 500;
+/// Scoped per-project scan window: kept well above `LIMIT` so the priority
+/// sort in `tasks()` runs over the full matching set before truncating to
+/// page size, instead of sorting an arbitrarily-ordered store-side slice.
+const PROJECT_SCAN_LIMIT: usize = 10_000;
 
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct FilterParams {
@@ -77,7 +81,15 @@ pub(super) async fn tasks(
     }
 
     let mut displayed = if let Some(project) = selected_project {
-        match list_todos(store.as_ref(), project, selected_status, None, LIMIT).await {
+        match list_todos(
+            store.as_ref(),
+            project,
+            selected_status,
+            None,
+            PROJECT_SCAN_LIMIT,
+        )
+        .await
+        {
             Ok(items) => items,
             Err(source) => {
                 error!(error = %source, "web UI task list could not load");
@@ -530,6 +542,123 @@ mod tests {
         assert_eq!(
             store.filters.lock().unwrap().as_slice(),
             [None, Some("project = 'target-project'".into())]
+        );
+    }
+
+    /// Store stub simulating a real backend: `scroll` truncates to the
+    /// requested `limit` in raw storage order, before any priority sort runs.
+    struct TruncatingScanStore {
+        raw_order: Vec<TodoItem>,
+    }
+
+    #[async_trait]
+    impl VectorStore for TruncatingScanStore {
+        async fn ensure_table(&self, _: &str, _: usize, _: &dyn TableSchema) -> Result<()> {
+            panic!("unexpected ensure_table call")
+        }
+
+        async fn upsert(&self, _: &str, _: &[VectorPoint], _: &dyn TableSchema) -> Result<()> {
+            panic!("unexpected upsert call")
+        }
+
+        async fn search(
+            &self,
+            _: &str,
+            _: &[f32],
+            _: Option<&str>,
+            _: usize,
+            _: usize,
+        ) -> Result<Vec<SearchResult>> {
+            panic!("unexpected search call")
+        }
+
+        async fn scroll(
+            &self,
+            _table: &str,
+            filter: Option<&str>,
+            limit: usize,
+            _offset: usize,
+        ) -> Result<Vec<SearchResult>> {
+            if filter != Some("project = 'target-project'") {
+                return Ok(Vec::new());
+            }
+            Ok(self
+                .raw_order
+                .iter()
+                .take(limit)
+                .map(|item| SearchResult {
+                    id: item.id.clone(),
+                    score: 0.0,
+                    payload: json!({
+                        "title": item.title,
+                        "project": item.project,
+                        "priority": item.priority,
+                        "status": item.status,
+                        "created_at": item.created_at,
+                    }),
+                })
+                .collect())
+        }
+
+        async fn count(&self, _: &str, _: Option<&str>) -> Result<usize> {
+            panic!("unexpected count call")
+        }
+
+        async fn delete(&self, _: &str, _: &[String]) -> Result<()> {
+            panic!("unexpected delete call")
+        }
+
+        async fn delete_by_filter(&self, _: &str, _: &str) -> Result<usize> {
+            panic!("unexpected delete_by_filter call")
+        }
+
+        async fn get(&self, _: &str, _: &[String]) -> Result<Vec<SearchResult>> {
+            panic!("unexpected get call")
+        }
+    }
+
+    #[tokio::test]
+    async fn selected_project_scan_reaches_high_priority_item_past_the_display_limit() {
+        let mut raw_order: Vec<TodoItem> = (0..LIMIT)
+            .map(|index| {
+                item(
+                    &format!("LOW-{index:03}"),
+                    &format!("Low priority task {index}"),
+                    "target-project",
+                    "low",
+                    "pending",
+                    None,
+                    "2026-01-01T00:00:00Z",
+                )
+            })
+            .collect();
+        // Placed after LIMIT items in raw storage order — a naive scan
+        // truncated to the display limit before sorting would drop it.
+        raw_order.push(item(
+            "HIGH-1",
+            "Urgent task",
+            "target-project",
+            "high",
+            "pending",
+            None,
+            "2026-01-01T00:00:00Z",
+        ));
+
+        let store: Arc<dyn VectorStore> = Arc::new(TruncatingScanStore { raw_order });
+        let response = tasks(
+            Extension(store),
+            Ok(Query(FilterParams {
+                project: Some("target-project".into()),
+                ..FilterParams::default()
+            })),
+        )
+        .await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(
+            body.contains("HIGH-1"),
+            "high-priority task beyond the store's raw-order scan window must still surface"
         );
     }
 
