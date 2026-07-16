@@ -169,8 +169,52 @@ impl LlmProvider for FallbackLlmProvider {
         }
     }
 
+    /// Report a context window that is safe for **either** backend.
+    ///
+    /// [`chat`](Self::chat) dispatches to the primary or the fallback depending
+    /// on circuit-breaker state, and each backend runs its own model with its
+    /// own window. Reporting the primary's window would let callers size a
+    /// prompt the fallback cannot accept, so this returns the minimum of the
+    /// two. A backend whose breaker is already open is not queried at all —
+    /// a degraded (hung rather than refusing) backend would otherwise block
+    /// this call, and callers memoize the result for the process lifetime.
+    ///
+    /// Returns `None` whenever either backend's window is unknown, so callers
+    /// apply their own conservative default rather than trust a half-known
+    /// budget.
     async fn context_window(&self, model: &str) -> Option<usize> {
-        self.primary.context_window(model).await
+        let primary_window = match self.health.check(self.primary_dep) {
+            Ok(()) => self.primary.context_window(model).await,
+            Err(_) => {
+                debug!(
+                    primary = %self.primary_dep,
+                    "Not querying primary context window because its circuit breaker is open"
+                );
+                None
+            }
+        };
+
+        let Some(fallback) = self.fallback.as_ref() else {
+            return primary_window;
+        };
+
+        let fallback_window = match self.health.check(fallback.dep) {
+            Ok(()) => fallback.provider.context_window(&fallback.model).await,
+            Err(_) => {
+                debug!(
+                    fallback = %fallback.dep,
+                    "Not querying fallback context window because its circuit breaker is open"
+                );
+                None
+            }
+        };
+
+        match (primary_window, fallback_window) {
+            (Some(primary_window), Some(fallback_window)) => {
+                Some(primary_window.min(fallback_window))
+            }
+            _ => None,
+        }
     }
 
     async fn init(&self) -> Result<()> {
@@ -236,6 +280,7 @@ mod tests {
         init_result: MockResult,
         chat_calls: AtomicUsize,
         init_calls: AtomicUsize,
+        context_window_calls: AtomicUsize,
         context_window: Option<usize>,
     }
 
@@ -246,6 +291,7 @@ mod tests {
                 init_result: MockResult::Success("initialized"),
                 chat_calls: AtomicUsize::new(0),
                 init_calls: AtomicUsize::new(0),
+                context_window_calls: AtomicUsize::new(0),
                 context_window: Some(4096),
             }
         }
@@ -253,6 +299,15 @@ mod tests {
         fn with_init(mut self, init_result: MockResult) -> Self {
             self.init_result = init_result;
             self
+        }
+
+        fn with_context_window(mut self, context_window: Option<usize>) -> Self {
+            self.context_window = context_window;
+            self
+        }
+
+        fn context_window_calls(&self) -> usize {
+            self.context_window_calls.load(Ordering::SeqCst)
         }
 
         fn chat_calls(&self) -> usize {
@@ -289,6 +344,7 @@ mod tests {
         }
 
         async fn context_window(&self, _model: &str) -> Option<usize> {
+            self.context_window_calls.fetch_add(1, Ordering::SeqCst);
             self.context_window
         }
 
@@ -336,6 +392,61 @@ mod tests {
         assert_eq!(primary.chat_calls(), 1);
         assert_eq!(fallback.chat_calls(), 0);
         assert_eq!(health.status()["ollama"].status, DependencyStatus::Healthy);
+    }
+
+    #[tokio::test]
+    async fn context_window_reports_the_smaller_of_both_backends() {
+        // chat() may dispatch to either backend, so the reported window must be
+        // safe for both — not just the primary's larger one.
+        let primary = Arc::new(MockLlmProvider::new([]).with_context_window(Some(32_768)));
+        let fallback = Arc::new(MockLlmProvider::new([]).with_context_window(Some(8_192)));
+        let health = Arc::new(DependencyHealth::with_defaults());
+        let provider = wrapper(primary.clone(), Some(fallback.clone()), health);
+
+        assert_eq!(provider.context_window("qwen3.5:9b").await, Some(8_192));
+        assert_eq!(primary.context_window_calls(), 1);
+        assert_eq!(fallback.context_window_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn context_window_is_unknown_when_either_backend_cannot_report() {
+        // A half-known budget is worse than none: callers have a conservative
+        // default, but cannot know the unreported backend is smaller.
+        let primary = Arc::new(MockLlmProvider::new([]).with_context_window(Some(32_768)));
+        let fallback = Arc::new(MockLlmProvider::new([]).with_context_window(None));
+        let health = Arc::new(DependencyHealth::with_defaults());
+        let provider = wrapper(primary, Some(fallback), health);
+
+        assert_eq!(provider.context_window("qwen3.5:9b").await, None);
+    }
+
+    #[tokio::test]
+    async fn context_window_skips_a_backend_whose_breaker_is_open() {
+        // A degraded backend hangs rather than refusing; querying it would block
+        // a call whose result callers memoize for the process lifetime.
+        let primary = Arc::new(MockLlmProvider::new([]).with_context_window(Some(32_768)));
+        let fallback = Arc::new(MockLlmProvider::new([]).with_context_window(Some(8_192)));
+        let health = Arc::new(DependencyHealth::with_defaults());
+        let provider = wrapper(primary.clone(), Some(fallback.clone()), health.clone());
+
+        health.report_failure(DependencyId::Ollama, "primary is down");
+
+        assert_eq!(provider.context_window("qwen3.5:9b").await, None);
+        assert_eq!(
+            primary.context_window_calls(),
+            0,
+            "must not query a backend the breaker already knows is down"
+        );
+    }
+
+    #[tokio::test]
+    async fn context_window_without_fallback_delegates_to_primary() {
+        let primary = Arc::new(MockLlmProvider::new([]).with_context_window(Some(32_768)));
+        let health = Arc::new(DependencyHealth::with_defaults());
+        let provider = wrapper(primary.clone(), None, health);
+
+        assert_eq!(provider.context_window("qwen3.5:9b").await, Some(32_768));
+        assert_eq!(primary.context_window_calls(), 1);
     }
 
     #[test]
