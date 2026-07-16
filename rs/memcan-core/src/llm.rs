@@ -17,7 +17,7 @@ pub use crate::ollama::strip_ollama_prefix;
 /// Sort a chat failure into the availability class or the content class.
 ///
 /// Transport faults and statuses that a retry elsewhere could survive (5xx,
-/// 408, 429) and rejected credentials (401) map to
+/// 408, 429), rejected credentials (401), and an exhausted balance (402) map to
 /// [`MemcanError::LlmUnavailable`]: they are properties of the backend, so
 /// another backend may still serve the request. Every other failure — the
 /// remaining 4xx (including 403, which providers also use for guardrail and
@@ -53,11 +53,11 @@ fn classify_chat_error(error: &genai::Error, model: &str) -> MemcanError {
 /// `true` for statuses that indicate the backend — not the prompt — is at
 /// fault, so another backend may still serve the request.
 ///
-/// 401 counts as unavailable: a rejected credential is a property of the
-/// backend, not of the prompt. The other backend authenticates separately (or
-/// not at all), so it can still serve the request — and a backend whose key is
-/// rotated or revoked is genuinely unusable, which is what the breaker exists
-/// to record.
+/// 401 and 402 count as unavailable: a rejected credential and an exhausted
+/// balance are both properties of the backend, not of the prompt. The other
+/// backend authenticates and bills separately (or not at all), so it can still
+/// serve the request — and a backend whose key is revoked or whose credits ran
+/// out is genuinely unusable, which is what the breaker exists to record.
 ///
 /// 403 deliberately does **not**. Providers overload it: OpenRouter returns 403
 /// for guardrail blocks and moderation flags as well as for permissions, and a
@@ -70,7 +70,7 @@ fn classify_chat_error(error: &genai::Error, model: &str) -> MemcanError {
 /// Takes a raw code rather than a `StatusCode`: genai links its own `reqwest`,
 /// which need not be the one this crate depends on.
 fn status_is_unavailable(status: u16) -> bool {
-    (500..600).contains(&status) || matches!(status, 401 | 408 | 429)
+    (500..600).contains(&status) || matches!(status, 401 | 402 | 408 | 429)
 }
 
 /// LLM provider backed by [`genai::Client`].
@@ -376,6 +376,15 @@ mod tests {
         // local Ollama could serve: 401 describes the backend, not the prompt,
         // so it has to reach the fallback and the breaker.
         assert!(super::status_is_unavailable(401));
+    }
+
+    #[test]
+    fn an_exhausted_balance_is_an_availability_fault() {
+        // OpenRouter returns 402 when the account is out of credits. The
+        // fallback bills separately, so it can still serve the request — and a
+        // backend that cannot be paid for is as unusable as one with a revoked
+        // key.
+        assert!(super::status_is_unavailable(402));
     }
 
     #[test]
