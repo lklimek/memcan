@@ -53,7 +53,10 @@ rmcp = { version = "1.1", features = ["server", "transport-io", "transport-strea
 schemars = "0.8"
 
 # HTTP server
-axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
+base64 = "0.22.1"
+maud = { version = "0.27.0", features = ["axum"] }
+percent-encoding = "2.3.2"
 
 # Crypto
 subtle = "2"
@@ -71,6 +74,7 @@ regex = "1"
 mockito = "1"
 tempfile = "3"
 serial_test = "3"
+tower = { version = "0.5", features = ["util"] }
 
 [profile.dev.package."*"]
 debug = "line-tables-only"
