@@ -339,12 +339,14 @@ mod tests {
             basic("testuser:testpass"),
             basic("testuser:testpass").replacen("Basic", "basic", 1),
         ] {
+            // `/ui` needs no VectorStore extension, so a real 302 here proves the
+            // authorized path actually succeeds (not just "wasn't rejected").
             let response = mounted(&credentials())
-                .oneshot(request("/ui/tasks", Some(&authorization)))
+                .oneshot(request("/ui", Some(&authorization)))
                 .await
                 .unwrap();
 
-            assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+            assert_eq!(response.status(), StatusCode::FOUND);
         }
     }
 
@@ -424,11 +426,18 @@ mod tests {
 
     #[tokio::test]
     async fn webui_security_headers_cover_success_and_auth_failure() {
-        for authorization in [None, Some(basic("testuser:testpass").as_str())] {
+        let authorized = basic("testuser:testpass");
+        // `/ui` needs no VectorStore extension, so the expected-status assertion below
+        // proves the authorized case is a real success, not a masked handler failure.
+        for (authorization, expected_status) in [
+            (None, StatusCode::UNAUTHORIZED),
+            (Some(authorized.as_str()), StatusCode::FOUND),
+        ] {
             let response = mounted(&credentials())
-                .oneshot(request("/ui/tasks", authorization))
+                .oneshot(request("/ui", authorization))
                 .await
                 .unwrap();
+            assert_eq!(response.status(), expected_status);
             assert_eq!(
                 response.headers().get("x-content-type-options").unwrap(),
                 "nosniff"
