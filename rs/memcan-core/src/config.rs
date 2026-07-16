@@ -212,8 +212,12 @@ impl Settings {
             .filter(|value| !value.is_empty())
             .map(|value| value.parse())
             .transpose()?;
+        // Trim before filtering: a whitespace-only value is not a key, and a
+        // padded one would otherwise be sent verbatim as a bearer token and
+        // 401 on every request.
         let openrouter_api_key = std::env::var("OPENROUTER_API_KEY")
             .ok()
+            .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
         if openrouter_api_key.is_some() {
             debug!("OPENROUTER_API_KEY configured");
@@ -306,9 +310,10 @@ impl Settings {
         let openrouter_participates = self.llm_provider == LlmProviderKind::OpenRouter
             || self.llm_fallback_provider == Some(LlmProviderKind::OpenRouter);
         if openrouter_participates {
-            // A blank key is a missing key: it would otherwise pass validation
-            // and reach the HTTP client as an empty bearer token, turning a
-            // startup error into a 401 on every request.
+            // A blank key is a missing key. `load()` already trims and drops
+            // blank values, so this guards `Settings` built programmatically —
+            // without it such a key reaches the HTTP client as an empty bearer
+            // token and 401s on every request instead of failing at startup.
             let api_key_is_blank = self
                 .openrouter_api_key
                 .as_ref()
