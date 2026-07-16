@@ -202,7 +202,10 @@ impl Settings {
             .or_else(|_| std::env::var("LOG_FILE"))
             .unwrap_or_else(|_| defaults.log_file.clone());
         let log_file = expand_tilde(&log_file_raw);
-        let llm_model = env_or("LLM_MODEL", &defaults.llm_model);
+        let llm_model_env = std::env::var("LLM_MODEL").ok();
+        let llm_model = llm_model_env
+            .clone()
+            .unwrap_or_else(|| defaults.llm_model.clone());
         let llm_provider = env_or("LLM_PROVIDER", &defaults.llm_provider.to_string()).parse()?;
         let llm_fallback_provider = std::env::var("LLM_FALLBACK_PROVIDER")
             .ok()
@@ -280,6 +283,17 @@ impl Settings {
             compact_fragment_threshold,
         };
         settings.validate()?;
+        if llm_model_is_ignored(
+            settings.llm_provider,
+            llm_model_env.as_deref(),
+            &defaults.llm_model,
+        ) {
+            warn!(
+                llm_model = %settings.llm_model,
+                openrouter_model = %settings.openrouter_model,
+                "LLM_MODEL is ignored while LLM_PROVIDER=openrouter; set OPENROUTER_MODEL to choose the OpenRouter model"
+            );
+        }
         Ok(settings)
     }
 
@@ -363,6 +377,21 @@ impl Settings {
 /// Read an environment variable, falling back to a default.
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+/// Report whether a configured `LLM_MODEL` has no effect.
+///
+/// `LLM_MODEL` names the Ollama model; the OpenRouter backend reads
+/// `OPENROUTER_MODEL` instead. Only an explicit, non-default `llm_model_env`
+/// is worth reporting — an unset or default-valued variable carries no
+/// operator intent to contradict.
+fn llm_model_is_ignored(
+    provider: LlmProviderKind,
+    llm_model_env: Option<&str>,
+    default_model: &str,
+) -> bool {
+    provider == LlmProviderKind::OpenRouter
+        && llm_model_env.is_some_and(|model| !model.is_empty() && model != default_model)
 }
 
 #[cfg(test)]
@@ -508,6 +537,40 @@ mod tests {
         let debug = format!("{settings:?}");
         assert!(!debug.contains("raw-openrouter-secret"));
         assert!(debug.contains("openrouter_api_key: Some(\"***\")"));
+    }
+
+    #[test]
+    fn llm_model_is_ignored_only_for_explicit_non_default_under_openrouter() {
+        let default = Settings::default().llm_model;
+
+        assert!(
+            llm_model_is_ignored(LlmProviderKind::OpenRouter, Some("qwen3.5:9b"), &default),
+            "an explicit non-default LLM_MODEL is dead config under OpenRouter"
+        );
+
+        // No operator intent to contradict: stay quiet rather than warn on every boot.
+        assert!(!llm_model_is_ignored(
+            LlmProviderKind::OpenRouter,
+            None,
+            &default
+        ));
+        assert!(!llm_model_is_ignored(
+            LlmProviderKind::OpenRouter,
+            Some(&default),
+            &default
+        ));
+        assert!(!llm_model_is_ignored(
+            LlmProviderKind::OpenRouter,
+            Some(""),
+            &default
+        ));
+
+        // Ollama primary consumes LLM_MODEL, including as OpenRouter's fallback peer.
+        assert!(!llm_model_is_ignored(
+            LlmProviderKind::Ollama,
+            Some("qwen3.5:9b"),
+            &default
+        ));
     }
 
     #[test]

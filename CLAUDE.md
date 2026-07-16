@@ -217,9 +217,9 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 | `COMPACT_FRAGMENT_THRESHOLD` | `64` | Auto-compact a table after a write once it reaches this many data fragments; also the startup-compaction skip threshold. `0` disables auto-compaction. |
 | `LLM_PROVIDER` | `ollama` | Primary backend: `ollama` \| `openrouter`. |
 | `LLM_FALLBACK_PROVIDER` | *(unset)* | Optional fallback backend; unset keeps single-provider behavior. An OpenRouter fallback sends memory, code, and standards content to a third-party cloud provider whenever the local primary is unavailable. |
-| `LLM_MODEL` | `gemma4:26b-a4b-it-qat` | Ollama model name (`ollama::` prefix accepted for backward compat). Needs ~16GB VRAM; use `qwen3.5:9b` (~6.6GB) on smaller cards — see `docs/memcan-model-guide.html` |
+| `LLM_MODEL` | `gemma4:26b-a4b-it-qat` | Ollama model name (`ollama::` prefix accepted for backward compat). **Ollama backend only — ignored when `LLM_PROVIDER=openrouter`; use `OPENROUTER_MODEL` there.** Still applies when Ollama is the primary and OpenRouter only the fallback. Setting it to a non-default value under `LLM_PROVIDER=openrouter` logs a `warn!` at startup. Needs ~16GB VRAM; use `qwen3.5:9b` (~6.6GB) on smaller cards — see `docs/memcan-model-guide.html` |
 | `OPENROUTER_API_KEY` | *(none)* | OpenRouter bearer key. Required when OpenRouter is primary or fallback; never logged. |
-| `OPENROUTER_MODEL` | *(none)* | OpenRouter model slug, e.g. `openai/gpt-4o-mini`. Required when OpenRouter participates. |
+| `OPENROUTER_MODEL` | *(none)* | OpenRouter model slug, e.g. `openai/gpt-4o-mini`. Required when OpenRouter participates. The OpenRouter backend never reads `LLM_MODEL` — every OpenRouter call uses this slug. |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | Endpoint override for testing or self-hosted OpenAI-compatible gateways. |
 | `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings (dimensions derived automatically) |
 | `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`). Injected into the LLM client (ollama-rs default; or genai via `ServiceTargetResolver`). |
