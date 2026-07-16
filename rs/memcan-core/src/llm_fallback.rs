@@ -192,19 +192,28 @@ impl LlmProvider for FallbackLlmProvider {
         }
     }
 
-    /// Report a context window that is safe for **either** backend.
+    /// Report a context window sized for the backend [`chat`](Self::chat) will
+    /// actually use.
     ///
-    /// [`chat`](Self::chat) dispatches to the primary or the fallback depending
-    /// on circuit-breaker state, and each backend runs its own model with its
-    /// own window. Reporting the primary's window would let callers size a
-    /// prompt the fallback cannot accept, so this returns the minimum of the
-    /// two. A backend whose breaker is already open is not queried at all —
-    /// a degraded (hung rather than refusing) backend would otherwise block
-    /// this call, and callers memoize the result for the process lifetime.
+    /// Each backend runs its own model with its own window, so when both are
+    /// known this returns the minimum: a prompt sized for the larger one would
+    /// be rejected if the request landed on the smaller.
     ///
-    /// Returns `None` whenever either backend's window is unknown, so callers
-    /// apply their own conservative default rather than trust a half-known
-    /// budget.
+    /// When only the *fallback's* window is unknown, this reports the primary's
+    /// rather than `None`. Some backends cannot report a window at all — the
+    /// OpenRouter configuration this provider exists to serve is one — so
+    /// `None` there would not mean "be careful once", it would permanently pin
+    /// every caller to [`DEFAULT_CONTEXT_WINDOW`](crate::pipeline), shrinking
+    /// real budgets by an order of magnitude for a fallback that normally never
+    /// engages. Callers memoize this for the process lifetime and
+    /// content-hash-skip their way past the damage, so silent over-truncation
+    /// is the worse failure: an oversized request to the fallback fails loudly
+    /// and only while the primary is down.
+    ///
+    /// A backend whose breaker is already open is not queried at all — a
+    /// degraded (hung rather than refusing) backend would otherwise block this
+    /// memoized call. An unknown *primary* window still yields `None`, leaving
+    /// callers their own conservative default.
     async fn context_window(&self, model: &str) -> Option<usize> {
         let primary_window = match self.health.check(self.primary_dep) {
             Ok(()) => self.primary.context_window(model).await,
@@ -236,7 +245,10 @@ impl LlmProvider for FallbackLlmProvider {
             (Some(primary_window), Some(fallback_window)) => {
                 Some(primary_window.min(fallback_window))
             }
-            _ => None,
+            // The fallback cannot report a window: trust the primary's rather
+            // than pinning every caller to the conservative default forever.
+            (Some(primary_window), None) => Some(primary_window),
+            (None, _) => None,
         }
     }
 
@@ -440,11 +452,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_window_is_unknown_when_either_backend_cannot_report() {
-        // A half-known budget is worse than none: callers have a conservative
-        // default, but cannot know the unreported backend is smaller.
+    async fn context_window_trusts_the_primary_when_the_fallback_cannot_report() {
+        // The OpenRouter fallback can never report a window, so treating that as
+        // "unknown" would pin every caller to the conservative default for the
+        // whole process — the configuration this provider exists to serve.
         let primary = Arc::new(MockLlmProvider::new([]).with_context_window(Some(32_768)));
         let fallback = Arc::new(MockLlmProvider::new([]).with_context_window(None));
+        let health = Arc::new(DependencyHealth::with_defaults());
+        let provider = wrapper(primary, Some(fallback), health);
+
+        assert_eq!(provider.context_window("qwen3.5:9b").await, Some(32_768));
+    }
+
+    #[tokio::test]
+    async fn context_window_is_unknown_when_the_primary_cannot_report() {
+        // Without the primary's window there is no budget worth trusting: chat()
+        // prefers the primary, so callers fall back to their own default.
+        let primary = Arc::new(MockLlmProvider::new([]).with_context_window(None));
+        let fallback = Arc::new(MockLlmProvider::new([]).with_context_window(Some(8_192)));
         let health = Arc::new(DependencyHealth::with_defaults());
         let provider = wrapper(primary, Some(fallback), health);
 
