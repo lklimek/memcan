@@ -22,6 +22,7 @@ use maud::{DOCTYPE, Markup, PreEscaped, html};
 use memcan_core::config::Settings;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use subtle::ConstantTimeEq;
+use tracing::warn;
 
 const AUTH_CHALLENGE: HeaderValue = HeaderValue::from_static("Basic realm=\"MemCan Tasks\"");
 const CONTENT_SECURITY_POLICY: HeaderValue = HeaderValue::from_static(
@@ -80,9 +81,15 @@ pub fn router(settings: &Settings) -> Option<Router> {
             .as_deref()
             .filter(|value| !value.is_empty()),
     ) else {
+        warn!(
+            "web UI disabled: set MEMCAN_WEBUI_USERNAME and MEMCAN_WEBUI_PASSWORD to enable /ui*"
+        );
         return None;
     };
     if username.contains(':') {
+        warn!(
+            "web UI disabled: MEMCAN_WEBUI_USERNAME must not contain ':' (Basic Auth uses it as the credential separator)"
+        );
         return None;
     }
 
@@ -90,6 +97,10 @@ pub fn router(settings: &Settings) -> Option<Router> {
     // A Basic Auth header for these credentials must fit MAX_AUTH_HEADER_LEN, or every
     // request would fail the length filter below regardless of correctness.
     if STANDARD.encode(&expected).len() + "Basic ".len() > MAX_AUTH_HEADER_LEN {
+        warn!(
+            limit = MAX_AUTH_HEADER_LEN,
+            "web UI disabled: MEMCAN_WEBUI_USERNAME and MEMCAN_WEBUI_PASSWORD are too long — their Basic Auth header would exceed the accepted limit, so every request would be rejected even with correct credentials. Shorten them."
+        );
         return None;
     }
     // Login throttling belongs at the TLS proxy layer, where trusted client IPs are available.

@@ -2239,14 +2239,10 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
             )
             .merge(mcp_router);
 
+        // `ui::router` already warns with the specific reason when it declines to mount.
         let app = match crate::ui::router(&ctx.settings) {
             Some(ui) => app.merge(ui),
-            None => {
-                warn!(
-                    "web UI disabled: set MEMCAN_WEBUI_USERNAME and MEMCAN_WEBUI_PASSWORD to enable /ui*"
-                );
-                app
-            }
+            None => app,
         };
 
         let app = app.layer(axum::Extension(Arc::clone(&shared.store)));
