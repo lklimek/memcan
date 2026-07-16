@@ -121,9 +121,9 @@ Server exposes these MCP tools (via HTTP at `/mcp`):
 | `search_code` | Search indexed code snippets |
 | `index_standards` | Index a standards document (async, returns operation_id) |
 | `drop_indexed_standards` | Drop all indexed data for a standard_id |
-| `add_todo` | Add a per-project TODO item |
+| `add_todo` | Add a per-project TODO item, optionally setting `owner` and `blocked_by` |
 | `list_todos` | List TODO items for a project, optionally filtered by owner or status |
-| `update_todo` | Update a TODO item's fields; statuses are `pending`, `done`, `in_progress`, `blocked`, `postponed`, or `cancelled` |
+| `update_todo` | Update a TODO item's fields, including `owner` and `blocked_by`; statuses are `pending`, `done`, `in_progress`, `blocked`, `postponed`, or `cancelled` |
 | `complete_todo` | Mark a TODO item as done |
 | `delete_todo` | Delete a TODO item by ID |
 | `get_todo` | Fetch a single TODO item by ID |

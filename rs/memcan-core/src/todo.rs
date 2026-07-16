@@ -3,6 +3,9 @@
 //! TODOs persist across sessions, are project-scoped, and searchable via
 //! unified search. Stored in LanceDB with embeddings for semantic search.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -23,6 +26,30 @@ const VALID_STATUSES: &[&str] = &[
     "postponed",
     "cancelled",
 ];
+const TODO_WRITE_LOCK_SHARDS: usize = 64;
+
+/// Process-local sharded locks for TODO read-modify-write operations.
+#[derive(Debug)]
+pub struct TodoWriteLocks {
+    locks: [tokio::sync::Mutex<()>; TODO_WRITE_LOCK_SHARDS],
+}
+
+impl Default for TodoWriteLocks {
+    fn default() -> Self {
+        Self {
+            locks: std::array::from_fn(|_| tokio::sync::Mutex::new(())),
+        }
+    }
+}
+
+impl TodoWriteLocks {
+    async fn lock(&self, todo_id: &str) -> tokio::sync::MutexGuard<'_, ()> {
+        let mut hasher = DefaultHasher::new();
+        todo_id.hash(&mut hasher);
+        let index = hasher.finish() as usize % TODO_WRITE_LOCK_SHARDS;
+        self.locks[index].lock().await
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AddTodoParams {
@@ -85,6 +112,11 @@ pub fn validate_status(s: &str) -> Result<()> {
 
 fn is_terminal(status: &str) -> bool {
     matches!(status, "done" | "cancelled")
+}
+
+fn normalize_optional_text(value: String) -> Option<String> {
+    let value = value.trim().to_string();
+    (!value.is_empty()).then_some(value)
 }
 
 fn build_data(title: &str, description: Option<&str>) -> String {
@@ -187,7 +219,7 @@ pub async fn add_todo(
         project: params.project,
         priority: priority.to_string(),
         status: "pending".to_string(),
-        owner: params.owner.filter(|owner| !owner.is_empty()),
+        owner: params.owner.and_then(normalize_optional_text),
         blocked_by: params.blocked_by.unwrap_or_default(),
         created_at: Utc::now().to_rfc3339(),
         completed_at: None,
@@ -244,6 +276,7 @@ pub async fn update_todo(
     store: &dyn VectorStore,
     embedder: &dyn EmbeddingProvider,
     table_schema: &dyn TableSchema,
+    write_locks: &TodoWriteLocks,
     todo_id: &str,
     updates: UpdateTodoFields,
 ) -> Result<TodoItem> {
@@ -253,6 +286,10 @@ pub async fn update_todo(
     if let Some(ref s) = updates.status {
         validate_status(s)?;
     }
+
+    // Fixed sharding bounds memory but may serialize unrelated IDs in one shard.
+    // Separate processes still require storage-level compare-and-swap.
+    let _write_guard = write_locks.lock(todo_id).await;
 
     let existing = store.get(TODOS_TABLE, &[todo_id.to_string()]).await?;
     if existing.is_empty() {
@@ -269,14 +306,14 @@ pub async fn update_todo(
         text_changed = true;
     }
     if let Some(desc) = updates.description {
-        item.description = if desc.is_empty() { None } else { Some(desc) };
+        item.description = normalize_optional_text(desc);
         text_changed = true;
     }
     if let Some(priority) = updates.priority {
         item.priority = priority;
     }
     if let Some(owner) = updates.owner {
-        item.owner = if owner.is_empty() { None } else { Some(owner) };
+        item.owner = normalize_optional_text(owner);
     }
     if let Some(blocked_by) = updates.blocked_by {
         item.blocked_by = blocked_by;
@@ -320,12 +357,14 @@ pub async fn complete_todo(
     store: &dyn VectorStore,
     embedder: &dyn EmbeddingProvider,
     table_schema: &dyn TableSchema,
+    write_locks: &TodoWriteLocks,
     todo_id: &str,
 ) -> Result<TodoItem> {
     update_todo(
         store,
         embedder,
         table_schema,
+        write_locks,
         todo_id,
         UpdateTodoFields {
             status: Some("done".to_string()),
@@ -342,7 +381,12 @@ pub async fn get_todo(store: &dyn VectorStore, todo_id: &str) -> Result<Option<T
     Ok(results.first().map(parse_todo))
 }
 
-pub async fn delete_todo(store: &dyn VectorStore, todo_id: &str) -> Result<()> {
+pub async fn delete_todo(
+    store: &dyn VectorStore,
+    write_locks: &TodoWriteLocks,
+    todo_id: &str,
+) -> Result<()> {
+    let _write_guard = write_locks.lock(todo_id).await;
     store.delete(TODOS_TABLE, &[todo_id.to_string()]).await
 }
 
@@ -360,6 +404,20 @@ mod tests {
     #[async_trait]
     impl EmbeddingProvider for MockEmbedder {
         async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![0.1, 0.2, 0.3]).collect())
+        }
+
+        fn dimensions(&self) -> usize {
+            3
+        }
+    }
+
+    struct DelayedEmbedder;
+
+    #[async_trait]
+    impl EmbeddingProvider for DelayedEmbedder {
+        async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
             Ok(texts.iter().map(|_| vec![0.1, 0.2, 0.3]).collect())
         }
 
@@ -718,18 +776,25 @@ mod tests {
                 description: None,
                 project: "memcan".into(),
                 priority: None,
-                owner: Some("bilby".into()),
+                owner: Some(" bilby ".into()),
                 blocked_by: Some(vec!["id-a".into(), "id-b".into()]),
             },
         )
         .await
         .unwrap();
 
-        let listed = list_todos(&store, "memcan", None, None, 50).await.unwrap();
+        let listed = list_todos(&store, "memcan", None, Some("bilby"), 50)
+            .await
+            .unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, added.id);
+        assert_eq!(added.owner.as_deref(), Some("bilby"));
         assert_eq!(listed[0].owner.as_deref(), Some("bilby"));
         assert_eq!(listed[0].blocked_by, vec!["id-a", "id-b"]);
+        assert_eq!(
+            store.last_filter.lock().unwrap().as_deref(),
+            Some("project = 'memcan' AND owner = 'bilby'")
+        );
     }
 
     #[tokio::test]
@@ -794,11 +859,13 @@ mod tests {
     #[tokio::test]
     async fn test_update_todo_owner_set_clear_and_unchanged() {
         let store = MockStore::with_result(todo_result("pending", None));
+        let write_locks = TodoWriteLocks::default();
 
         let unchanged = update_todo(
             &store,
             &MockEmbedder,
             &MinimalTableSchema,
+            &write_locks,
             "todo-id",
             UpdateTodoFields::default(),
         )
@@ -810,9 +877,10 @@ mod tests {
             &store,
             &MockEmbedder,
             &MinimalTableSchema,
+            &write_locks,
             "todo-id",
             UpdateTodoFields {
-                owner: Some("bilby".into()),
+                owner: Some(" bilby ".into()),
                 ..Default::default()
             },
         )
@@ -833,9 +901,10 @@ mod tests {
             &store,
             &MockEmbedder,
             &MinimalTableSchema,
+            &write_locks,
             "todo-id",
             UpdateTodoFields {
-                owner: Some(String::new()),
+                owner: Some(" \t ".into()),
                 ..Default::default()
             },
         )
@@ -853,13 +922,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_concurrent_updates_same_todo_preserve_both_changes() {
+        let store = MockStore::with_result(todo_result("pending", None));
+        let write_locks = TodoWriteLocks::default();
+
+        let priority_update = update_todo(
+            &store,
+            &DelayedEmbedder,
+            &MinimalTableSchema,
+            &write_locks,
+            "todo-id",
+            UpdateTodoFields {
+                priority: Some("high".into()),
+                ..Default::default()
+            },
+        );
+        let owner_update = update_todo(
+            &store,
+            &DelayedEmbedder,
+            &MinimalTableSchema,
+            &write_locks,
+            "todo-id",
+            UpdateTodoFields {
+                owner: Some("bilby".into()),
+                ..Default::default()
+            },
+        );
+
+        let (priority_result, owner_result) = tokio::join!(priority_update, owner_update);
+        priority_result.unwrap();
+        owner_result.unwrap();
+
+        let updated = get_todo(&store, "todo-id").await.unwrap().unwrap();
+        assert_eq!(updated.priority, "high");
+        assert_eq!(updated.owner.as_deref(), Some("bilby"));
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_update_and_delete_does_not_resurrect_todo() {
+        let store = MockStore::with_result(todo_result("pending", None));
+        let write_locks = TodoWriteLocks::default();
+
+        let update = update_todo(
+            &store,
+            &DelayedEmbedder,
+            &MinimalTableSchema,
+            &write_locks,
+            "todo-id",
+            UpdateTodoFields {
+                priority: Some("high".into()),
+                ..Default::default()
+            },
+        );
+        let delete = delete_todo(&store, &write_locks, "todo-id");
+
+        let (update_result, delete_result) = tokio::join!(update, delete);
+        update_result.unwrap();
+        delete_result.unwrap();
+
+        assert!(get_todo(&store, "todo-id").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn test_update_todo_blocked_by_replace_clear_and_unchanged() {
         let store = MockStore::with_result(todo_result("pending", None));
+        let write_locks = TodoWriteLocks::default();
 
         let unchanged = update_todo(
             &store,
             &MockEmbedder,
             &MinimalTableSchema,
+            &write_locks,
             "todo-id",
             UpdateTodoFields::default(),
         )
@@ -871,6 +1004,7 @@ mod tests {
             &store,
             &MockEmbedder,
             &MinimalTableSchema,
+            &write_locks,
             "todo-id",
             UpdateTodoFields {
                 blocked_by: Some(vec!["id-a".into(), "id-b".into()]),
@@ -893,6 +1027,7 @@ mod tests {
             &store,
             &MockEmbedder,
             &MinimalTableSchema,
+            &write_locks,
             "todo-id",
             UpdateTodoFields {
                 blocked_by: Some(vec![]),
@@ -915,11 +1050,13 @@ mod tests {
     #[tokio::test]
     async fn test_update_todo_active_to_cancelled_sets_completed_at() {
         let store = MockStore::with_result(todo_result("blocked", None));
+        let write_locks = TodoWriteLocks::default();
 
         let updated = update_todo(
             &store,
             &MockEmbedder,
             &MinimalTableSchema,
+            &write_locks,
             "todo-id",
             UpdateTodoFields {
                 status: Some("cancelled".into()),
@@ -936,11 +1073,13 @@ mod tests {
     #[tokio::test]
     async fn test_update_todo_cancelled_to_pending_clears_completed_at() {
         let store = MockStore::with_result(todo_result("cancelled", Some("2026-01-02T00:00:00Z")));
+        let write_locks = TodoWriteLocks::default();
 
         let updated = update_todo(
             &store,
             &MockEmbedder,
             &MinimalTableSchema,
+            &write_locks,
             "todo-id",
             UpdateTodoFields {
                 status: Some("pending".into()),
@@ -956,12 +1095,14 @@ mod tests {
     #[tokio::test]
     async fn test_update_todo_active_statuses_leave_completed_at_empty() {
         let store = MockStore::with_result(todo_result("pending", None));
+        let write_locks = TodoWriteLocks::default();
 
         for status in ["in_progress", "blocked", "postponed"] {
             let updated = update_todo(
                 &store,
                 &MockEmbedder,
                 &MinimalTableSchema,
+                &write_locks,
                 "todo-id",
                 UpdateTodoFields {
                     status: Some(status.into()),
@@ -977,11 +1118,13 @@ mod tests {
     #[tokio::test]
     async fn test_update_todo_done_pending_regression() {
         let store = MockStore::with_result(todo_result("pending", None));
+        let write_locks = TodoWriteLocks::default();
 
         let done = update_todo(
             &store,
             &MockEmbedder,
             &MinimalTableSchema,
+            &write_locks,
             "todo-id",
             UpdateTodoFields {
                 status: Some("done".into()),
@@ -997,6 +1140,7 @@ mod tests {
             &store,
             &MockEmbedder,
             &MinimalTableSchema,
+            &write_locks,
             "todo-id",
             UpdateTodoFields {
                 status: Some("done".into()),
@@ -1011,6 +1155,7 @@ mod tests {
             &store,
             &MockEmbedder,
             &MinimalTableSchema,
+            &write_locks,
             "todo-id",
             UpdateTodoFields {
                 status: Some("pending".into()),
