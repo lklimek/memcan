@@ -27,6 +27,7 @@ impl MemcanTableSchema {
         "content_hash",
         "status",
         "priority",
+        "owner",
     ];
 }
 
@@ -46,7 +47,7 @@ impl TableSchema for MemcanTableSchema {
     }
 
     fn migration_columns(&self) -> Vec<String> {
-        vec!["status".into(), "priority".into()]
+        vec!["status".into(), "priority".into(), "owner".into()]
     }
 }
 
@@ -57,7 +58,7 @@ mod tests {
     #[test]
     fn test_extra_fields_count() {
         let schema = MemcanTableSchema;
-        assert_eq!(schema.extra_fields().len(), 9);
+        assert_eq!(schema.extra_fields().len(), 10);
     }
 
     #[test]
@@ -73,13 +74,15 @@ mod tests {
             "content_hash": "abc123",
             "status": "pending",
             "priority": "high",
+            "owner": "bilby",
         });
         let cols = schema.extract_columns(&payload);
-        assert_eq!(cols.len(), 9);
+        assert_eq!(cols.len(), 10);
         assert_eq!(cols[0].as_deref(), Some("alice"));
         assert_eq!(cols[1].as_deref(), Some("memcan"));
         assert_eq!(cols[7].as_deref(), Some("pending"));
         assert_eq!(cols[8].as_deref(), Some("high"));
+        assert_eq!(cols[9].as_deref(), Some("bilby"));
     }
 
     #[test]
@@ -87,7 +90,7 @@ mod tests {
         let schema = MemcanTableSchema;
         let payload = serde_json::json!({"data": "hello"});
         let cols = schema.extract_columns(&payload);
-        assert_eq!(cols.len(), 9);
+        assert_eq!(cols.len(), 10);
         assert!(cols.iter().all(|c| c.is_none()));
     }
 
@@ -95,6 +98,6 @@ mod tests {
     fn test_migration_columns() {
         let schema = MemcanTableSchema;
         let cols = schema.migration_columns();
-        assert_eq!(cols, vec!["status", "priority"]);
+        assert_eq!(cols, vec!["status", "priority", "owner"]);
     }
 }
