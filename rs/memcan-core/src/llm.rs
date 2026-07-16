@@ -1,6 +1,7 @@
-//! OpenRouter LLM chat via the [`genai`] crate.
+//! Multi-adapter LLM chat via the [`genai`] crate.
 //!
-//! Ollama is served separately by `OllamaRsLlmProvider`.
+//! [`GenaiLlmProvider`] selects an adapter from the model name at call time;
+//! OpenRouter is one supported configuration.
 
 use crate::error::{MemcanError, Result};
 use crate::llm_telemetry;

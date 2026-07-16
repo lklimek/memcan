@@ -175,7 +175,10 @@ impl LlmProvider for FallbackLlmProvider {
 
     async fn init(&self) -> Result<()> {
         match self.primary.init().await {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.health.report_success(self.primary_dep);
+                Ok(())
+            }
             Err(primary_error) => {
                 self.health
                     .report_failure(self.primary_dep, &primary_error.to_string());
@@ -188,7 +191,10 @@ impl LlmProvider for FallbackLlmProvider {
                     "Primary LLM initialization failed; trying configured fallback"
                 );
                 match fallback.provider.init().await {
-                    Ok(()) => Ok(()),
+                    Ok(()) => {
+                        self.health.report_success(fallback.dep);
+                        Ok(())
+                    }
                     Err(fallback_error) => {
                         self.health
                             .report_failure(fallback.dep, &fallback_error.to_string());
