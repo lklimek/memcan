@@ -1,6 +1,6 @@
 {
   "name": "memcan",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Persistent memory for Claude Code — save and recall learnings, decisions, preferences across sessions.",
   "author": {
     "name": "lklimek",
