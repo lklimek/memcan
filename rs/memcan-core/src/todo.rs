@@ -215,7 +215,7 @@ pub async fn add_todo(
     let item = TodoItem {
         id: Uuid::new_v4().to_string(),
         title: params.title,
-        description: params.description,
+        description: params.description.and_then(normalize_optional_text),
         project: params.project,
         priority: priority.to_string(),
         status: "pending".to_string(),
@@ -819,6 +819,45 @@ mod tests {
         .unwrap();
 
         assert!(added.owner.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_add_and_update_todo_normalize_whitespace_only_description_the_same_way() {
+        let created = add_todo(
+            &MockStore::default(),
+            &MockEmbedder,
+            &MinimalTableSchema,
+            AddTodoParams {
+                title: "Whitespace description".into(),
+                description: Some("   ".into()),
+                project: "memcan".into(),
+                priority: None,
+                owner: None,
+                blocked_by: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(created.description.is_none());
+
+        let store = MockStore::with_result(todo_result("pending", None));
+        let write_locks = TodoWriteLocks::default();
+        let updated = update_todo(
+            &store,
+            &MockEmbedder,
+            &MinimalTableSchema,
+            &write_locks,
+            "todo-id",
+            UpdateTodoFields {
+                description: Some("   ".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(updated.description.is_none());
+
+        assert_eq!(created.description, updated.description);
     }
 
     #[tokio::test]
