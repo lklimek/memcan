@@ -326,6 +326,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_expand_tilde() {
         let expanded = expand_tilde("~/.local/share/memcan");
         assert!(!expanded.starts_with('~'), "tilde should be expanded");
