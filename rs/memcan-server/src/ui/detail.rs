@@ -11,16 +11,9 @@ use memcan_core::{
     todo::{TodoItem, get_todo},
     traits::VectorStore,
 };
-use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use tracing::error;
 
-use super::{fmt_date_long, layout, priority_badge, status_badge};
-
-const PATH_SEGMENT_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
-    .remove(b'-')
-    .remove(b'.')
-    .remove(b'_')
-    .remove(b'~');
+use super::{encode_task_id, fmt_date_long, layout, priority_badge, status_badge};
 
 pub(super) async fn redirect() -> Response {
     (
@@ -87,10 +80,7 @@ fn task_markup(item: &TodoItem) -> Markup {
                     ul {
                         @for blocker in &item.blocked_by {
                             li {
-                                a href=(format!(
-                                    "/ui/tasks/{}",
-                                    utf8_percent_encode(blocker, PATH_SEGMENT_ENCODE_SET)
-                                )) { (blocker) }
+                                a href=(format!("/ui/tasks/{}", encode_task_id(blocker))) { (blocker) }
                             }
                         }
                     }

@@ -13,7 +13,7 @@ use memcan_core::{
 use serde::Deserialize;
 use tracing::error;
 
-use super::{detail, fmt_date_short, layout, priority_badge, status_badge};
+use super::{detail, encode_task_id, fmt_date_short, layout, priority_badge, status_badge};
 
 const LIMIT: usize = 500;
 
@@ -162,7 +162,7 @@ fn list_markup(
                         @for item in displayed {
                             tr {
                                 td { (priority_badge(&item.priority)) }
-                                td { a href=(format!("/ui/tasks/{}", item.id)) { (&item.title) } }
+                                td { a href=(format!("/ui/tasks/{}", encode_task_id(&item.id))) { (&item.title) } }
                                 td { (&item.project) }
                                 td { (status_badge(&item.status)) }
                                 td { (item.owner.as_deref().unwrap_or("—")) }
@@ -319,6 +319,26 @@ mod tests {
         assert!(body.contains("●</span> blocked"));
         assert!(body.contains("<td>—</td>"));
         assert!(body.contains("href=\"/ui/tasks/T-HIGH-1\">Blocked deployment</a>"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn list_view_percent_encodes_task_ids_in_links() {
+        let task = item(
+            "dep/one?x#frag",
+            "Dependency",
+            "memcan",
+            "medium",
+            "pending",
+            None,
+            "2026-01-01T00:00:00Z",
+        );
+        let app = app_with_items(vec![task]).await;
+        let (status, body) = get(&app.router, "/ui/tasks").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("href=\"/ui/tasks/dep%2Fone%3Fx%23frag\""));
+        assert!(!body.contains("href=\"/ui/tasks/dep/one?x#frag\""));
     }
 
     #[tokio::test]

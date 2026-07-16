@@ -20,12 +20,19 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::Utc;
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use memcan_core::config::Settings;
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use subtle::ConstantTimeEq;
 
 const AUTH_CHALLENGE: HeaderValue = HeaderValue::from_static("Basic realm=\"MemCan Tasks\"");
 const CONTENT_SECURITY_POLICY: HeaderValue = HeaderValue::from_static(
     "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
 );
+const MAX_AUTH_HEADER_LEN: usize = 512;
+const PATH_SEGMENT_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
 const STYLES: &str = r#"
 :root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.5; }
 body { margin: 0; color: #1f2933; background: #f5f7fa; }
@@ -91,6 +98,7 @@ pub fn router(settings: &Settings) -> Option<Router> {
                 let authorized = request
                     .headers()
                     .get(header::AUTHORIZATION)
+                    .filter(|value| value.as_bytes().len() <= MAX_AUTH_HEADER_LEN)
                     .and_then(|value| value.to_str().ok())
                     .and_then(|value| value.split_once(' '))
                     .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("Basic"))
@@ -171,6 +179,10 @@ pub(super) fn priority_badge(priority: &str) -> Markup {
         _ => ("neutral", "◆"),
     };
     html! { span class={ "badge " (class) } { span aria-hidden="true" { (glyph) } " " (priority) } }
+}
+
+pub(super) fn encode_task_id(id: &str) -> impl std::fmt::Display + '_ {
+    utf8_percent_encode(id, PATH_SEGMENT_ENCODE_SET)
 }
 
 pub(super) fn fmt_date_long(value: &str) -> String {
@@ -318,6 +330,34 @@ mod tests {
 
             assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
         }
+    }
+
+    #[tokio::test]
+    async fn webui_auth_rejects_oversized_header_without_regressing_normal_credentials() {
+        let oversized_password = "x".repeat(1024);
+        let oversized_credentials = Settings {
+            webui_username: Some("testuser".into()),
+            webui_password: Some(oversized_password.clone()),
+            ..Settings::default()
+        };
+        let oversized_authorization = basic(&format!("testuser:{oversized_password}"));
+        let oversized = mounted(&oversized_credentials)
+            .oneshot(request("/ui/tasks", Some(&oversized_authorization)))
+            .await
+            .unwrap();
+        assert_eq!(oversized.status(), StatusCode::UNAUTHORIZED);
+
+        let correct = mounted(&credentials())
+            .oneshot(request("/ui/tasks", Some(&basic("testuser:testpass"))))
+            .await
+            .unwrap();
+        assert_ne!(correct.status(), StatusCode::UNAUTHORIZED);
+
+        let incorrect = mounted(&credentials())
+            .oneshot(request("/ui/tasks", Some(&basic("testuser:wrong"))))
+            .await
+            .unwrap();
+        assert_eq!(incorrect.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[test]
