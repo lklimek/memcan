@@ -372,7 +372,7 @@ fn test_config_load() {
     assert_eq!(settings.default_user_id, "global");
     assert!(settings.distill_memories);
     assert_eq!(settings.embed_dims, 1024);
-    assert_eq!(settings.llm_model, "gemma4:26b-a4b-it-qat");
+    assert_eq!(settings.llm_model, "lklimek/gemma4-text:26b-a4b-it-qat");
     assert_eq!(settings.embed_model, "MultilingualE5Large");
 
     let loaded = memcan_core::config::Settings::load().expect("load should succeed");

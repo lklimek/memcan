@@ -10,9 +10,10 @@ projector layer removes that overhead with zero impact on the text model's
 own weights (they are reused byte-identical from the source model's blob,
 not re-quantized or retrained).
 
-Talks only to the Ollama HTTP API (POST /api/show, POST /api/create) — no
-shell access to the Ollama host is needed for this step. The final publish
-step (`ollama cp` + `ollama push`) requires the `ollama` CLI with an
+Talks only to the Ollama HTTP API — POST /api/show, POST /api/create, POST
+/api/generate (post-build load), and GET /api/ps (GPU-residency verification)
+— no shell access to the Ollama host is needed for this step. The final
+publish step (`ollama cp` + `ollama push`) requires the `ollama` CLI with an
 authenticated SSH key and is printed at the end, not run by this script.
 
 Usage:
