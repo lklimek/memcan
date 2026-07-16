@@ -23,8 +23,9 @@ pub struct OllamaRsLlmProvider {
 
 /// Sort a chat failure into the availability class or the content class.
 ///
-/// Only [`OllamaError::ReqwestError`] proves the daemon was unreachable, so it
-/// is the one variant mapped to [`MemcanError::LlmUnavailable`].
+/// [`OllamaError::ReqwestError`] proves the daemon was unreachable, so it maps
+/// to [`MemcanError::LlmUnavailable`]. `Other` and `JsonError` join it, because
+/// ollama-rs cannot tell us enough to do better:
 ///
 /// `send_chat_messages` collapses **every** non-2xx response into
 /// `OllamaError::Other`, discarding the status code, so a 400
@@ -32,6 +33,8 @@ pub struct OllamaRsLlmProvider {
 /// load) without parsing the body text. Both therefore stay in the
 /// availability class: guessing from prose would be worse than the status quo,
 /// and treating a real 5xx as a content fault would silently disable failover.
+/// The known cost of that trade is that an Ollama-primary
+/// context-length-exceeded still reaches the fallback.
 fn classify_chat_error(error: &OllamaError, model_name: &str) -> MemcanError {
     let context = format!("ollama-rs chat call to model '{model_name}' failed");
     let detail = error.to_string();
