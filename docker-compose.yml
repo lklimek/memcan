@@ -40,8 +40,8 @@ services:
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-ollama::gemma4:26b-a4b-it-qat}
       MEMCAN_API_KEY: ${MEMCAN_API_KEY}
-      WEBUI_USERNAME: ${WEBUI_USERNAME:-}
-      WEBUI_PASSWORD: ${WEBUI_PASSWORD:-}
+      MEMCAN_WEBUI_USERNAME: ${MEMCAN_WEBUI_USERNAME:-}
+      MEMCAN_WEBUI_PASSWORD: ${MEMCAN_WEBUI_PASSWORD:-}
       RUST_LOG: ${RUST_LOG:-info,memcan_core=debug,memcan_server=debug}
       MEMCAN_LOG_FILE: ""
       MEMCAN_LISTEN: 0.0.0.0:8191
@@ -70,11 +70,13 @@ services:
       - "traefik.http.middlewares.memcan-auth.plugin.traefik-api-token-middleware.bearerheadername=Authorization"
       - "traefik.http.middlewares.memcan-auth.plugin.traefik-api-token-middleware.tokens=${MEMCAN_API_KEY}"
       - "traefik.http.middlewares.memcan-auth.plugin.traefik-api-token-middleware.removeheadersonsuccess=false"
+      - "traefik.http.middlewares.memcan-ui-ratelimit.ratelimit.average=10"
+      - "traefik.http.middlewares.memcan-ui-ratelimit.ratelimit.burst=20"
       - "traefik.http.routers.memcan.middlewares=memcan-ipallow@docker,memcan-auth@docker"
       - "traefik.http.routers.memcan-ui.rule=PathPrefix(`/ui/`) || Path(`/ui`)"
       - "traefik.http.routers.memcan-ui.entrypoints=memcan"
       - "traefik.http.routers.memcan-ui.service=memcan"
-      - "traefik.http.routers.memcan-ui.middlewares=memcan-ipallow@docker"
+      - "traefik.http.routers.memcan-ui.middlewares=memcan-ipallow@docker,memcan-ui-ratelimit@docker"
       - "traefik.http.routers.memcan-ui.priority=200"
       - "traefik.http.routers.memcan-health.rule=Path(`/health`)"
       - "traefik.http.routers.memcan-health.entrypoints=memcan"
