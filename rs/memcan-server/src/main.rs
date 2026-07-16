@@ -13,6 +13,7 @@ mod migrate;
 mod purge_memories;
 mod serve;
 mod test_classification;
+mod ui;
 
 #[derive(Parser)]
 #[command(

@@ -162,6 +162,7 @@ struct SharedState {
     llm_semaphore: Arc<tokio::sync::Semaphore>,
     pending_tasks: Arc<AtomicUsize>,
     health: Arc<DependencyHealth>,
+    todo_write_locks: Arc<todo::TodoWriteLocks>,
 }
 
 // --- Tool parameter structs ---
@@ -331,20 +332,29 @@ pub struct DeleteCodeRecordsParams {
 pub struct AddTodoParams {
     /// Short title of the TODO item.
     pub title: String,
-    /// Optional longer description.
+    /// Optional longer description; trimmed, and dropped if empty or whitespace-only.
     pub description: Option<String>,
     /// Project this TODO belongs to (required).
     pub project: String,
     /// Priority: "low", "medium", or "high". Defaults to "medium".
     pub priority: Option<String>,
+    /// Optional agent or coordinator responsible for the TODO; trimmed, and dropped
+    /// if empty or whitespace-only.
+    pub owner: Option<String>,
+    /// Optional TODO IDs that block this item; each entry is trimmed, empties dropped,
+    /// duplicates removed (first occurrence wins).
+    pub blocked_by: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListTodosParams {
     /// Project to list TODOs for (required).
     pub project: String,
-    /// Filter by status: "pending" or "done". Omit for all.
+    /// Filter by status: pending, done, in_progress, blocked, postponed, or cancelled.
     pub status: Option<String>,
+    /// Filter by owner; trimmed before matching. Omit — or pass an empty or
+    /// whitespace-only string — for all owners. There is no filter for unowned TODOs.
+    pub owner: Option<String>,
     /// Max results (default 50, max 200).
     pub limit: Option<u32>,
 }
@@ -359,8 +369,14 @@ pub struct UpdateTodoParams {
     pub description: Option<String>,
     /// New priority (optional).
     pub priority: Option<String>,
-    /// New status: "pending" or "done" (optional).
+    /// New status: pending, done, in_progress, blocked, postponed, or cancelled.
     pub status: Option<String>,
+    /// New owner; trimmed. An empty or whitespace-only string clears the owner.
+    pub owner: Option<String>,
+    /// Replacement TODO IDs that block this item; each entry is trimmed, empties
+    /// dropped, duplicates removed (first occurrence wins). An empty list — or one
+    /// holding only empty/whitespace entries — clears them.
+    pub blocked_by: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -372,6 +388,12 @@ pub struct CompleteTodoParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DeleteTodoParams {
     /// ID of the TODO to delete.
+    pub todo_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetTodoParams {
+    /// ID of the TODO to fetch.
     pub todo_id: String,
 }
 
@@ -1407,6 +1429,8 @@ impl MemcanService {
             description: params.description,
             project: params.project,
             priority: params.priority,
+            owner: params.owner,
+            blocked_by: params.blocked_by,
         };
 
         let item = todo::add_todo(
@@ -1436,7 +1460,7 @@ impl MemcanService {
         &self,
         Parameters(params): Parameters<ListTodosParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        debug!(tool = "list_todos", project = %params.project, status = ?params.status, "MCP request");
+        debug!(tool = "list_todos", project = %params.project, status = ?params.status, owner = ?params.owner, "MCP request");
 
         self.state
             .health
@@ -1449,6 +1473,7 @@ impl MemcanService {
             self.state.store.as_ref(),
             &params.project,
             params.status.as_deref(),
+            params.owner.as_deref(),
             limit,
         )
         .await
@@ -1464,7 +1489,9 @@ impl MemcanService {
         )]))
     }
 
-    #[tool(description = "Update a TODO item's title, description, priority, or status.")]
+    #[tool(
+        description = "Update a TODO item's title, description, priority, status, owner, or blocked_by."
+    )]
     async fn update_todo(
         &self,
         Parameters(params): Parameters<UpdateTodoParams>,
@@ -1485,12 +1512,15 @@ impl MemcanService {
             description: params.description,
             priority: params.priority,
             status: params.status,
+            owner: params.owner,
+            blocked_by: params.blocked_by,
         };
 
         let item = todo::update_todo(
             self.state.store.as_ref(),
             self.state.embedder.as_ref(),
             &MemcanTableSchema,
+            self.state.todo_write_locks.as_ref(),
             &params.todo_id,
             updates,
         )
@@ -1528,6 +1558,7 @@ impl MemcanService {
             self.state.store.as_ref(),
             self.state.embedder.as_ref(),
             &MemcanTableSchema,
+            self.state.todo_write_locks.as_ref(),
             &params.todo_id,
         )
         .await
@@ -1556,16 +1587,55 @@ impl MemcanService {
             .check(DependencyId::LanceDb)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
-        todo::delete_todo(self.state.store.as_ref(), &params.todo_id)
-            .await
-            .map_err(|e| {
-                report_error_to_health(&self.state.health, &e);
-                ErrorData::internal_error(format!("delete_todo failed: {e}"), None)
-            })?;
+        todo::delete_todo(
+            self.state.store.as_ref(),
+            self.state.todo_write_locks.as_ref(),
+            &params.todo_id,
+        )
+        .await
+        .map_err(|e| {
+            report_error_to_health(&self.state.health, &e);
+            ErrorData::internal_error(format!("delete_todo failed: {e}"), None)
+        })?;
 
         self.state.health.report_success(DependencyId::LanceDb);
 
         let response = serde_json::json!({ "status": "deleted", "todo_id": params.todo_id });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&response).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(
+        description = "Fetch a single TODO by id. Returns the item, or a not-found marker for an unknown id."
+    )]
+    async fn get_todo(
+        &self,
+        Parameters(params): Parameters<GetTodoParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        debug!(tool = "get_todo", todo_id = %params.todo_id, "MCP request");
+
+        self.state
+            .health
+            .check(DependencyId::LanceDb)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let item = todo::get_todo(self.state.store.as_ref(), &params.todo_id)
+            .await
+            .map_err(|e| {
+                report_error_to_health(&self.state.health, &e);
+                ErrorData::internal_error(format!("get_todo failed: {e}"), None)
+            })?;
+
+        self.state.health.report_success(DependencyId::LanceDb);
+
+        let response = match item {
+            Some(item) => serde_json::to_value(item).unwrap_or_default(),
+            None => serde_json::json!({
+                "error": "todo not found",
+                "todo_id": params.todo_id,
+            }),
+        };
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string(&response).unwrap_or_default(),
         )]))
@@ -2107,6 +2177,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
         llm_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
         pending_tasks: Arc::new(AtomicUsize::new(0)),
         health: Arc::clone(&health),
+        todo_write_locks: Arc::new(todo::TodoWriteLocks::default()),
     });
 
     if args.stdio {
@@ -2173,6 +2244,14 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
             )
             .merge(mcp_router);
 
+        // `ui::router` already warns with the specific reason when it declines to mount.
+        let app = match crate::ui::router(&ctx.settings) {
+            Some(ui) => app.merge(ui),
+            None => app,
+        };
+
+        let app = app.layer(axum::Extension(Arc::clone(&shared.store)));
+
         let listener = TcpListener::bind(&listen_addr)
             .await
             .map_err(|e| MemcanError::Other(format!("failed to bind {listen_addr}: {e}")))?;
@@ -2198,7 +2277,10 @@ mod tests {
             VectorPoint, VectorStore,
         };
 
-        struct MockStore;
+        #[derive(Default)]
+        struct MockStore {
+            records: StdMutex<HashMap<String, SearchResult>>,
+        }
         #[async_trait::async_trait]
         impl VectorStore for MockStore {
             async fn ensure_table(
@@ -2212,9 +2294,20 @@ mod tests {
             async fn upsert(
                 &self,
                 _: &str,
-                _: &[VectorPoint],
+                points: &[VectorPoint],
                 _: &dyn TableSchema,
             ) -> memcan_core::error::Result<()> {
+                let mut records = self.records.lock().unwrap();
+                for point in points {
+                    records.insert(
+                        point.id.clone(),
+                        SearchResult {
+                            id: point.id.clone(),
+                            score: 0.0,
+                            payload: point.payload.clone(),
+                        },
+                    );
+                }
                 Ok(())
             }
             async fn search(
@@ -2252,9 +2345,13 @@ mod tests {
             async fn get(
                 &self,
                 _: &str,
-                _: &[String],
+                ids: &[String],
             ) -> memcan_core::error::Result<Vec<SearchResult>> {
-                Ok(vec![])
+                let records = self.records.lock().unwrap();
+                Ok(ids
+                    .iter()
+                    .filter_map(|id| records.get(id).cloned())
+                    .collect())
             }
         }
 
@@ -2286,12 +2383,14 @@ mod tests {
         }
 
         let state = Arc::new(SharedState {
-            store: Arc::new(MockStore),
+            store: Arc::new(MockStore::default()),
             embedder: Arc::new(MockEmbedder),
             llm: Arc::new(MockLlm),
             config: memcan_core::config::Settings {
                 listen: "127.0.0.1:0".into(),
                 api_key: None,
+                webui_username: None,
+                webui_password: None,
                 lancedb_path: "/tmp/test".into(),
                 default_user_id: "global".into(),
                 tech_stack: String::new(),
@@ -2313,6 +2412,7 @@ mod tests {
             llm_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
             pending_tasks: Arc::new(AtomicUsize::new(0)),
             health: Arc::new(DependencyHealth::with_defaults()),
+            todo_write_locks: Arc::new(todo::TodoWriteLocks::default()),
         });
 
         MemcanService::new(state)
@@ -2362,6 +2462,108 @@ mod tests {
         );
         assert!(names.contains(&"add_memory"), "missing add_memory");
         assert!(names.contains(&"search"), "missing search");
+        assert!(names.contains(&"get_todo"), "missing get_todo");
+    }
+
+    #[test]
+    fn todo_param_schemas_keep_owner_and_blocked_by_optional() {
+        let add_schema = serde_json::to_value(rmcp::schemars::schema_for!(AddTodoParams)).unwrap();
+        let add_properties = add_schema["properties"].as_object().unwrap();
+        assert!(add_properties.contains_key("owner"));
+        assert!(add_properties.contains_key("blocked_by"));
+        let add_required = add_schema["required"].as_array().unwrap();
+        assert!(!add_required.iter().any(|field| field == "owner"));
+        assert!(!add_required.iter().any(|field| field == "blocked_by"));
+
+        let add: AddTodoParams =
+            serde_json::from_str(r#"{"title":"test","project":"memcan"}"#).unwrap();
+        assert!(add.owner.is_none());
+        assert!(add.blocked_by.is_none());
+
+        let update_schema =
+            serde_json::to_value(rmcp::schemars::schema_for!(UpdateTodoParams)).unwrap();
+        let update_properties = update_schema["properties"].as_object().unwrap();
+        assert!(update_properties.contains_key("owner"));
+        assert!(update_properties.contains_key("blocked_by"));
+        let update_required = update_schema["required"].as_array().unwrap();
+        assert!(!update_required.iter().any(|field| field == "owner"));
+        assert!(!update_required.iter().any(|field| field == "blocked_by"));
+
+        let update: UpdateTodoParams = serde_json::from_str(r#"{"todo_id":"todo-id"}"#).unwrap();
+        assert!(update.owner.is_none());
+        assert!(update.blocked_by.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_todo_missing_returns_not_found_marker() {
+        let service = make_test_service();
+
+        let result = service
+            .get_todo(Parameters(GetTodoParams {
+                todo_id: "missing-id".into(),
+            }))
+            .await
+            .unwrap();
+        let response: serde_json::Value = serde_json::from_str(
+            result.content[0]
+                .as_text()
+                .expect("text response")
+                .text
+                .as_ref(),
+        )
+        .unwrap();
+
+        assert_eq!(response["error"], "todo not found");
+        assert_eq!(response["todo_id"], "missing-id");
+    }
+
+    #[tokio::test]
+    async fn get_todo_success_returns_serialized_item_fields() {
+        let service = make_test_service();
+        let added = service
+            .add_todo(Parameters(AddTodoParams {
+                title: "Blocked work".into(),
+                description: None,
+                project: "memcan".into(),
+                priority: None,
+                owner: Some("bilby".into()),
+                blocked_by: Some(vec!["dependency-a".into(), "dependency-b".into()]),
+            }))
+            .await
+            .unwrap();
+        let added: serde_json::Value = serde_json::from_str(
+            added.content[0]
+                .as_text()
+                .expect("text response")
+                .text
+                .as_ref(),
+        )
+        .unwrap();
+        let todo_id = added["id"].as_str().expect("todo id").to_string();
+
+        let fetched = service
+            .get_todo(Parameters(GetTodoParams {
+                todo_id: todo_id.clone(),
+            }))
+            .await
+            .unwrap();
+        let response: serde_json::Value = serde_json::from_str(
+            fetched.content[0]
+                .as_text()
+                .expect("text response")
+                .text
+                .as_ref(),
+        )
+        .unwrap();
+
+        assert_eq!(response["id"], todo_id);
+        assert_eq!(response["title"], "Blocked work");
+        assert_eq!(response["owner"], "bilby");
+        assert_eq!(
+            response["blocked_by"],
+            serde_json::json!(["dependency-a", "dependency-b"])
+        );
+        assert_eq!(response["status"], "pending");
     }
 
     #[test]
@@ -2587,6 +2789,7 @@ mod tests {
             llm_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
             pending_tasks: Arc::new(AtomicUsize::new(0)),
             health: Arc::new(DependencyHealth::with_defaults()),
+            todo_write_locks: Arc::new(todo::TodoWriteLocks::default()),
         });
         let service = MemcanService::new(state);
 

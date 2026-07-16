@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `get_todo` MCP tool for fetching a single TODO item by ID.
+- `owner` and `blocked_by` fields on TODO items, accepted by both `add_todo` and `update_todo`.
+- TODO statuses `in_progress`, `blocked`, `postponed`, and `cancelled`, expanding the status set to six values alongside `pending` and `done`.
+
 ## [1.0.0] - 2026-07-07
 
 ### BREAKING

@@ -33,6 +33,24 @@ MemCan uses a two-component architecture:
 
 The Claude Code plugin connects to the server via HTTP MCP transport (Streamable HTTP).
 
+### Read-only tasks web UI
+
+Set both `MEMCAN_WEBUI_USERNAME` and `MEMCAN_WEBUI_PASSWORD` to mount the task browser at
+`/ui/tasks`; leaving either value unset or empty keeps every `/ui*` route unmounted. The password is
+masked in settings debug output.
+
+The bundled Docker Compose entrypoint is plain HTTP and does not provide TLS out of the box. Its
+dedicated `/ui*` router bypasses the API's Bearer middleware so the application's Basic Auth can
+work, but `TRAEFIK_IP_ALLOWLIST` must remain at its default localhost-only setting until TLS is
+added. Exposing `/ui*` beyond localhost requires an operator-configured Traefik TLS entrypoint and
+certificate resolver, or an upstream TLS-terminating reverse proxy. Plain-HTTP Basic Auth sends
+base64-encoded, not encrypted, credentials.
+Login throttling is intentionally delegated to the trusted proxy/network layer, where client IPs
+can be identified safely: the bundled `docker-compose.yml` applies a Traefik `ratelimit` middleware
+(`average=10` req/s, `burst=20`) to the `memcan-ui` router. Those values, and the choice to keep
+throttling out of the application, must be revisited before broader exposure. The shared Basic Auth
+account has no application logout; credentials normally persist for the browser session.
+
 ### Stack
 
 - **LanceDB** — embedded vector database (no server needed, data stored locally)
