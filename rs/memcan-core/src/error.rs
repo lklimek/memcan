@@ -38,8 +38,18 @@ pub enum MemcanError {
     Embedding { context: String, detail: String },
 
     // -- LLM Chat ------------------------------------------------------------
+    /// The backend was reached and answered, but the call did not yield usable
+    /// text (empty response, rejected prompt, 4xx). Says nothing about whether
+    /// the backend is up, so it must not trip a circuit breaker or divert the
+    /// request to another backend.
     #[error("LLM chat error ({context}): {detail}")]
     LlmChat { context: String, detail: String },
+
+    /// The backend could not be reached or could not serve the request
+    /// (connection refused, timeout, 5xx). This is the only LLM failure class
+    /// that carries an availability signal.
+    #[error("LLM backend unavailable ({context}): {detail}")]
+    LlmUnavailable { context: String, detail: String },
 
     // -- Validation ----------------------------------------------------------
     #[error("vector dimension mismatch: expected {expected}, got {actual}")]
@@ -68,9 +78,29 @@ pub enum MemcanError {
 }
 
 impl MemcanError {
-    /// Returns `true` when this error originated from an LLM chat call.
+    /// Returns `true` when this error originated from an LLM chat call,
+    /// regardless of whether the backend was reachable.
+    ///
+    /// Callers use this to decide whether to degrade gracefully (e.g. store a
+    /// memory raw instead of distilled), which is warranted for both LLM
+    /// failure classes. To decide whether a *different* backend might succeed,
+    /// use [`is_llm_unavailable`](Self::is_llm_unavailable) instead.
     pub fn is_llm_error(&self) -> bool {
-        matches!(self, MemcanError::LlmChat { .. })
+        matches!(
+            self,
+            MemcanError::LlmChat { .. } | MemcanError::LlmUnavailable { .. }
+        )
+    }
+
+    /// Returns `true` when an LLM backend could not be reached or could not
+    /// serve the request.
+    ///
+    /// This is the availability signal: it is the only LLM failure class that
+    /// justifies tripping a circuit breaker or retrying against a different
+    /// backend. A content fault ([`LlmChat`](Self::LlmChat)) fails identically
+    /// everywhere, so re-sending it elsewhere only leaks the prompt.
+    pub fn is_llm_unavailable(&self) -> bool {
+        matches!(self, MemcanError::LlmUnavailable { .. })
     }
 
     /// Returns `true` when this error originated from a LanceDB operation.

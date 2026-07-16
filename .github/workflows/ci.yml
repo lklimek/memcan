@@ -42,6 +42,36 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
 
+  features:
+    # memcan-core's LLM backends are optional features, but every other job
+    # builds the default (both-on) combination only. Without this matrix the
+    # cfg branches selecting a single backend are never compiled or run.
+    name: Features (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            flags: ""
+          - name: genai-only
+            flags: --no-default-features --features genai-llm
+          - name: ollama-rs-only
+            flags: --no-default-features --features ollama-rs-llm
+          - name: no-llm-backend
+            flags: --no-default-features
+    steps:
+      # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
+      - uses: actions/checkout@v4
+      - name: Install Ubuntu dependencies
+        run: bash scripts/setup-ubuntu.sh
+      # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
+      - uses: dtolnay/rust-toolchain@stable
+      # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p memcan-core ${{ matrix.flags }}
+      - run: cargo test -p memcan-core ${{ matrix.flags }}
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest

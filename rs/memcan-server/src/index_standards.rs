@@ -1,8 +1,11 @@
 //! CLI wrapper for standards indexing. Delegates to `memcan_core::indexing::standards`.
 
+use std::sync::Arc;
+
 use tracing::info;
 
 use memcan_core::error::{MemcanError, Result as MemcanResult};
+use memcan_core::health::DependencyHealth;
 use memcan_core::indexing::standards::{
     IndexStandardsParams, VALID_TYPES, drop_standards, index_standards,
 };
@@ -20,8 +23,12 @@ pub async fn run(args: &IndexStandardsArgs) -> MemcanResult<()> {
         return Ok(());
     }
 
-    ctx.init_llm().await?;
-    let (llm, default_model) = create_llm_provider(&ctx.settings);
+    // Sequential batch run: a suppressed chunk is indistinguishable from a
+    // failed one, so probe every chunk rather than attributing one blip to its
+    // successors.
+    let health = Arc::new(DependencyHealth::without_circuit_breaking());
+    let (llm, default_model) = create_llm_provider(&ctx.settings, health)?;
+    llm.init().await?;
     let model = args.model.as_deref().unwrap_or(&default_model);
 
     let file = args

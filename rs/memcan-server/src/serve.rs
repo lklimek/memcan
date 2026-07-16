@@ -531,12 +531,10 @@ fn empty_hint(filters: &[(&str, Option<&str>)]) -> serde_json::Value {
     serde_json::json!({ "results": [], "hint": hint })
 }
 
-/// Classify an error and report the appropriate dependency as failed.
+/// Classify storage or embedding errors and report the dependency as failed.
 fn report_error_to_health(health: &DependencyHealth, err: &MemcanError) {
     let msg = err.to_string();
-    if err.is_llm_error() {
-        health.report_failure(DependencyId::Ollama, &msg);
-    } else if err.is_lancedb_error() {
+    if err.is_lancedb_error() {
         health.report_failure(DependencyId::LanceDb, &msg);
     } else if err.is_embedding_error() {
         health.report_failure(DependencyId::Embedding, &msg);
@@ -628,14 +626,6 @@ impl MemcanService {
             );
         }
 
-        // Fail fast if LLM is known to be down (embedding + lancedb checked on demand)
-        if self.state.config.distill_memories {
-            self.state
-                .health
-                .check(DependencyId::Ollama)
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        }
-
         let sem = Arc::clone(&self.state.llm_semaphore);
         let health = Arc::clone(&self.state.health);
         let uid_clone = uid.clone();
@@ -652,7 +642,6 @@ impl MemcanService {
             match guard.add_memory(&memory, &uid_clone, &metadata).await {
                 Ok(_) => {
                     info!(user_id = %uid_clone, "add_memory: persisted");
-                    health.report_success(DependencyId::Ollama);
                     health.report_success(DependencyId::Embedding);
                     health.report_success(DependencyId::LanceDb);
                     guard.complete();
@@ -1215,12 +1204,6 @@ impl MemcanService {
             );
         }
 
-        // Fail fast if LLM is known to be down
-        self.state
-            .health
-            .check(DependencyId::Ollama)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-
         let store = Arc::clone(&self.state.store);
         let embedder = Arc::clone(&self.state.embedder);
         let llm = Arc::clone(&self.state.llm);
@@ -1278,7 +1261,6 @@ impl MemcanService {
                         p.step = memcan_core::pipeline::PipelineStep::CompletedDegraded;
                     }
                     p.completed_at = Some(chrono::Utc::now().to_rfc3339());
-                    health.report_success(DependencyId::Ollama);
                     health.report_success(DependencyId::Embedding);
                     health.report_success(DependencyId::LanceDb);
                     info!(
@@ -1820,11 +1802,6 @@ impl MemcanService {
             "MCP request"
         );
 
-        self.state
-            .health
-            .check(DependencyId::Ollama)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-
         // Claim a queue slot before logging "queued" or inserting the LRU entry,
         // so a busy-rejection leaves no phantom never-completing status record.
         let task_guard = try_enqueue(&self.state.pending_tasks)?;
@@ -1918,7 +1895,6 @@ impl MemcanService {
                         p.step = memcan_core::pipeline::PipelineStep::Completed;
                     }
                     p.completed_at = Some(chrono::Utc::now().to_rfc3339());
-                    health.report_success(DependencyId::Ollama);
                     health.report_success(DependencyId::Embedding);
                     health.report_success(DependencyId::LanceDb);
                     info!(
@@ -2097,15 +2073,15 @@ async fn health_handler(
 pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
     let ctx = MemcanContext::init().await?;
     setup_logging(&ctx.settings.log_file);
+    let health = Arc::new(DependencyHealth::with_defaults());
+    let (llm, llm_model) = create_llm_provider(&ctx.settings, Arc::clone(&health))?;
     if ctx.settings.distill_memories {
-        ctx.init_llm().await?;
+        llm.init().await?;
     } else {
         info!("Skipping LLM init (DISTILL_MEMORIES=false)");
     }
 
     info!("Loading config: lancedb_path={}", ctx.settings.lancedb_path);
-
-    let (llm, llm_model) = create_llm_provider(&ctx.settings);
 
     let dims = ctx.settings.embed_dims;
     let ts = MemcanTableSchema;
@@ -2162,8 +2138,6 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
         .listen
         .clone()
         .unwrap_or_else(|| ctx.settings.listen.clone());
-
-    let health = Arc::new(DependencyHealth::with_defaults());
 
     let shared = Arc::new(SharedState {
         store: Arc::new(ctx.store),
@@ -2404,6 +2378,7 @@ mod tests {
                 url: "http://localhost:8191".into(),
                 compact_on_startup: false,
                 compact_fragment_threshold: 0,
+                ..Default::default()
             },
             llm_model: "test".into(),
             queue_status: Arc::new(StdMutex::new(LruCache::new(

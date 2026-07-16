@@ -1,4 +1,5 @@
 // Integration tests validating the OUTPUT QUALITY of fact-extraction.md.
+#![cfg(feature = "ollama-rs-llm")]
 //
 // These tests require a live Ollama server and are marked #[ignore].
 // They assert *output properties* — self-containment, parallel-symbol collapse,

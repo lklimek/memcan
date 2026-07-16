@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -14,6 +14,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DependencyId {
     Ollama,
+    OpenRouter,
     LanceDb,
     Embedding,
 }
@@ -22,12 +23,18 @@ impl DependencyId {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Ollama => "ollama",
+            Self::OpenRouter => "openrouter",
             Self::LanceDb => "lancedb",
             Self::Embedding => "embedding",
         }
     }
 
-    const ALL: [DependencyId; 3] = [Self::Ollama, Self::LanceDb, Self::Embedding];
+    const ALL: [DependencyId; 4] = [
+        Self::Ollama,
+        Self::OpenRouter,
+        Self::LanceDb,
+        Self::Embedding,
+    ];
 }
 
 impl std::fmt::Display for DependencyId {
@@ -91,6 +98,7 @@ impl DepState {
 /// Lock-free circuit breaker for dependency health.
 pub struct DependencyHealth {
     deps: HashMap<DependencyId, DepState>,
+    openrouter_configured: AtomicBool,
     recovery_timeout: Duration,
     epoch: Instant,
 }
@@ -104,6 +112,7 @@ impl DependencyHealth {
         }
         Self {
             deps,
+            openrouter_configured: AtomicBool::new(false),
             recovery_timeout,
             epoch: Instant::now(),
         }
@@ -114,12 +123,36 @@ impl DependencyHealth {
         Self::new(Duration::from_secs(1))
     }
 
+    /// Create a tracker that records status but never suppresses a call.
+    ///
+    /// [`check`](Self::check) always returns `Ok`, so every call probes its
+    /// dependency and a failure is only ever attributed to the call that
+    /// actually made it. [`status`](Self::status) still reports what happened.
+    ///
+    /// Intended for sequential batch jobs, whose per-item error handling cannot
+    /// tell a suppressed call apart from a genuinely failed one and would
+    /// persist the difference. Request-serving paths want [`with_defaults`](Self::with_defaults)
+    /// instead: there, failing fast protects a struggling dependency.
+    pub fn without_circuit_breaking() -> Self {
+        Self::new(Duration::ZERO)
+    }
+
     fn nanos_since_epoch(&self) -> u64 {
         self.epoch.elapsed().as_nanos() as u64
     }
 
     fn dep(&self, id: DependencyId) -> &DepState {
         &self.deps[&id]
+    }
+
+    fn is_tracked(&self, id: DependencyId) -> bool {
+        id != DependencyId::OpenRouter || self.openrouter_configured.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_configured(&self, id: DependencyId) {
+        if id == DependencyId::OpenRouter {
+            self.openrouter_configured.store(true, Ordering::Release);
+        }
     }
 
     /// Check whether a dependency is available. Returns `Ok(())` if healthy
@@ -164,6 +197,7 @@ impl DependencyHealth {
 
     /// Record a failure for a dependency. Transitions to Down.
     pub fn report_failure(&self, id: DependencyId, error: &str) {
+        self.mark_configured(id);
         let dep = self.dep(id);
         dep.state.store(DependencyStatus::DOWN, Ordering::Release);
         dep.last_checked_nanos
@@ -173,6 +207,7 @@ impl DependencyHealth {
 
     /// Record a success for a dependency. Transitions to Healthy.
     pub fn report_success(&self, id: DependencyId) {
+        self.mark_configured(id);
         let dep = self.dep(id);
         dep.state
             .store(DependencyStatus::HEALTHY, Ordering::Release);
@@ -187,6 +222,9 @@ impl DependencyHealth {
         let mut result = HashMap::new();
 
         for id in DependencyId::ALL {
+            if !self.is_tracked(id) {
+                continue;
+            }
             let dep = self.dep(id);
             let state = DependencyStatus::from_u8(dep.state.load(Ordering::Acquire));
             let last_nanos = dep.last_checked_nanos.load(Ordering::Acquire);
@@ -220,8 +258,9 @@ impl DependencyHealth {
     /// Returns true if all dependencies are healthy.
     pub fn all_healthy(&self) -> bool {
         DependencyId::ALL.iter().all(|id| {
-            DependencyStatus::from_u8(self.dep(*id).state.load(Ordering::Acquire))
-                == DependencyStatus::Healthy
+            !self.is_tracked(*id)
+                || DependencyStatus::from_u8(self.dep(*id).state.load(Ordering::Acquire))
+                    == DependencyStatus::Healthy
         })
     }
 }
@@ -251,6 +290,35 @@ mod tests {
         let err = result.unwrap_err();
         assert!(err.is_dependency_unavailable());
         assert!(err.to_string().contains("connection refused"));
+    }
+
+    #[test]
+    fn without_circuit_breaking_never_suppresses_a_call() {
+        let health = DependencyHealth::without_circuit_breaking();
+        health.report_failure(DependencyId::Ollama, "transient blip");
+
+        // The contrast that gives this test teeth: the default tracker refuses
+        // the next call, attributing one blip to callers that never ran.
+        let default = DependencyHealth::with_defaults();
+        default.report_failure(DependencyId::Ollama, "transient blip");
+        assert!(default.check(DependencyId::Ollama).is_err());
+
+        assert!(health.check(DependencyId::Ollama).is_ok());
+        assert!(health.check(DependencyId::Ollama).is_ok());
+    }
+
+    #[test]
+    fn without_circuit_breaking_still_reports_the_failure() {
+        let health = DependencyHealth::without_circuit_breaking();
+        health.report_failure(DependencyId::Ollama, "connection refused");
+
+        // Not suppressing calls must not mean losing the signal.
+        let status = health.status();
+        assert_eq!(
+            status["ollama"].error.as_deref(),
+            Some("connection refused")
+        );
+        assert!(!health.all_healthy());
     }
 
     #[test]
@@ -321,11 +389,12 @@ mod tests {
     }
 
     #[test]
-    fn status_snapshot_includes_all_deps() {
+    fn status_snapshot_omits_unconfigured_openrouter() {
         let health = DependencyHealth::with_defaults();
         let status = health.status();
 
         assert!(status.contains_key("ollama"));
+        assert!(!status.contains_key("openrouter"));
         assert!(status.contains_key("lancedb"));
         assert!(status.contains_key("embedding"));
 
@@ -334,6 +403,17 @@ mod tests {
             assert!(info.last_checked_secs_ago.is_none()); // never checked
             assert!(info.error.is_none());
         }
+    }
+
+    #[test]
+    fn all_healthy_ignores_unconfigured_openrouter() {
+        let health = DependencyHealth::with_defaults();
+        health
+            .dep(DependencyId::OpenRouter)
+            .state
+            .store(DependencyStatus::DOWN, Ordering::Release);
+
+        assert!(health.all_healthy());
     }
 
     #[test]
@@ -391,6 +471,7 @@ mod tests {
     #[test]
     fn dependency_id_display() {
         assert_eq!(DependencyId::Ollama.to_string(), "ollama");
+        assert_eq!(DependencyId::OpenRouter.to_string(), "openrouter");
         assert_eq!(DependencyId::LanceDb.to_string(), "lancedb");
         assert_eq!(DependencyId::Embedding.to_string(), "embedding");
     }

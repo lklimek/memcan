@@ -1,9 +1,40 @@
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use tracing::{debug, warn};
 
 use crate::embed::{model_dims, resolve_model};
 use crate::error::{MemcanError, Result};
+
+/// Runtime-selectable LLM backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlmProviderKind {
+    Ollama,
+    OpenRouter,
+}
+
+impl FromStr for LlmProviderKind {
+    type Err = MemcanError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "ollama" => Ok(Self::Ollama),
+            "openrouter" => Ok(Self::OpenRouter),
+            _ => Err(MemcanError::Config(format!(
+                "unknown LLM provider '{value}'; expected 'ollama' or 'openrouter'"
+            ))),
+        }
+    }
+}
+
+impl std::fmt::Display for LlmProviderKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ollama => f.write_str("ollama"),
+            Self::OpenRouter => f.write_str("openrouter"),
+        }
+    }
+}
 
 /// Expand a leading `~` to the user's home directory.
 fn expand_tilde(path: &str) -> String {
@@ -27,10 +58,19 @@ pub struct Settings {
     pub tech_stack: String,
     pub distill_memories: bool,
     pub log_file: String,
-    /// LLM model name. With the default `ollama-rs-llm` feature, this is a
-    /// bare Ollama model name like `"qwen3.5:9b"`. With `genai-llm`, prefix
-    /// with provider, e.g. `"ollama::qwen3.5:9b"`, `"gpt-4o"`.
+    /// Ollama model name, e.g. `"qwen3.5:9b"`.
+    /// The legacy `"ollama::"` prefix is accepted for compatibility.
     pub llm_model: String,
+    /// Primary LLM backend.
+    pub llm_provider: LlmProviderKind,
+    /// Optional LLM backend used when the primary is unavailable.
+    pub llm_fallback_provider: Option<LlmProviderKind>,
+    /// Bearer key for OpenRouter.
+    pub openrouter_api_key: Option<String>,
+    /// OpenRouter model slug, e.g. `"openai/gpt-4o-mini"`.
+    pub openrouter_model: String,
+    /// OpenRouter-compatible API base URL.
+    pub openrouter_base_url: String,
     /// Fastembed model name, e.g. `"AllMiniLML6V2"`, `"BGESmallENV15"`.
     pub embed_model: String,
     /// Embedding vector dimensions (derived automatically from embed_model).
@@ -69,6 +109,14 @@ impl std::fmt::Debug for Settings {
             .field("distill_memories", &self.distill_memories)
             .field("log_file", &self.log_file)
             .field("llm_model", &self.llm_model)
+            .field("llm_provider", &self.llm_provider)
+            .field("llm_fallback_provider", &self.llm_fallback_provider)
+            .field(
+                "openrouter_api_key",
+                &self.openrouter_api_key.as_ref().map(|_| "***"),
+            )
+            .field("openrouter_model", &self.openrouter_model)
+            .field("openrouter_base_url", &self.openrouter_base_url)
             .field("embed_model", &self.embed_model)
             .field("embed_dims", &self.embed_dims)
             .field("ollama_host", &self.ollama_host)
@@ -102,6 +150,11 @@ impl Default for Settings {
             distill_memories: true,
             log_file: "~/.claude/logs/memcan-mcp.log".into(),
             llm_model: "lklimek/gemma4-text:26b-a4b-it-qat".into(),
+            llm_provider: LlmProviderKind::Ollama,
+            llm_fallback_provider: None,
+            openrouter_api_key: None,
+            openrouter_model: String::new(),
+            openrouter_base_url: "https://openrouter.ai/api/v1".into(),
             embed_model: "MultilingualE5Large".into(),
             embed_dims: 1024,
             ollama_host: None,
@@ -160,7 +213,28 @@ impl Settings {
             .or_else(|_| std::env::var("LOG_FILE"))
             .unwrap_or_else(|_| defaults.log_file.clone());
         let log_file = expand_tilde(&log_file_raw);
-        let llm_model = env_or("LLM_MODEL", &defaults.llm_model);
+        let llm_model_env = std::env::var("LLM_MODEL").ok();
+        let llm_model = llm_model_env
+            .clone()
+            .unwrap_or_else(|| defaults.llm_model.clone());
+        let llm_provider = env_or("LLM_PROVIDER", &defaults.llm_provider.to_string()).parse()?;
+        let llm_fallback_provider = std::env::var("LLM_FALLBACK_PROVIDER")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(|value| value.parse())
+            .transpose()?;
+        // Trim before filtering: a whitespace-only value is not a key, and a
+        // padded one would otherwise be sent verbatim as a bearer token and
+        // 401 on every request.
+        let openrouter_api_key = std::env::var("OPENROUTER_API_KEY")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        if openrouter_api_key.is_some() {
+            debug!("OPENROUTER_API_KEY configured");
+        }
+        let openrouter_model = env_or("OPENROUTER_MODEL", &defaults.openrouter_model);
+        let openrouter_base_url = env_or("OPENROUTER_BASE_URL", &defaults.openrouter_base_url);
         let embed_model = env_or("EMBED_MODEL", &defaults.embed_model);
         let resolved_embed = resolve_model(&embed_model).map_err(|_| {
             MemcanError::Config(format!(
@@ -214,6 +288,11 @@ impl Settings {
             distill_memories,
             log_file,
             llm_model,
+            llm_provider,
+            llm_fallback_provider,
+            openrouter_api_key,
+            openrouter_model,
+            openrouter_base_url,
             embed_model,
             embed_dims,
             ollama_host,
@@ -227,6 +306,17 @@ impl Settings {
             compact_fragment_threshold,
         };
         settings.validate()?;
+        if llm_model_is_ignored(
+            settings.llm_provider,
+            llm_model_env.as_deref(),
+            &defaults.llm_model,
+        ) {
+            warn!(
+                llm_model = %settings.llm_model,
+                openrouter_model = %settings.openrouter_model,
+                "LLM_MODEL is ignored while LLM_PROVIDER=openrouter; set OPENROUTER_MODEL to choose the OpenRouter model"
+            );
+        }
         Ok(settings)
     }
 
@@ -236,12 +326,47 @@ impl Settings {
             return Err(MemcanError::Config("LANCEDB_PATH must not be empty".into()));
         }
 
-        // -- llm_model format check (warn only, genai-llm needs provider prefix) --
-        #[cfg(all(feature = "genai-llm", not(feature = "ollama-rs-llm")))]
-        if !self.llm_model.contains("::") {
+        let openrouter_participates = self.llm_provider == LlmProviderKind::OpenRouter
+            || self.llm_fallback_provider == Some(LlmProviderKind::OpenRouter);
+        if openrouter_participates {
+            // A blank key is a missing key. `load()` already trims and drops
+            // blank values, so this guards `Settings` built programmatically —
+            // without it such a key reaches the HTTP client as an empty bearer
+            // token and 401s on every request instead of failing at startup.
+            let api_key_is_blank = self
+                .openrouter_api_key
+                .as_ref()
+                .is_none_or(|key| key.trim().is_empty());
+            if api_key_is_blank {
+                return Err(MemcanError::Config(
+                    "OPENROUTER_API_KEY is required when OpenRouter is configured".into(),
+                ));
+            }
+            if self.openrouter_model.is_empty() {
+                return Err(MemcanError::Config(
+                    "OPENROUTER_MODEL is required when OpenRouter is configured".into(),
+                ));
+            }
+
+            let openrouter_url =
+                reqwest::Url::parse(&self.openrouter_base_url).map_err(|error| {
+                    MemcanError::Config(format!("OPENROUTER_BASE_URL is invalid: {error}"))
+                })?;
+            let loopback = matches!(
+                openrouter_url.host_str(),
+                Some("localhost" | "127.0.0.1" | "::1" | "[::1]")
+            );
+            if openrouter_url.scheme() != "https" && !loopback {
+                return Err(MemcanError::Config(
+                    "OPENROUTER_BASE_URL must use HTTPS when configured with a non-loopback host"
+                        .into(),
+                ));
+            }
+        }
+        if self.llm_fallback_provider == Some(self.llm_provider) {
             warn!(
-                "LLM_MODEL '{}' is missing a provider prefix (e.g. 'ollama::model-name')",
-                self.llm_model
+                provider = %self.llm_provider,
+                "LLM fallback provider matches the primary provider"
             );
         }
 
@@ -285,6 +410,21 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
+/// Report whether a configured `LLM_MODEL` has no effect.
+///
+/// `LLM_MODEL` names the Ollama model; the OpenRouter backend reads
+/// `OPENROUTER_MODEL` instead. Only an explicit, non-default `llm_model_env`
+/// is worth reporting — an unset or default-valued variable carries no
+/// operator intent to contradict.
+fn llm_model_is_ignored(
+    provider: LlmProviderKind,
+    llm_model_env: Option<&str>,
+    default_model: &str,
+) -> bool {
+    provider == LlmProviderKind::OpenRouter
+        && llm_model_env.is_some_and(|model| !model.is_empty() && model != default_model)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,6 +463,204 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn tc10_openrouter_configuration_requires_key_and_model() {
+        let missing_key = Settings {
+            llm_provider: LlmProviderKind::OpenRouter,
+            openrouter_model: "openai/gpt-4o-mini".into(),
+            ..Settings::default()
+        };
+        let error = missing_key.validate().unwrap_err().to_string();
+        assert!(error.contains("OPENROUTER_API_KEY"));
+
+        let missing_model = Settings {
+            llm_provider: LlmProviderKind::OpenRouter,
+            openrouter_api_key: Some("test-key".into()),
+            ..Settings::default()
+        };
+        let error = missing_model.validate().unwrap_err().to_string();
+        assert!(error.contains("OPENROUTER_MODEL"));
+
+        let configured = Settings {
+            llm_provider: LlmProviderKind::OpenRouter,
+            openrouter_api_key: Some("test-key".into()),
+            openrouter_model: "openai/gpt-4o-mini".into(),
+            ..Settings::default()
+        };
+        assert!(configured.validate().is_ok());
+
+        let fallback = Settings {
+            llm_fallback_provider: Some(LlmProviderKind::OpenRouter),
+            openrouter_api_key: Some("test-key".into()),
+            openrouter_model: "openai/gpt-4o-mini".into(),
+            ..Settings::default()
+        };
+        assert!(fallback.validate().is_ok());
+
+        let fallback_missing_key = Settings {
+            llm_fallback_provider: Some(LlmProviderKind::OpenRouter),
+            openrouter_model: "openai/gpt-4o-mini".into(),
+            ..Settings::default()
+        };
+        assert!(
+            fallback_missing_key
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("OPENROUTER_API_KEY")
+        );
+
+        let fallback_missing_model = Settings {
+            llm_fallback_provider: Some(LlmProviderKind::OpenRouter),
+            openrouter_api_key: Some("test-key".into()),
+            ..Settings::default()
+        };
+        assert!(
+            fallback_missing_model
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("OPENROUTER_MODEL")
+        );
+    }
+
+    #[test]
+    fn blank_openrouter_api_key_is_rejected_like_a_missing_one() {
+        // An empty or whitespace key would otherwise reach the HTTP client as an
+        // empty bearer token and 401 on every request instead of at startup.
+        for key in ["", "   "] {
+            let settings = Settings {
+                llm_provider: LlmProviderKind::OpenRouter,
+                openrouter_api_key: Some(key.into()),
+                openrouter_model: "openai/gpt-4o-mini".into(),
+                ..Settings::default()
+            };
+
+            assert!(
+                settings
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("OPENROUTER_API_KEY"),
+                "a {key:?} key must be rejected at startup"
+            );
+        }
+    }
+
+    #[test]
+    fn unused_openrouter_base_url_is_not_validated() {
+        let settings = Settings {
+            openrouter_base_url: "not-a-url".into(),
+            ..Settings::default()
+        };
+
+        assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn openrouter_http_requires_a_loopback_host() {
+        for base_url in [
+            "http://localhost:8080/v1",
+            "http://127.0.0.1:8080/v1",
+            "http://[::1]:8080/v1",
+        ] {
+            let loopback = Settings {
+                llm_provider: LlmProviderKind::OpenRouter,
+                openrouter_api_key: Some("test-key".into()),
+                openrouter_model: "openai/gpt-4o-mini".into(),
+                openrouter_base_url: base_url.into(),
+                ..Settings::default()
+            };
+            assert!(
+                loopback.validate().is_ok(),
+                "loopback URL should be accepted: {base_url}"
+            );
+        }
+
+        let remote = Settings {
+            llm_provider: LlmProviderKind::OpenRouter,
+            openrouter_api_key: Some("test-key".into()),
+            openrouter_model: "openai/gpt-4o-mini".into(),
+            openrouter_base_url: "http://openrouter.example/v1".into(),
+            ..Settings::default()
+        };
+        let error = remote.validate().unwrap_err().to_string();
+        assert!(error.contains("OPENROUTER_BASE_URL"));
+        assert!(error.contains("HTTPS"));
+    }
+
+    #[test]
+    fn tc11_provider_kind_parsing_is_case_insensitive() {
+        assert_eq!(
+            "ollama".parse::<LlmProviderKind>().unwrap(),
+            LlmProviderKind::Ollama
+        );
+        assert_eq!(
+            "OPENROUTER".parse::<LlmProviderKind>().unwrap(),
+            LlmProviderKind::OpenRouter
+        );
+        assert!("unknown".parse::<LlmProviderKind>().is_err());
+
+        let configured = Settings {
+            llm_provider: "ollama".parse().unwrap(),
+            llm_fallback_provider: Some("openrouter".parse().unwrap()),
+            openrouter_api_key: Some("test-key".into()),
+            openrouter_model: "openai/gpt-4o-mini".into(),
+            ..Settings::default()
+        };
+        assert_eq!(configured.llm_provider, LlmProviderKind::Ollama);
+        assert_eq!(
+            configured.llm_fallback_provider,
+            Some(LlmProviderKind::OpenRouter)
+        );
+        assert_eq!(Settings::default().llm_fallback_provider, None);
+    }
+
+    #[test]
+    fn tc14_settings_debug_redacts_openrouter_api_key() {
+        let settings = Settings {
+            openrouter_api_key: Some("raw-openrouter-secret".into()),
+            ..Settings::default()
+        };
+        let debug = format!("{settings:?}");
+        assert!(!debug.contains("raw-openrouter-secret"));
+        assert!(debug.contains("openrouter_api_key: Some(\"***\")"));
+    }
+
+    #[test]
+    fn llm_model_is_ignored_only_for_explicit_non_default_under_openrouter() {
+        let default = Settings::default().llm_model;
+
+        assert!(
+            llm_model_is_ignored(LlmProviderKind::OpenRouter, Some("qwen3.5:9b"), &default),
+            "an explicit non-default LLM_MODEL is dead config under OpenRouter"
+        );
+
+        // No operator intent to contradict: stay quiet rather than warn on every boot.
+        assert!(!llm_model_is_ignored(
+            LlmProviderKind::OpenRouter,
+            None,
+            &default
+        ));
+        assert!(!llm_model_is_ignored(
+            LlmProviderKind::OpenRouter,
+            Some(&default),
+            &default
+        ));
+        assert!(!llm_model_is_ignored(
+            LlmProviderKind::OpenRouter,
+            Some(""),
+            &default
+        ));
+
+        // Ollama primary consumes LLM_MODEL, including as OpenRouter's fallback peer.
+        assert!(!llm_model_is_ignored(
+            LlmProviderKind::Ollama,
+            Some("qwen3.5:9b"),
+            &default
+        ));
     }
 
     #[test]

@@ -1,7 +1,7 @@
-//! Multi-provider LLM chat via the [`genai`] crate.
+//! Multi-adapter LLM chat via the [`genai`] crate.
 //!
-//! Replaces the old Ollama-only HTTP client with a provider-agnostic interface
-//! that natively supports Ollama, OpenAI, Anthropic, Gemini, and others.
+//! [`GenaiLlmProvider`] selects an adapter from the model name at call time;
+//! OpenRouter is one supported configuration.
 
 use crate::error::{MemcanError, Result};
 use crate::llm_telemetry;
@@ -13,6 +13,65 @@ use genai::resolver::{AuthData, Endpoint};
 use genai::{Client, ModelIden};
 
 pub use crate::ollama::strip_ollama_prefix;
+
+/// Sort a chat failure into the availability class or the content class.
+///
+/// Transport faults and statuses that a retry elsewhere could survive (5xx,
+/// 408, 429), rejected credentials (401), and an exhausted balance (402) map to
+/// [`MemcanError::LlmUnavailable`]: they are properties of the backend, so
+/// another backend may still serve the request. Every other failure — the
+/// remaining 4xx (including 403, which providers also use for guardrail and
+/// moderation blocks), malformed requests — is deterministic for this prompt
+/// and maps to [`MemcanError::LlmChat`], because another backend would reject
+/// it too.
+fn classify_chat_error(error: &genai::Error, model: &str) -> MemcanError {
+    use genai::webc::Error as WebcError;
+
+    let unavailable = match error {
+        genai::Error::WebAdapterCall { webc_error, .. }
+        | genai::Error::WebModelCall { webc_error, .. } => match webc_error {
+            WebcError::Reqwest(_) => true,
+            WebcError::ResponseFailedStatus { status, .. } => {
+                status_is_unavailable(status.as_u16())
+            }
+            _ => false,
+        },
+        genai::Error::HttpError { status, .. } => status_is_unavailable(status.as_u16()),
+        genai::Error::WebStream { .. } => true,
+        _ => false,
+    };
+
+    let context = format!("genai chat call to model '{model}' failed");
+    let detail = error.to_string();
+    if unavailable {
+        MemcanError::LlmUnavailable { context, detail }
+    } else {
+        MemcanError::LlmChat { context, detail }
+    }
+}
+
+/// `true` for statuses that indicate the backend — not the prompt — is at
+/// fault, so another backend may still serve the request.
+///
+/// 401 and 402 count as unavailable: a rejected credential and an exhausted
+/// balance are both properties of the backend, not of the prompt. The other
+/// backend authenticates and bills separately (or not at all), so it can still
+/// serve the request — and a backend whose key is revoked or whose credits ran
+/// out is genuinely unusable, which is what the breaker exists to record.
+///
+/// 403 deliberately does **not**. Providers overload it: OpenRouter returns 403
+/// for guardrail blocks and moderation flags as well as for permissions, and a
+/// blocked prompt is deterministic for that prompt. Classing it as unavailable
+/// would mark a serving backend Down and re-send the blocked content to a third
+/// party — the two things [`FallbackLlmProvider::chat`](crate::llm_fallback)
+/// exists to avoid. A genuine permissions 403 is the rarer case, and it
+/// degrades to a plain error rather than a wrong failover.
+///
+/// Takes a raw code rather than a `StatusCode`: genai links its own `reqwest`,
+/// which need not be the one this crate depends on.
+fn status_is_unavailable(status: u16) -> bool {
+    (500..600).contains(&status) || matches!(status, 401 | 402 | 408 | 429)
+}
 
 /// LLM provider backed by [`genai::Client`].
 ///
@@ -41,7 +100,7 @@ impl GenaiLlmProvider {
     /// Build from application settings.
     ///
     /// Always installs a `ServiceTargetResolver` that:
-    /// 1. Strips the `"ollama::"` prefix from model names (genai v0.3.5 bug workaround)
+    /// 1. Strips the `"ollama::"` prefix from model names (genai 0.5 compatibility)
     /// 2. Applies `OLLAMA_HOST` endpoint override when configured
     /// 3. Applies `OLLAMA_API_KEY` bearer auth when configured
     ///
@@ -62,7 +121,7 @@ impl GenaiLlmProvider {
         let client = Client::builder()
             .with_service_target_resolver_fn(move |mut st: genai::ServiceTarget| {
                 if st.model.adapter_kind == AdapterKind::Ollama {
-                    // genai v0.3.5 keeps the "ollama::" prefix in model_name,
+                    // genai 0.5 keeps the "ollama::" prefix in model_name,
                     // which Ollama rejects with "model is required".
                     let raw_name: &str = &st.model.model_name;
                     let stripped = strip_ollama_prefix(raw_name);
@@ -86,6 +145,34 @@ impl GenaiLlmProvider {
             default_model: settings.llm_model.clone(),
             ollama_host: settings.ollama_host.clone(),
             ollama_api_key: settings.ollama_api_key.clone(),
+        }
+    }
+
+    /// Build an OpenRouter client; context-window discovery is unsupported.
+    pub fn from_openrouter_settings(settings: &crate::config::Settings) -> Self {
+        let endpoint = Endpoint::from_owned(format!(
+            "{}/",
+            settings.openrouter_base_url.trim_end_matches('/')
+        ));
+        let auth_key = settings.openrouter_api_key.clone().unwrap_or_default();
+        let resolver_key = auth_key.clone();
+
+        let client = Client::builder()
+            // genai 0.5 resolves auth before applying the target override.
+            .with_auth_resolver_fn(move |_| Ok(Some(AuthData::Key(auth_key.clone()))))
+            .with_service_target_resolver_fn(move |mut st: genai::ServiceTarget| {
+                st.endpoint = endpoint.clone();
+                st.model = ModelIden::new(AdapterKind::OpenAI, st.model.model_name.clone());
+                st.auth = AuthData::Key(resolver_key.clone());
+                Ok(st)
+            })
+            .build();
+
+        Self {
+            client,
+            default_model: settings.openrouter_model.clone(),
+            ollama_host: None,
+            ollama_api_key: None,
         }
     }
 
@@ -149,10 +236,7 @@ impl LlmProvider for GenaiLlmProvider {
             .client
             .exec_chat(model, req, Some(&chat_opts))
             .await
-            .map_err(|e| MemcanError::LlmChat {
-                context: format!("genai chat call to model '{model}' failed"),
-                detail: e.to_string(),
-            })?;
+            .map_err(|e| classify_chat_error(&e, model))?;
 
         // Emit token telemetry before consuming the response.
         // genai Usage fields are Option<i32>; cast to u64 (negative = invalid, treat as None).
@@ -221,10 +305,117 @@ impl LlmProvider for GenaiLlmProvider {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn tc13_openrouter_uses_openai_endpoint_auth_and_usage_response() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .match_header("authorization", "Bearer test-openrouter-key")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "model": "openai/gpt-4o-mini"
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "openai/gpt-4o-mini",
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "from openrouter"},
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {
+                        "prompt_tokens": 7,
+                        "completion_tokens": 3,
+                        "total_tokens": 10
+                    }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let settings = crate::config::Settings {
+            openrouter_api_key: Some("test-openrouter-key".into()),
+            openrouter_model: "openai/gpt-4o-mini".into(),
+            openrouter_base_url: server.url(),
+            ..crate::config::Settings::default()
+        };
+        let provider = GenaiLlmProvider::from_openrouter_settings(&settings);
+
+        let result = provider
+            .chat(
+                provider.default_model(),
+                &[LlmMessage {
+                    role: Role::User,
+                    content: "hello".into(),
+                }],
+                Some(LlmOptions {
+                    op: "tc13_openrouter",
+                    ..LlmOptions::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, "from openrouter");
+        mock.assert_async().await;
+    }
+
     #[test]
     fn test_default_model() {
         let provider = GenaiLlmProvider::new(Client::default(), "test-model".into());
         assert_eq!(provider.default_model(), "test-model");
+    }
+
+    #[test]
+    fn rejected_credentials_are_an_availability_fault() {
+        // A rotated OpenRouter key must not strand requests that a healthy
+        // local Ollama could serve: 401 describes the backend, not the prompt,
+        // so it has to reach the fallback and the breaker.
+        assert!(super::status_is_unavailable(401));
+    }
+
+    #[test]
+    fn an_exhausted_balance_is_an_availability_fault() {
+        // OpenRouter returns 402 when the account is out of credits. The
+        // fallback bills separately, so it can still serve the request — and a
+        // backend that cannot be paid for is as unusable as one with a revoked
+        // key.
+        assert!(super::status_is_unavailable(402));
+    }
+
+    #[test]
+    fn forbidden_stays_a_content_fault() {
+        // Providers overload 403: OpenRouter returns it for guardrail and
+        // moderation blocks, which are deterministic for the prompt. Classing
+        // it as unavailable would mark a serving backend Down and ship the
+        // blocked content to a third party.
+        assert!(!super::status_is_unavailable(403));
+    }
+
+    #[test]
+    fn backend_faults_are_availability_faults() {
+        for status in [500, 502, 503, 599, 408, 429] {
+            assert!(
+                super::status_is_unavailable(status),
+                "{status} should be an availability fault"
+            );
+        }
+    }
+
+    #[test]
+    fn request_faults_stay_content_faults() {
+        // These are deterministic for the prompt: another backend rejects them
+        // too, so they must not egress or trip the breaker.
+        for status in [400, 404, 413, 422] {
+            assert!(
+                !super::status_is_unavailable(status),
+                "{status} should be a content fault"
+            );
+        }
     }
 
     #[test]
