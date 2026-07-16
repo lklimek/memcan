@@ -25,7 +25,10 @@ pub async fn run(args: &IndexCodeArgs) -> MemcanResult<()> {
         MemcanError::Other("--tech-stack is required unless --drop is specified".into())
     })?;
 
-    let health = Arc::new(DependencyHealth::with_defaults());
+    // Indexing cannot tell a suppressed call from an undescribable symbol: both
+    // yield `description: None`, which the content-hash skip then cements on
+    // every later run. Probe per symbol so only its own failure costs it one.
+    let health = Arc::new(DependencyHealth::without_circuit_breaking());
     let (llm, llm_model) = create_llm_provider(&ctx.settings, health)?;
 
     let params = IndexCodeParams {

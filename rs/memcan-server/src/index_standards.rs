@@ -23,7 +23,10 @@ pub async fn run(args: &IndexStandardsArgs) -> MemcanResult<()> {
         return Ok(());
     }
 
-    let health = Arc::new(DependencyHealth::with_defaults());
+    // Sequential batch run: a suppressed chunk is indistinguishable from a
+    // failed one, so probe every chunk rather than attributing one blip to its
+    // successors.
+    let health = Arc::new(DependencyHealth::without_circuit_breaking());
     let (llm, default_model) = create_llm_provider(&ctx.settings, health)?;
     llm.init().await?;
     let model = args.model.as_deref().unwrap_or(&default_model);

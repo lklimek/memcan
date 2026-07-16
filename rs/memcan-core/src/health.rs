@@ -123,6 +123,20 @@ impl DependencyHealth {
         Self::new(Duration::from_secs(1))
     }
 
+    /// Create a tracker that records status but never suppresses a call.
+    ///
+    /// [`check`](Self::check) always returns `Ok`, so every call probes its
+    /// dependency and a failure is only ever attributed to the call that
+    /// actually made it. [`status`](Self::status) still reports what happened.
+    ///
+    /// Intended for sequential batch jobs, whose per-item error handling cannot
+    /// tell a suppressed call apart from a genuinely failed one and would
+    /// persist the difference. Request-serving paths want [`with_defaults`](Self::with_defaults)
+    /// instead: there, failing fast protects a struggling dependency.
+    pub fn without_circuit_breaking() -> Self {
+        Self::new(Duration::ZERO)
+    }
+
     fn nanos_since_epoch(&self) -> u64 {
         self.epoch.elapsed().as_nanos() as u64
     }
@@ -276,6 +290,35 @@ mod tests {
         let err = result.unwrap_err();
         assert!(err.is_dependency_unavailable());
         assert!(err.to_string().contains("connection refused"));
+    }
+
+    #[test]
+    fn without_circuit_breaking_never_suppresses_a_call() {
+        let health = DependencyHealth::without_circuit_breaking();
+        health.report_failure(DependencyId::Ollama, "transient blip");
+
+        // The contrast that gives this test teeth: the default tracker refuses
+        // the next call, attributing one blip to callers that never ran.
+        let default = DependencyHealth::with_defaults();
+        default.report_failure(DependencyId::Ollama, "transient blip");
+        assert!(default.check(DependencyId::Ollama).is_err());
+
+        assert!(health.check(DependencyId::Ollama).is_ok());
+        assert!(health.check(DependencyId::Ollama).is_ok());
+    }
+
+    #[test]
+    fn without_circuit_breaking_still_reports_the_failure() {
+        let health = DependencyHealth::without_circuit_breaking();
+        health.report_failure(DependencyId::Ollama, "connection refused");
+
+        // Not suppressing calls must not mean losing the signal.
+        let status = health.status();
+        assert_eq!(
+            status["ollama"].error.as_deref(),
+            Some("connection refused")
+        );
+        assert!(!health.all_healthy());
     }
 
     #[test]
