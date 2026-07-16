@@ -209,8 +209,8 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 |---|---|---|
 | `MEMCAN_LISTEN` | `127.0.0.1:8191` | Server bind address (Docker overrides to `0.0.0.0:8191`) |
 | `MEMCAN_API_KEY` | *(none)* | Bearer token auth for MCP API. Required to use destructive tools (`delete_code_records` is refused when unset). |
-| `WEBUI_USERNAME` | *(none)* | Shared username for the read-only task UI. Empty means unset; `/ui*` is not mounted unless both WebUI credentials are non-empty. |
-| `WEBUI_PASSWORD` | *(none)* | Shared password for the read-only task UI. Empty means unset; the value is masked in `Settings` debug output. |
+| `MEMCAN_WEBUI_USERNAME` | *(none)* | Shared username for the read-only task UI. Empty means unset; `/ui*` is not mounted unless both WebUI credentials are non-empty. |
+| `MEMCAN_WEBUI_PASSWORD` | *(none)* | Shared password for the read-only task UI. Empty means unset; the value is masked in `Settings` debug output. |
 | `MEMCAN_URL` | `http://localhost:8190` | Server URL for thin clients (`memcan`) |
 | `MEMCAN_LOG_FILE` | *(none = stdout)* | Log file path (renamed from `LOG_FILE`) |
 | `LANCEDB_PATH` | `~/.local/share/memcan/lancedb` | LanceDB storage directory |
@@ -227,10 +227,11 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 
 ### Tasks web UI deployment
 
-The read-only task browser is available at `/ui/tasks` only when both `WEBUI_USERNAME` and
-`WEBUI_PASSWORD` are non-empty. The bundled Docker Compose entrypoint is plain HTTP and does not
-provide TLS out of the box. Its dedicated `/ui*` router bypasses the API's Bearer middleware so
-the application's Basic Auth can work, but it remains restricted by `TRAEFIK_IP_ALLOWLIST`.
+The read-only task browser is available at `/ui/tasks` only when both
+`MEMCAN_WEBUI_USERNAME` and `MEMCAN_WEBUI_PASSWORD` are non-empty. The bundled Docker Compose
+entrypoint is plain HTTP and does not provide TLS out of the box. Its dedicated `/ui*` router bypasses
+the API's Bearer middleware so the application's Basic Auth can work, but it remains restricted by
+`TRAEFIK_IP_ALLOWLIST`.
 
 Keep the allowlist at its default localhost-only setting (`127.0.0.1/32,::1/128`) until TLS is
 configured. Exposing `/ui*` beyond localhost requires the operator to add a Traefik TLS entrypoint

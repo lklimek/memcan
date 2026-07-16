@@ -2242,7 +2242,9 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
         let app = match crate::ui::router(&ctx.settings) {
             Some(ui) => app.merge(ui),
             None => {
-                warn!("web UI disabled: set WEBUI_USERNAME and WEBUI_PASSWORD to enable /ui*");
+                warn!(
+                    "web UI disabled: set MEMCAN_WEBUI_USERNAME and MEMCAN_WEBUI_PASSWORD to enable /ui*"
+                );
                 app
             }
         };

@@ -35,9 +35,9 @@ The Claude Code plugin connects to the server via HTTP MCP transport (Streamable
 
 ### Read-only tasks web UI
 
-Set both `WEBUI_USERNAME` and `WEBUI_PASSWORD` to mount the task browser at `/ui/tasks`; leaving
-either value unset or empty keeps every `/ui*` route unmounted. The password is masked in settings
-debug output.
+Set both `MEMCAN_WEBUI_USERNAME` and `MEMCAN_WEBUI_PASSWORD` to mount the task browser at
+`/ui/tasks`; leaving either value unset or empty keeps every `/ui*` route unmounted. The password is
+masked in settings debug output.
 
 The bundled Docker Compose entrypoint is plain HTTP and does not provide TLS out of the box. Its
 dedicated `/ui*` router bypasses the API's Bearer middleware so the application's Basic Auth can

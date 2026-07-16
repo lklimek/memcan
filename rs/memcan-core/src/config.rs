@@ -187,10 +187,10 @@ impl Settings {
         let api_key = std::env::var("MEMCAN_API_KEY")
             .ok()
             .filter(|s| !s.is_empty());
-        let webui_username = std::env::var("WEBUI_USERNAME")
+        let webui_username = std::env::var("MEMCAN_WEBUI_USERNAME")
             .ok()
             .filter(|s| !s.is_empty());
-        let webui_password = std::env::var("WEBUI_PASSWORD")
+        let webui_password = std::env::var("MEMCAN_WEBUI_PASSWORD")
             .ok()
             .filter(|s| !s.is_empty());
         let url = env_or("MEMCAN_URL", &defaults.url);
@@ -371,8 +371,8 @@ mod tests {
             ("HOME", Some(temp_path)),
             ("XDG_CONFIG_HOME", Some(temp_path)),
             ("XDG_DATA_HOME", Some(temp_path)),
-            ("WEBUI_USERNAME", Some("operator")),
-            ("WEBUI_PASSWORD", Some("correct horse")),
+            ("MEMCAN_WEBUI_USERNAME", Some("operator")),
+            ("MEMCAN_WEBUI_PASSWORD", Some("correct horse")),
         ]);
 
         let settings = Settings::load().unwrap();
@@ -381,8 +381,8 @@ mod tests {
 
         // SAFETY: this serialized test owns and later restores these variables.
         unsafe {
-            std::env::set_var("WEBUI_USERNAME", "");
-            std::env::set_var("WEBUI_PASSWORD", "still-set");
+            std::env::set_var("MEMCAN_WEBUI_USERNAME", "");
+            std::env::set_var("MEMCAN_WEBUI_PASSWORD", "still-set");
         }
         let settings = Settings::load().unwrap();
         assert!(settings.webui_username.is_none());
@@ -390,8 +390,8 @@ mod tests {
 
         // SAFETY: this serialized test owns and later restores these variables.
         unsafe {
-            std::env::set_var("WEBUI_USERNAME", "operator");
-            std::env::remove_var("WEBUI_PASSWORD");
+            std::env::set_var("MEMCAN_WEBUI_USERNAME", "operator");
+            std::env::remove_var("MEMCAN_WEBUI_PASSWORD");
         }
         let settings = Settings::load().unwrap();
         assert_eq!(settings.webui_username.as_deref(), Some("operator"));
@@ -399,12 +399,19 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_webui_password_is_masked_in_settings_debug() {
-        let settings = Settings {
-            webui_username: Some("operator".into()),
-            webui_password: Some("never-print-me".into()),
-            ..Settings::default()
-        };
+        let temp = tempfile::tempdir().unwrap();
+        let temp_path = temp.path().to_str().unwrap();
+        let _environment = EnvGuard::set(&[
+            ("HOME", Some(temp_path)),
+            ("XDG_CONFIG_HOME", Some(temp_path)),
+            ("XDG_DATA_HOME", Some(temp_path)),
+            ("MEMCAN_WEBUI_USERNAME", Some("operator")),
+            ("MEMCAN_WEBUI_PASSWORD", Some("never-print-me")),
+        ]);
+
+        let settings = Settings::load().unwrap();
 
         let debug = format!("{settings:?}");
         assert!(debug.contains("operator"));
