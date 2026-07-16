@@ -46,7 +46,9 @@ added. Exposing `/ui*` beyond localhost requires an operator-configured Traefik 
 certificate resolver, or an upstream TLS-terminating reverse proxy. Plain-HTTP Basic Auth sends
 base64-encoded, not encrypted, credentials.
 Login throttling is intentionally delegated to the trusted proxy/network layer, where client IPs
-can be identified safely, and must be revisited before broader exposure. The shared Basic Auth
+can be identified safely: the bundled `docker-compose.yml` applies a Traefik `ratelimit` middleware
+(`average=10` req/s, `burst=20`) to the `memcan-ui` router. Those values, and the choice to keep
+throttling out of the application, must be revisited before broader exposure. The shared Basic Auth
 account has no application logout; credentials normally persist for the browser session.
 
 ### Stack

@@ -239,9 +239,11 @@ and certificate resolver, or place another TLS-terminating reverse proxy upstrea
 Basic Auth is insecure because its credentials are merely base64-encoded.
 
 Application-level login throttling is deferred for this trusted-network MVP. Rate limiting belongs
-at the proxy or network layer, where the deployment has an established client-IP trust model;
-revisit this decision before exposing the UI beyond trusted networks. Basic Auth also has no
-application logout operation: browsers retain the shared credentials for their session.
+at the proxy or network layer, where the deployment has an established client-IP trust model: the
+bundled `docker-compose.yml` enforces it on the `memcan-ui` router through the Traefik `ratelimit`
+middleware (`average=10` req/s, `burst=20`). Revisit those values, and the decision to keep
+throttling out of the application, before exposing the UI beyond trusted networks. Basic Auth also
+has no application logout operation: browsers retain the shared credentials for their session.
 
 ## LLM Token Telemetry
 
