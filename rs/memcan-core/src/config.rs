@@ -45,6 +45,10 @@ pub struct Settings {
     pub listen: String,
     /// Bearer token for MemCan server auth.
     pub api_key: Option<String>,
+    /// Shared username for the read-only tasks web UI.
+    pub webui_username: Option<String>,
+    /// Shared password for the read-only tasks web UI.
+    pub webui_password: Option<String>,
     /// MemCan server URL for thin clients, e.g. `"http://localhost:8190"`.
     pub url: String,
     /// Run full compaction (compact fragments + prune versions) on every table
@@ -74,6 +78,11 @@ impl std::fmt::Debug for Settings {
             )
             .field("listen", &self.listen)
             .field("api_key", &self.api_key.as_ref().map(|_| "***"))
+            .field("webui_username", &self.webui_username)
+            .field(
+                "webui_password",
+                &self.webui_password.as_ref().map(|_| "***"),
+            )
             .field("url", &self.url)
             .field("compact_on_startup", &self.compact_on_startup)
             .field(
@@ -99,6 +108,8 @@ impl Default for Settings {
             ollama_api_key: None,
             listen: "127.0.0.1:8191".into(),
             api_key: None,
+            webui_username: None,
+            webui_password: None,
             url: "http://localhost:8190".into(),
             compact_on_startup: true,
             compact_fragment_threshold: 64,
@@ -176,6 +187,12 @@ impl Settings {
         let api_key = std::env::var("MEMCAN_API_KEY")
             .ok()
             .filter(|s| !s.is_empty());
+        let webui_username = std::env::var("MEMCAN_WEBUI_USERNAME")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let webui_password = std::env::var("MEMCAN_WEBUI_PASSWORD")
+            .ok()
+            .filter(|s| !s.is_empty());
         let url = env_or("MEMCAN_URL", &defaults.url);
         let compact_on_startup = env_or(
             "COMPACT_ON_STARTUP",
@@ -203,6 +220,8 @@ impl Settings {
             ollama_api_key,
             listen,
             api_key,
+            webui_username,
+            webui_password,
             url,
             compact_on_startup,
             compact_fragment_threshold,
@@ -269,8 +288,45 @@ fn env_or(key: &str, default: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+
+    struct EnvGuard(Vec<(&'static str, Option<String>)>);
+
+    impl EnvGuard {
+        fn set(values: &[(&'static str, Option<&str>)]) -> Self {
+            let originals = values
+                .iter()
+                .map(|(key, _)| (*key, std::env::var(key).ok()))
+                .collect();
+            // SAFETY: these tests are serialized, and every variable is restored on drop.
+            unsafe {
+                for (key, value) in values {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+            Self(originals)
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: these tests are serialized, and this restores their prior environment.
+            unsafe {
+                for (key, value) in self.0.drain(..) {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
+    #[serial]
     fn test_expand_tilde() {
         let expanded = expand_tilde("~/.local/share/memcan");
         assert!(!expanded.starts_with('~'), "tilde should be expanded");
@@ -305,5 +361,62 @@ mod tests {
     #[test]
     fn test_validate_defaults_ok() {
         Settings::default().validate().unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_webui_credentials_load_set_unset_and_empty_values() {
+        let temp = tempfile::tempdir().unwrap();
+        let temp_path = temp.path().to_str().unwrap();
+        let _environment = EnvGuard::set(&[
+            ("HOME", Some(temp_path)),
+            ("XDG_CONFIG_HOME", Some(temp_path)),
+            ("XDG_DATA_HOME", Some(temp_path)),
+            ("MEMCAN_WEBUI_USERNAME", Some("operator")),
+            ("MEMCAN_WEBUI_PASSWORD", Some("correct horse")),
+        ]);
+
+        let settings = Settings::load().unwrap();
+        assert_eq!(settings.webui_username.as_deref(), Some("operator"));
+        assert_eq!(settings.webui_password.as_deref(), Some("correct horse"));
+
+        // SAFETY: this serialized test owns and later restores these variables.
+        unsafe {
+            std::env::set_var("MEMCAN_WEBUI_USERNAME", "");
+            std::env::set_var("MEMCAN_WEBUI_PASSWORD", "still-set");
+        }
+        let settings = Settings::load().unwrap();
+        assert!(settings.webui_username.is_none());
+        assert_eq!(settings.webui_password.as_deref(), Some("still-set"));
+
+        // SAFETY: this serialized test owns and later restores these variables.
+        unsafe {
+            std::env::set_var("MEMCAN_WEBUI_USERNAME", "operator");
+            std::env::remove_var("MEMCAN_WEBUI_PASSWORD");
+        }
+        let settings = Settings::load().unwrap();
+        assert_eq!(settings.webui_username.as_deref(), Some("operator"));
+        assert!(settings.webui_password.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn test_webui_password_is_masked_in_settings_debug() {
+        let temp = tempfile::tempdir().unwrap();
+        let temp_path = temp.path().to_str().unwrap();
+        let _environment = EnvGuard::set(&[
+            ("HOME", Some(temp_path)),
+            ("XDG_CONFIG_HOME", Some(temp_path)),
+            ("XDG_DATA_HOME", Some(temp_path)),
+            ("MEMCAN_WEBUI_USERNAME", Some("operator")),
+            ("MEMCAN_WEBUI_PASSWORD", Some("never-print-me")),
+        ]);
+
+        let settings = Settings::load().unwrap();
+
+        let debug = format!("{settings:?}");
+        assert!(debug.contains("operator"));
+        assert!(debug.contains("***"));
+        assert!(!debug.contains("never-print-me"));
     }
 }

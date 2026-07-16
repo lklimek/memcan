@@ -2244,6 +2244,14 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
             )
             .merge(mcp_router);
 
+        // `ui::router` already warns with the specific reason when it declines to mount.
+        let app = match crate::ui::router(&ctx.settings) {
+            Some(ui) => app.merge(ui),
+            None => app,
+        };
+
+        let app = app.layer(axum::Extension(Arc::clone(&shared.store)));
+
         let listener = TcpListener::bind(&listen_addr)
             .await
             .map_err(|e| MemcanError::Other(format!("failed to bind {listen_addr}: {e}")))?;
@@ -2381,6 +2389,8 @@ mod tests {
             config: memcan_core::config::Settings {
                 listen: "127.0.0.1:0".into(),
                 api_key: None,
+                webui_username: None,
+                webui_password: None,
                 lancedb_path: "/tmp/test".into(),
                 default_user_id: "global".into(),
                 tech_stack: String::new(),
