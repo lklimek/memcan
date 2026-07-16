@@ -17,12 +17,13 @@ pub use crate::ollama::strip_ollama_prefix;
 /// Sort a chat failure into the availability class or the content class.
 ///
 /// Transport faults and statuses that a retry elsewhere could survive (5xx,
-/// 408, 429) and rejected credentials (401, 403) map to
+/// 408, 429) and rejected credentials (401) map to
 /// [`MemcanError::LlmUnavailable`]: they are properties of the backend, so
 /// another backend may still serve the request. Every other failure — the
-/// remaining 4xx, malformed requests — is deterministic for this prompt and
-/// maps to [`MemcanError::LlmChat`], because another backend would reject it
-/// too.
+/// remaining 4xx (including 403, which providers also use for guardrail and
+/// moderation blocks), malformed requests — is deterministic for this prompt
+/// and maps to [`MemcanError::LlmChat`], because another backend would reject
+/// it too.
 fn classify_chat_error(error: &genai::Error, model: &str) -> MemcanError {
     use genai::webc::Error as WebcError;
 
@@ -52,16 +53,24 @@ fn classify_chat_error(error: &genai::Error, model: &str) -> MemcanError {
 /// `true` for statuses that indicate the backend — not the prompt — is at
 /// fault, so another backend may still serve the request.
 ///
-/// 401/403 count as unavailable: a rejected credential is a property of the
+/// 401 counts as unavailable: a rejected credential is a property of the
 /// backend, not of the prompt. The other backend authenticates separately (or
 /// not at all), so it can still serve the request — and a backend whose key is
 /// rotated or revoked is genuinely unusable, which is what the breaker exists
 /// to record.
 ///
+/// 403 deliberately does **not**. Providers overload it: OpenRouter returns 403
+/// for guardrail blocks and moderation flags as well as for permissions, and a
+/// blocked prompt is deterministic for that prompt. Classing it as unavailable
+/// would mark a serving backend Down and re-send the blocked content to a third
+/// party — the two things [`FallbackLlmProvider::chat`](crate::llm_fallback)
+/// exists to avoid. A genuine permissions 403 is the rarer case, and it
+/// degrades to a plain error rather than a wrong failover.
+///
 /// Takes a raw code rather than a `StatusCode`: genai links its own `reqwest`,
 /// which need not be the one this crate depends on.
 fn status_is_unavailable(status: u16) -> bool {
-    (500..600).contains(&status) || matches!(status, 401 | 403 | 408 | 429)
+    (500..600).contains(&status) || matches!(status, 401 | 408 | 429)
 }
 
 /// LLM provider backed by [`genai::Client`].
@@ -364,10 +373,18 @@ mod tests {
     #[test]
     fn rejected_credentials_are_an_availability_fault() {
         // A rotated OpenRouter key must not strand requests that a healthy
-        // local Ollama could serve: 401/403 describe the backend, not the
-        // prompt, so they have to reach the fallback and the breaker.
+        // local Ollama could serve: 401 describes the backend, not the prompt,
+        // so it has to reach the fallback and the breaker.
         assert!(super::status_is_unavailable(401));
-        assert!(super::status_is_unavailable(403));
+    }
+
+    #[test]
+    fn forbidden_stays_a_content_fault() {
+        // Providers overload 403: OpenRouter returns it for guardrail and
+        // moderation blocks, which are deterministic for the prompt. Classing
+        // it as unavailable would mark a serving backend Down and ship the
+        // blocked content to a third party.
+        assert!(!super::status_is_unavailable(403));
     }
 
     #[test]
