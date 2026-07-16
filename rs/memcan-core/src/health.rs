@@ -131,6 +131,10 @@ impl DependencyHealth {
         &self.deps[&id]
     }
 
+    fn is_tracked(&self, id: DependencyId) -> bool {
+        id != DependencyId::OpenRouter || self.openrouter_configured.load(Ordering::Acquire)
+    }
+
     pub(crate) fn mark_configured(&self, id: DependencyId) {
         if id == DependencyId::OpenRouter {
             self.openrouter_configured.store(true, Ordering::Release);
@@ -204,8 +208,7 @@ impl DependencyHealth {
         let mut result = HashMap::new();
 
         for id in DependencyId::ALL {
-            if id == DependencyId::OpenRouter && !self.openrouter_configured.load(Ordering::Acquire)
-            {
+            if !self.is_tracked(id) {
                 continue;
             }
             let dep = self.dep(id);
@@ -241,8 +244,9 @@ impl DependencyHealth {
     /// Returns true if all dependencies are healthy.
     pub fn all_healthy(&self) -> bool {
         DependencyId::ALL.iter().all(|id| {
-            DependencyStatus::from_u8(self.dep(*id).state.load(Ordering::Acquire))
-                == DependencyStatus::Healthy
+            !self.is_tracked(*id)
+                || DependencyStatus::from_u8(self.dep(*id).state.load(Ordering::Acquire))
+                    == DependencyStatus::Healthy
         })
     }
 }
@@ -356,6 +360,17 @@ mod tests {
             assert!(info.last_checked_secs_ago.is_none()); // never checked
             assert!(info.error.is_none());
         }
+    }
+
+    #[test]
+    fn all_healthy_ignores_unconfigured_openrouter() {
+        let health = DependencyHealth::with_defaults();
+        health
+            .dep(DependencyId::OpenRouter)
+            .state
+            .store(DependencyStatus::DOWN, Ordering::Release);
+
+        assert!(health.all_healthy());
     }
 
     #[test]

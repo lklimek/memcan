@@ -36,7 +36,7 @@ Reusable library. All domain logic lives here. Must not depend on transport, CLI
 | `lancedb_store` | LanceDB implementation of `VectorStore` |
 | `embed` | fastembed implementation of `EmbeddingProvider` |
 | `llm_ollama_rs` | **Default** `LlmProvider` backed by ollama-rs 0.3.5 (feature `ollama-rs-llm`). Token counts from `ChatMessageFinalResponseData.{prompt_eval_count, eval_count}`. |
-| `llm` | Optional `LlmProvider` backed by genai 0.5.3 (feature `genai-llm`; not default). Token counts from `ChatResponse.usage.{prompt_tokens, completion_tokens}`. |
+| `llm` | `LlmProvider` backed by genai 0.5.3 (default feature `genai-llm`). Token counts from `ChatResponse.usage.{prompt_tokens, completion_tokens}`. |
 | `llm_telemetry` | Shared structured debug log emitter for per-call token counts; called by both LLM backends. |
 | `ollama` | Ollama model resolution helpers |
 | `pipeline` | Memory add pipeline (LLM fact extraction, dedup, store) |
@@ -216,7 +216,7 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 | `COMPACT_ON_STARTUP` | `true` | Run full table compaction (`OptimizeAction::All`) on boot before serving; over-fragmented tables only (tables ≤ `COMPACT_FRAGMENT_THRESHOLD` fragments are skipped). Set `false` to avoid boot latency on very large databases. |
 | `COMPACT_FRAGMENT_THRESHOLD` | `64` | Auto-compact a table after a write once it reaches this many data fragments; also the startup-compaction skip threshold. `0` disables auto-compaction. |
 | `LLM_PROVIDER` | `ollama` | Primary backend: `ollama` \| `openrouter`. |
-| `LLM_FALLBACK_PROVIDER` | *(unset)* | Optional fallback backend; unset keeps single-provider behavior. |
+| `LLM_FALLBACK_PROVIDER` | *(unset)* | Optional fallback backend; unset keeps single-provider behavior. An OpenRouter fallback sends memory, code, and standards content to a third-party cloud provider whenever the local primary is unavailable. |
 | `LLM_MODEL` | `gemma4:26b-a4b-it-qat` | Ollama model name (`ollama::` prefix accepted for backward compat). Needs ~16GB VRAM; use `qwen3.5:9b` (~6.6GB) on smaller cards — see `docs/memcan-model-guide.html` |
 | `OPENROUTER_API_KEY` | *(none)* | OpenRouter bearer key. Required when OpenRouter is primary or fallback; never logged. |
 | `OPENROUTER_MODEL` | *(none)* | OpenRouter model slug, e.g. `openai/gpt-4o-mini`. Required when OpenRouter participates. |
@@ -225,7 +225,7 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 | `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`). Injected into the LLM client (ollama-rs default; or genai via `ServiceTargetResolver`). |
 | `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth (sent as `Authorization: Bearer $key`) |
 
-> **Note:** MemCan injects Ollama and OpenRouter endpoint credentials into each LLM client at construction time. For Ollama-primary with OpenRouter fallback, set `LLM_PROVIDER=ollama`, `LLM_FALLBACK_PROVIDER=openrouter`, `OPENROUTER_API_KEY=…`, and `OPENROUTER_MODEL=…`. The `/health` endpoint reports `openrouter` separately.
+> **Note:** MemCan injects Ollama and OpenRouter endpoint credentials into each LLM client at construction time. For Ollama-primary with OpenRouter fallback, set `LLM_PROVIDER=ollama`, `LLM_FALLBACK_PROVIDER=openrouter`, `OPENROUTER_API_KEY=…`, and `OPENROUTER_MODEL=…`. When the local primary is unavailable, memory, code, and standards content will leave the local environment and be sent to the third-party OpenRouter cloud. This confidentiality/data-egress trade-off accompanies the availability benefit. The `/health` endpoint reports `openrouter` separately.
 
 ## LLM Token Telemetry
 

@@ -117,7 +117,10 @@ impl LlmProvider for FallbackLlmProvider {
             },
             Err(primary_error) => {
                 if self.fallback.is_none() {
-                    return Err(primary_error);
+                    return Err(MemcanError::LlmChat {
+                        context: format!("LLM backend '{}' is unavailable", self.primary_dep),
+                        detail: primary_error.to_string(),
+                    });
                 }
                 debug!(
                     primary = %self.primary_dep,
@@ -187,6 +190,8 @@ impl LlmProvider for FallbackLlmProvider {
                 match fallback.provider.init().await {
                     Ok(()) => Ok(()),
                     Err(fallback_error) => {
+                        self.health
+                            .report_failure(fallback.dep, &fallback_error.to_string());
                         error!(
                             primary = %self.primary_dep,
                             fallback = %fallback.dep,
@@ -448,8 +453,33 @@ mod tests {
         let provider = wrapper(primary.clone(), None, health);
 
         let error = chat(&provider).await.unwrap_err();
-        assert!(error.is_dependency_unavailable());
+        assert!(error.is_llm_error());
+        assert!(error.to_string().contains("known down"));
         assert_eq!(primary.chat_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn tc8b_both_open_breakers_skip_both_providers() {
+        let primary = Arc::new(MockLlmProvider::new([MockResult::Success("unused")]));
+        let fallback = Arc::new(MockLlmProvider::new([MockResult::Success("unused")]));
+        let health = Arc::new(DependencyHealth::new(Duration::from_secs(60)));
+        health.report_failure(DependencyId::Ollama, "primary known down");
+        health.report_failure(DependencyId::OpenRouter, "fallback known down");
+        let provider = wrapper(primary.clone(), Some(fallback.clone()), health);
+
+        let error = chat(&provider).await.unwrap_err();
+        assert!(matches!(
+            error,
+            MemcanError::LlmChat {
+                ref context,
+                ref detail
+            } if context.contains("ollama")
+                && context.contains("openrouter")
+                && detail.contains("primary known down")
+                && detail.contains("fallback known down")
+        ));
+        assert_eq!(primary.chat_calls(), 0);
+        assert_eq!(fallback.chat_calls(), 0);
     }
 
     #[tokio::test]
@@ -517,13 +547,12 @@ mod tests {
         let fallback = Arc::new(
             MockLlmProvider::new([]).with_init(MockResult::Failure("fallback init failed")),
         );
-        let provider = wrapper(
-            primary,
-            Some(fallback),
-            Arc::new(DependencyHealth::with_defaults()),
-        );
+        let health = Arc::new(DependencyHealth::with_defaults());
+        let provider = wrapper(primary, Some(fallback), health.clone());
 
         assert!(provider.init().await.is_err());
+        assert_eq!(health.status()["ollama"].status, DependencyStatus::Down);
+        assert_eq!(health.status()["openrouter"].status, DependencyStatus::Down);
     }
 
     #[tokio::test]

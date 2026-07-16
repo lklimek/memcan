@@ -307,11 +307,15 @@ impl Settings {
                 reqwest::Url::parse(&self.openrouter_base_url).map_err(|error| {
                     MemcanError::Config(format!("OPENROUTER_BASE_URL is invalid: {error}"))
                 })?;
-            if openrouter_url.scheme() != "https" {
-                warn!(
-                    openrouter_base_url = %self.openrouter_base_url,
-                    "OPENROUTER_BASE_URL does not use HTTPS"
-                );
+            let loopback = matches!(
+                openrouter_url.host_str(),
+                Some("localhost" | "127.0.0.1" | "::1" | "[::1]")
+            );
+            if openrouter_url.scheme() != "https" && !loopback {
+                return Err(MemcanError::Config(
+                    "OPENROUTER_BASE_URL must use HTTPS when configured with a non-loopback host"
+                        .into(),
+                ));
             }
         }
         if self.llm_fallback_provider == Some(self.llm_provider) {
@@ -443,6 +447,38 @@ mod tests {
         };
 
         assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn openrouter_http_requires_a_loopback_host() {
+        for base_url in [
+            "http://localhost:8080/v1",
+            "http://127.0.0.1:8080/v1",
+            "http://[::1]:8080/v1",
+        ] {
+            let loopback = Settings {
+                llm_provider: LlmProviderKind::OpenRouter,
+                openrouter_api_key: Some("test-key".into()),
+                openrouter_model: "openai/gpt-4o-mini".into(),
+                openrouter_base_url: base_url.into(),
+                ..Settings::default()
+            };
+            assert!(
+                loopback.validate().is_ok(),
+                "loopback URL should be accepted: {base_url}"
+            );
+        }
+
+        let remote = Settings {
+            llm_provider: LlmProviderKind::OpenRouter,
+            openrouter_api_key: Some("test-key".into()),
+            openrouter_model: "openai/gpt-4o-mini".into(),
+            openrouter_base_url: "http://openrouter.example/v1".into(),
+            ..Settings::default()
+        };
+        let error = remote.validate().unwrap_err().to_string();
+        assert!(error.contains("OPENROUTER_BASE_URL"));
+        assert!(error.contains("HTTPS"));
     }
 
     #[test]
