@@ -17,10 +17,12 @@ pub use crate::ollama::strip_ollama_prefix;
 /// Sort a chat failure into the availability class or the content class.
 ///
 /// Transport faults and statuses that a retry elsewhere could survive (5xx,
-/// 408, 429) map to [`MemcanError::LlmUnavailable`]. Every other failure —
-/// 4xx, malformed requests, missing credentials — is deterministic for this
-/// prompt and maps to [`MemcanError::LlmChat`], because another backend would
-/// reject it too.
+/// 408, 429) and rejected credentials (401, 403) map to
+/// [`MemcanError::LlmUnavailable`]: they are properties of the backend, so
+/// another backend may still serve the request. Every other failure — the
+/// remaining 4xx, malformed requests — is deterministic for this prompt and
+/// maps to [`MemcanError::LlmChat`], because another backend would reject it
+/// too.
 fn classify_chat_error(error: &genai::Error, model: &str) -> MemcanError {
     use genai::webc::Error as WebcError;
 
@@ -50,10 +52,16 @@ fn classify_chat_error(error: &genai::Error, model: &str) -> MemcanError {
 /// `true` for statuses that indicate the backend — not the prompt — is at
 /// fault, so another backend may still serve the request.
 ///
+/// 401/403 count as unavailable: a rejected credential is a property of the
+/// backend, not of the prompt. The other backend authenticates separately (or
+/// not at all), so it can still serve the request — and a backend whose key is
+/// rotated or revoked is genuinely unusable, which is what the breaker exists
+/// to record.
+///
 /// Takes a raw code rather than a `StatusCode`: genai links its own `reqwest`,
 /// which need not be the one this crate depends on.
 fn status_is_unavailable(status: u16) -> bool {
-    (500..600).contains(&status) || status == 408 || status == 429
+    (500..600).contains(&status) || matches!(status, 401 | 403 | 408 | 429)
 }
 
 /// LLM provider backed by [`genai::Client`].
@@ -351,6 +359,37 @@ mod tests {
     fn test_default_model() {
         let provider = GenaiLlmProvider::new(Client::default(), "test-model".into());
         assert_eq!(provider.default_model(), "test-model");
+    }
+
+    #[test]
+    fn rejected_credentials_are_an_availability_fault() {
+        // A rotated OpenRouter key must not strand requests that a healthy
+        // local Ollama could serve: 401/403 describe the backend, not the
+        // prompt, so they have to reach the fallback and the breaker.
+        assert!(super::status_is_unavailable(401));
+        assert!(super::status_is_unavailable(403));
+    }
+
+    #[test]
+    fn backend_faults_are_availability_faults() {
+        for status in [500, 502, 503, 599, 408, 429] {
+            assert!(
+                super::status_is_unavailable(status),
+                "{status} should be an availability fault"
+            );
+        }
+    }
+
+    #[test]
+    fn request_faults_stay_content_faults() {
+        // These are deterministic for the prompt: another backend rejects them
+        // too, so they must not egress or trip the breaker.
+        for status in [400, 404, 413, 422] {
+            assert!(
+                !super::status_is_unavailable(status),
+                "{status} should be a content fault"
+            );
+        }
     }
 
     #[test]
