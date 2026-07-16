@@ -7,7 +7,7 @@ use axum::{
 };
 use maud::{Markup, html};
 use memcan_core::{
-    todo::{TodoItem, list_all_todos, priority_rank, valid_statuses, validate_status},
+    todo::{TodoItem, list_all_todos, list_todos, priority_rank, valid_statuses, validate_status},
     traits::VectorStore,
 };
 use serde::Deserialize;
@@ -76,11 +76,17 @@ pub(super) async fn tasks(
         projects.insert(selected_project);
     }
 
-    let mut displayed: Vec<_> = all
-        .iter()
-        .filter(|item| selected_project.is_none_or(|project| item.project == project))
-        .cloned()
-        .collect();
+    let mut displayed = if let Some(project) = selected_project {
+        match list_todos(store.as_ref(), project, selected_status, None, LIMIT).await {
+            Ok(items) => items,
+            Err(source) => {
+                error!(error = %source, "web UI task list could not load");
+                return detail::service_unavailable();
+            }
+        }
+    } else {
+        all.clone()
+    };
     sort_items(&mut displayed, selected_sort);
     displayed.truncate(LIMIT);
 
@@ -179,7 +185,7 @@ fn list_markup(
 
 fn sort_items(items: &mut [TodoItem], sort: Sort) {
     match sort {
-        Sort::Priority => {}
+        Sort::Priority => items.sort_by(default_order),
         Sort::Created => items.sort_by(|left, right| {
             left.created_at
                 .cmp(&right.created_at)
@@ -212,11 +218,13 @@ mod tests {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
+    use axum::body::to_bytes;
     use axum::http::StatusCode;
     use memcan_core::{
         error::Result,
         traits::{SearchResult, TableSchema, VectorPoint},
     };
+    use serde_json::json;
     use serial_test::serial;
 
     use super::super::test_support::{app_with_error_store, app_with_items, base_items, get, item};
@@ -224,7 +232,7 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingStore {
-        last_filter: Mutex<Option<String>>,
+        filters: Mutex<Vec<Option<String>>>,
     }
 
     #[async_trait]
@@ -265,7 +273,20 @@ mod tests {
             _limit: usize,
             _offset: usize,
         ) -> Result<Vec<SearchResult>> {
-            *self.last_filter.lock().unwrap() = filter.map(String::from);
+            self.filters.lock().unwrap().push(filter.map(String::from));
+            if filter == Some("project = 'target-project'") {
+                return Ok(vec![SearchResult {
+                    id: "TARGET-1".into(),
+                    score: 0.0,
+                    payload: json!({
+                        "title": "Target task",
+                        "project": "target-project",
+                        "priority": "high",
+                        "status": "pending",
+                        "created_at": "2026-01-01T00:00:00Z",
+                    }),
+                }]);
+            }
             Ok(Vec::new())
         }
 
@@ -427,6 +448,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn priority_sort_uses_deterministic_default_order() {
+        let mut items = vec![
+            item(
+                "Z-MEDIUM",
+                "Later ID",
+                "memcan",
+                "medium",
+                "pending",
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            item(
+                "A-MEDIUM",
+                "Earlier ID",
+                "memcan",
+                "medium",
+                "pending",
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            item(
+                "HIGH",
+                "High priority",
+                "memcan",
+                "high",
+                "pending",
+                None,
+                "2026-01-02T00:00:00Z",
+            ),
+        ];
+
+        sort_items(&mut items, Sort::Priority);
+
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["HIGH", "A-MEDIUM", "Z-MEDIUM"]
+        );
+    }
+
     #[tokio::test]
     async fn list_view_applies_valid_status_filter_in_store_query() {
         let store = Arc::new(RecordingStore::default());
@@ -442,8 +506,30 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
-            store.last_filter.lock().unwrap().as_deref(),
-            Some("status = 'done'")
+            store.filters.lock().unwrap().as_slice(),
+            [Some("status = 'done'".into())]
+        );
+    }
+
+    #[tokio::test]
+    async fn selected_project_uses_scoped_query_when_unscoped_scan_omits_target() {
+        let store = Arc::new(RecordingStore::default());
+        let extension: Arc<dyn VectorStore> = store.clone();
+        let response = tasks(
+            Extension(extension),
+            Ok(Query(FilterParams {
+                project: Some("target-project".into()),
+                ..FilterParams::default()
+            })),
+        )
+        .await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(body.contains("TARGET-1"));
+        assert_eq!(
+            store.filters.lock().unwrap().as_slice(),
+            [None, Some("project = 'target-project'".into())]
         );
     }
 
