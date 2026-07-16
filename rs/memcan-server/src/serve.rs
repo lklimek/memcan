@@ -162,6 +162,7 @@ struct SharedState {
     llm_semaphore: Arc<tokio::sync::Semaphore>,
     pending_tasks: Arc<AtomicUsize>,
     health: Arc<DependencyHealth>,
+    todo_write_locks: Arc<todo::TodoWriteLocks>,
 }
 
 // --- Tool parameter structs ---
@@ -1514,6 +1515,7 @@ impl MemcanService {
             self.state.store.as_ref(),
             self.state.embedder.as_ref(),
             &MemcanTableSchema,
+            self.state.todo_write_locks.as_ref(),
             &params.todo_id,
             updates,
         )
@@ -1551,6 +1553,7 @@ impl MemcanService {
             self.state.store.as_ref(),
             self.state.embedder.as_ref(),
             &MemcanTableSchema,
+            self.state.todo_write_locks.as_ref(),
             &params.todo_id,
         )
         .await
@@ -1579,12 +1582,16 @@ impl MemcanService {
             .check(DependencyId::LanceDb)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
-        todo::delete_todo(self.state.store.as_ref(), &params.todo_id)
-            .await
-            .map_err(|e| {
-                report_error_to_health(&self.state.health, &e);
-                ErrorData::internal_error(format!("delete_todo failed: {e}"), None)
-            })?;
+        todo::delete_todo(
+            self.state.store.as_ref(),
+            self.state.todo_write_locks.as_ref(),
+            &params.todo_id,
+        )
+        .await
+        .map_err(|e| {
+            report_error_to_health(&self.state.health, &e);
+            ErrorData::internal_error(format!("delete_todo failed: {e}"), None)
+        })?;
 
         self.state.health.report_success(DependencyId::LanceDb);
 
@@ -2165,6 +2172,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
         llm_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
         pending_tasks: Arc::new(AtomicUsize::new(0)),
         health: Arc::clone(&health),
+        todo_write_locks: Arc::new(todo::TodoWriteLocks::default()),
     });
 
     if args.stdio {
@@ -2401,6 +2409,7 @@ mod tests {
             llm_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
             pending_tasks: Arc::new(AtomicUsize::new(0)),
             health: Arc::new(DependencyHealth::with_defaults()),
+            todo_write_locks: Arc::new(todo::TodoWriteLocks::default()),
         });
 
         MemcanService::new(state)
@@ -2777,6 +2786,7 @@ mod tests {
             llm_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
             pending_tasks: Arc::new(AtomicUsize::new(0)),
             health: Arc::new(DependencyHealth::with_defaults()),
+            todo_write_locks: Arc::new(todo::TodoWriteLocks::default()),
         });
         let service = MemcanService::new(state);
 

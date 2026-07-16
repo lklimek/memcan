@@ -1145,7 +1145,7 @@ mod tests {
         let path = tmp.path().to_str().expect("tempdir path");
         let dims: usize = 4;
 
-        // Create a table with the OLD schema (without status/priority).
+        // Create a table with the old schema (without status/priority/owner).
         let old_schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
             Field::new(
@@ -1189,6 +1189,10 @@ mod tests {
         assert!(
             names.contains(&"priority"),
             "priority column missing after migration"
+        );
+        assert!(
+            names.contains(&"owner"),
+            "owner column missing after migration"
         );
     }
 }
