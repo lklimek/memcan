@@ -407,12 +407,15 @@ mod tests {
             webui_password: Some("test:pass".into()),
             ..Settings::default()
         };
+        // `/ui` needs no VectorStore extension, so a real 302 proves the colon-bearing
+        // password was accepted. Against `/ui/tasks` the missing extension returns 500,
+        // which `assert_ne!(.., UNAUTHORIZED)` would accept without proving acceptance.
         let response = mounted(&settings)
-            .oneshot(request("/ui/tasks", Some(&basic("testuser:test:pass"))))
+            .oneshot(request("/ui", Some(&basic("testuser:test:pass"))))
             .await
             .unwrap();
 
-        assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), StatusCode::FOUND);
     }
 
     #[tokio::test]
