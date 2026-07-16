@@ -87,6 +87,11 @@ pub fn router(settings: &Settings) -> Option<Router> {
     }
 
     let expected = format!("{username}:{password}").into_bytes();
+    // A Basic Auth header for these credentials must fit MAX_AUTH_HEADER_LEN, or every
+    // request would fail the length filter below regardless of correctness.
+    if STANDARD.encode(&expected).len() + "Basic ".len() > MAX_AUTH_HEADER_LEN {
+        return None;
+    }
     // Login throttling belongs at the TLS proxy layer, where trusted client IPs are available.
     let routes = Router::new()
         .route("/ui", get(detail::redirect))
@@ -334,14 +339,8 @@ mod tests {
 
     #[tokio::test]
     async fn webui_auth_rejects_oversized_header_without_regressing_normal_credentials() {
-        let oversized_password = "x".repeat(1024);
-        let oversized_credentials = Settings {
-            webui_username: Some("testuser".into()),
-            webui_password: Some(oversized_password.clone()),
-            ..Settings::default()
-        };
-        let oversized_authorization = basic(&format!("testuser:{oversized_password}"));
-        let oversized = mounted(&oversized_credentials)
+        let oversized_authorization = basic(&format!("testuser:{}", "x".repeat(1024)));
+        let oversized = mounted(&credentials())
             .oneshot(request("/ui/tasks", Some(&oversized_authorization)))
             .await
             .unwrap();
@@ -358,6 +357,21 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(incorrect.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn webui_router_refuses_credentials_too_long_for_the_auth_header_limit() {
+        let settings = Settings {
+            webui_username: Some("testuser".into()),
+            webui_password: Some("x".repeat(1024)),
+            ..Settings::default()
+        };
+
+        assert!(
+            router(&settings).is_none(),
+            "a config whose Basic header can never fit MAX_AUTH_HEADER_LEN must fail closed \
+             at startup, not lock out every request silently"
+        );
     }
 
     #[test]
