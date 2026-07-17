@@ -134,27 +134,34 @@ Use `python3` or `jq` for JSON manipulation. This step is safe to run multiple t
 
 ### 5. Verify
 
-**Version check across all three components — mandatory, always run, never skip:**
+**Version check across all three components — mandatory, always run, never skip. Detect first, fix second — never auto-fix silently.** Collect every version issue before touching anything, present them to the user together, and apply only what they approve. This mirrors Step 1's existing `AskUserQuestion` pattern — do not special-case version fixes as an exception to it.
 
 The plugin's `.claude-plugin/plugin.json` (`version` field) is the baseline. Both the CLI and the server are checked against it — neither check is optional, and both must be reported even when nothing needed fixing.
 
+**Phase A — detect (read-only, no fixes applied yet):**
+
 1. **Read baseline**: `version` field from `.claude-plugin/plugin.json`.
-2. **CLI version**: run `memcan --version`, extract the semver. Record it as "before".
-   - If missing, or older than the baseline: auto-fix. Download the installer to a file rather than piping — `curl -fsSL https://raw.githubusercontent.com/lklimek/memcan/main/setup.sh -o <tmpfile>` — because auto-mode classifiers commonly block a direct `curl | bash` pipeline; a downloaded script is also auditable before running. Briefly review the downloaded script for anything unexpected, `chmod +x`, run it with `--cli-only`, then delete the temp file. Re-run `memcan --version` and record it as "after".
-   - If the classifier (or the user) blocks execution, ask the user how to proceed (run it themselves / review first / skip) — do not silently give up and do not attempt to route around a denial.
-   - If newer than the baseline, note it but do not downgrade.
-3. **Server version**: fetch `curl -sf "$MEMCAN_URL/health"` — if that returns 401/403, retry with `-H "Authorization: Bearer $MEMCAN_API_KEY"`. Extract `version`. Record it as "before".
-   - If different from the baseline: warn ("Plugin expects vX.Y.Z but server reports vA.B.C — new MCP tools may be missing"). If Docker Compose is available, auto-fix: locate `docker-compose.yml` (check `~/.config/memcan/` then current dir), run `docker compose pull && docker compose up -d`, wait for the health check to pass, then re-fetch `/health` and record the result as "after". If Docker is not available, tell the user to rebuild the server binary.
-   - If unreachable, record as "unreachable" — the MCP connectivity check below will catch it too.
-4. Keep every before/after value (or "unreachable") for the summary table below — do not discard them once the fix step finishes.
+2. **CLI version**: run `memcan --version`, extract the semver. Record it as "before". If missing or older than the baseline, add a pending issue: *"CLI is vA.B.C, plugin expects vX.Y.Z — fix by downloading `setup.sh` to a file and running it locally with `--cli-only` (not piped directly into `bash`, since auto-mode classifiers commonly block a bare `curl | bash`; a downloaded script is also auditable before running)."* If newer than the baseline, note it but never propose a downgrade.
+3. **Server version**: fetch `curl -sf "$MEMCAN_URL/health"` — if that returns 401/403, retry with `-H "Authorization: Bearer $MEMCAN_API_KEY"`. Extract `version`. Record it as "before". If different from the baseline, add a pending issue: *"Server is vA.B.C, plugin expects vX.Y.Z — fix via `docker compose pull && docker compose up -d`"* (locate `docker-compose.yml` under `~/.config/memcan/` then the current dir) *"if Docker Compose is available, otherwise rebuild the server binary manually."* If unreachable, record as "unreachable" and do not add a fix issue for it — the MCP connectivity check later in this step will surface it.
+
+**Phase B — present and choose (only if Phase A found ≥1 pending issue):**
+
+4. If no pending issues were found, skip straight to the summary table below with every component marked `unchanged`/`up to date`.
+5. Otherwise, present ALL pending issues together via `AskUserQuestion` — one option per issue (or a multi-select question covering all of them) stating what's wrong and exactly what the fix would do. Do not pre-select "fix everything" and do not apply anything before the user answers.
+
+**Phase C — apply only what was approved:**
+
+6. For each issue the user approved, run its fix exactly as described to them. Review any downloaded script before executing it. If execution is itself blocked (e.g. by an auto-mode classifier) after the user already approved the fix, ask how to proceed (run it themselves / review first / skip) rather than silently giving up or routing around the denial.
+7. Re-check `memcan --version` / `/health` for each fixed component and record the result as "after". For declined issues, the "before" value is also the final value — mark those rows `skipped by user` in the table, not `updated`.
+8. Keep every before/after value (or `unreachable` / `skipped by user`) for the summary table below — do not discard them once this phase finishes.
 
 Print a summary. Lead with a versions table — one row per component, showing the version before this run and after (or `unchanged` when no fix was needed):
 
 | Component | Before | After | Status |
 |---|---|---|---|
 | Plugin (baseline) | — | vX.Y.Z | — |
-| CLI | vA.B.C | vX.Y.Z | updated / up to date / unreachable |
-| Server | vA.B.C | vX.Y.Z | updated / up to date / unreachable |
+| CLI | vA.B.C | vX.Y.Z | updated / up to date / skipped by user / unreachable |
+| Server | vA.B.C | vX.Y.Z | updated / up to date / skipped by user / unreachable |
 
 Then the rest of the checklist:
 - CLI installed and on PATH (`memcan`)
