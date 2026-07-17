@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project fol
 
 ## [Unreleased]
 
+### Fixed
+
+- `setup-memcan` skill's Step 5 verify pass now checks the CLI's own version against the plugin baseline (previously only the server was checked, so the CLI could silently drift for many releases). Version fixes (CLI update, server `docker compose pull && up -d`) are now detected and presented to the user as a wizard before anything runs, instead of being applied automatically — matching Step 1's existing install-choice pattern. The summary now leads with a Before → After versions table for CLI/server/plugin instead of a flat status list.
+
 ## [1.1.0] - 2026-07-16
 
 ### Added
