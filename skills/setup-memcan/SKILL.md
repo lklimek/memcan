@@ -134,17 +134,29 @@ Use `python3` or `jq` for JSON manipulation. This step is safe to run multiple t
 
 ### 5. Verify
 
-**Server version check** (run before the summary):
+**Version check across all three components — mandatory, always run, never skip:**
 
-1. Read the expected version from `.claude-plugin/plugin.json` (`version` field).
-2. Fetch running server version: `curl -sf "$MEMCAN_URL/health"` — if that returns 401/403, retry with `-H "Authorization: Bearer $MEMCAN_API_KEY"`. Extract the `version` field from the JSON response.
-3. Compare. If they differ:
-   - Warn: "Plugin expects vX.Y.Z but server reports vA.B.C — new MCP tools may be missing."
-   - If Docker Compose is available, auto-fix: locate the `docker-compose.yml` (check `~/.config/memcan/` then current dir), run `docker compose pull && docker compose up -d`, wait for the health check to pass, then re-fetch `/health` to confirm the version now matches.
-   - If Docker is not available, tell the user to rebuild the server binary.
-4. If the server is unreachable, skip — the MCP connectivity check below will catch it.
+The plugin's `.claude-plugin/plugin.json` (`version` field) is the baseline. Both the CLI and the server are checked against it — neither check is optional, and both must be reported even when nothing needed fixing.
 
-Print a summary:
+1. **Read baseline**: `version` field from `.claude-plugin/plugin.json`.
+2. **CLI version**: run `memcan --version`, extract the semver. Record it as "before".
+   - If missing, or older than the baseline: auto-fix. Download the installer to a file rather than piping — `curl -fsSL https://raw.githubusercontent.com/lklimek/memcan/main/setup.sh -o <tmpfile>` — because auto-mode classifiers commonly block a direct `curl | bash` pipeline; a downloaded script is also auditable before running. Briefly review the downloaded script for anything unexpected, `chmod +x`, run it with `--cli-only`, then delete the temp file. Re-run `memcan --version` and record it as "after".
+   - If the classifier (or the user) blocks execution, ask the user how to proceed (run it themselves / review first / skip) — do not silently give up and do not attempt to route around a denial.
+   - If newer than the baseline, note it but do not downgrade.
+3. **Server version**: fetch `curl -sf "$MEMCAN_URL/health"` — if that returns 401/403, retry with `-H "Authorization: Bearer $MEMCAN_API_KEY"`. Extract `version`. Record it as "before".
+   - If different from the baseline: warn ("Plugin expects vX.Y.Z but server reports vA.B.C — new MCP tools may be missing"). If Docker Compose is available, auto-fix: locate `docker-compose.yml` (check `~/.config/memcan/` then current dir), run `docker compose pull && docker compose up -d`, wait for the health check to pass, then re-fetch `/health` and record the result as "after". If Docker is not available, tell the user to rebuild the server binary.
+   - If unreachable, record as "unreachable" — the MCP connectivity check below will catch it too.
+4. Keep every before/after value (or "unreachable") for the summary table below — do not discard them once the fix step finishes.
+
+Print a summary. Lead with a versions table — one row per component, showing the version before this run and after (or `unchanged` when no fix was needed):
+
+| Component | Before | After | Status |
+|---|---|---|---|
+| Plugin (baseline) | — | vX.Y.Z | — |
+| CLI | vA.B.C | vX.Y.Z | updated / up to date / unreachable |
+| Server | vA.B.C | vX.Y.Z | updated / up to date / unreachable |
+
+Then the rest of the checklist:
 - CLI installed and on PATH (`memcan`)
 - `.env` exists at `~/.config/memcan/.env` with `MEMCAN_URL` and `MEMCAN_API_KEY` configured
 - Claude Code settings at `~/.claude/settings.json` has `MEMCAN_API_KEY` and `MEMCAN_URL` in `env` block
