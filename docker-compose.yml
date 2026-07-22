@@ -21,6 +21,9 @@ services:
       - "--entrypoints.ollama.address=:11434"
       - "--entrypoints.webui.address=:11400"
       - "--entrypoints.memcan.address=:8190"
+      - "--accesslog=true"
+      - "--accesslog.format=json"
+      - "--accesslog.fields.headers.defaultmode=drop"
       - "--experimental.plugins.traefik-api-token-middleware.modulename=github.com/Aetherinox/traefik-api-token-middleware"
       - "--experimental.plugins.traefik-api-token-middleware.version=v0.1.4"
     network_mode: host
