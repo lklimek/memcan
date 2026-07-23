@@ -110,19 +110,19 @@ Server exposes these MCP tools (via HTTP at `/mcp`):
 | Tool | Description |
 |---|---|
 | `add_memory` | Store a memory (async, returns operation_id) |
-| `search` | Unified search across all collections (memories, standards, code, todos), merged by relevance score; `limit` is a global top-N cap |
-| `search_memories` | Semantic search across memories |
-| `get_memories` | List memories for a given scope |
+| `search` | Unified global top-N search across memories, standards, code, and todos; returns candidate-pool `has_more` |
+| `search_memories` | Semantic search across memories with `has_more` pagination |
+| `get_memories` | List memories for a given scope with `has_more` pagination |
 | `count_memories` | Count memories |
 | `delete_memory` | Delete a memory by ID |
 | `update_memory` | Update an existing memory's content |
 | `list_collections` | List available collections with point counts |
-| `search_standards` | Search indexed standards (CWE, OWASP, etc.) |
-| `search_code` | Search indexed code snippets |
+| `search_standards` | Search indexed standards (CWE, OWASP, etc.) with `has_more` pagination |
+| `search_code` | Search indexed code snippets with `has_more` pagination |
 | `index_standards` | Index a standards document (async, returns operation_id) |
 | `drop_indexed_standards` | Drop all indexed data for a standard_id |
 | `add_todo` | Add a per-project TODO item, optionally setting `owner` and `blocked_by` |
-| `list_todos` | List TODO items for a project, optionally filtered by owner or status |
+| `list_todos` | List TODOs by project/owner/status with `has_more` pagination (default 100, max 200) |
 | `update_todo` | Update a TODO item's fields, including `owner` and `blocked_by`; statuses are `pending`, `done`, `in_progress`, `blocked`, `postponed`, or `cancelled` |
 | `complete_todo` | Mark a TODO item as done |
 | `delete_todo` | Delete a TODO item by ID |
