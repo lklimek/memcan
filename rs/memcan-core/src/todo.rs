@@ -12,7 +12,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::error::Result;
-use crate::query::sanitize_eq;
+use crate::query::{sanitize_eq, sanitize_like};
 use crate::traits::{EmbeddingProvider, SearchResult, TableSchema, VectorPoint, VectorStore};
 
 pub const TODOS_TABLE: &str = "memcan_todos";
@@ -27,6 +27,8 @@ const VALID_STATUSES: &[&str] = &[
     "cancelled",
 ];
 const MAX_LIST_ALL_TODOS_SCAN: usize = 10_000;
+const MIN_ID_PREFIX_LEN: usize = 8;
+const MAX_ID_PREFIX_MATCHES: usize = 5;
 
 const TODO_WRITE_LOCK_SHARDS: usize = 64;
 
@@ -135,6 +137,67 @@ fn normalize_id_list(values: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+async fn resolve_todo_prefix(store: &dyn VectorStore, todo_id: &str) -> Result<Option<String>> {
+    if todo_id.chars().count() < MIN_ID_PREFIX_LEN {
+        return Ok(None);
+    }
+
+    let filter = format!("id LIKE '{}%'", sanitize_like(todo_id));
+    let candidates = store
+        .scroll(TODOS_TABLE, Some(&filter), MAX_ID_PREFIX_MATCHES, 0)
+        .await?;
+    let mut candidate_ids: Vec<_> = candidates
+        .into_iter()
+        .map(|candidate| candidate.id)
+        .collect();
+    candidate_ids.sort();
+    candidate_ids.dedup();
+
+    match candidate_ids.len() {
+        0 => Ok(None),
+        1 => Ok(candidate_ids.pop()),
+        count => Err(crate::error::MemcanError::Other(format!(
+            "ambiguous todo id prefix '{todo_id}' matches {count} todos ({}) — provide the full UUID",
+            candidate_ids.join(", ")
+        ))),
+    }
+}
+
+async fn resolve_todo_id(store: &dyn VectorStore, todo_id: &str) -> Result<Option<String>> {
+    let exact = store.get(TODOS_TABLE, &[todo_id.to_string()]).await?;
+    if let Some(item) = exact.first() {
+        return Ok(Some(item.id.clone()));
+    }
+
+    resolve_todo_prefix(store, todo_id).await
+}
+
+async fn resolve_blocked_by(
+    store: &dyn VectorStore,
+    blocked_by: Vec<String>,
+) -> Result<Vec<String>> {
+    let mut resolved = Vec::new();
+    for reference in blocked_by.into_iter().filter_map(normalize_optional_text) {
+        match resolve_todo_id(store, &reference).await {
+            Ok(Some(todo_id)) => resolved.push(todo_id),
+            Ok(None) => {
+                return Err(crate::error::MemcanError::Other(format!(
+                    "blocked_by reference '{reference}' not found"
+                )));
+            }
+            Err(crate::error::MemcanError::Other(message))
+                if message.starts_with("ambiguous todo id prefix") =>
+            {
+                return Err(crate::error::MemcanError::Other(format!(
+                    "blocked_by reference '{reference}' could not be resolved: {message}"
+                )));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(normalize_id_list(resolved))
+}
+
 fn build_data(title: &str, description: Option<&str>) -> String {
     match description {
         Some(d) if !d.is_empty() => format!("{title}\n{d}"),
@@ -228,6 +291,7 @@ pub async fn add_todo(
 ) -> Result<TodoItem> {
     let priority = params.priority.as_deref().unwrap_or("medium");
     validate_priority(priority)?;
+    let blocked_by = resolve_blocked_by(store, params.blocked_by.unwrap_or_default()).await?;
 
     let item = TodoItem {
         id: Uuid::new_v4().to_string(),
@@ -237,7 +301,7 @@ pub async fn add_todo(
         priority: priority.to_string(),
         status: "pending".to_string(),
         owner: params.owner.and_then(normalize_optional_text),
-        blocked_by: normalize_id_list(params.blocked_by.unwrap_or_default()),
+        blocked_by,
         created_at: Utc::now().to_rfc3339(),
         completed_at: None,
     };
@@ -329,33 +393,18 @@ pub async fn list_all_todos(
     Ok(todos)
 }
 
-pub async fn update_todo(
+async fn apply_todo_update(
     store: &dyn VectorStore,
     embedder: &dyn EmbeddingProvider,
     table_schema: &dyn TableSchema,
-    write_locks: &TodoWriteLocks,
-    todo_id: &str,
+    existing: SearchResult,
     updates: UpdateTodoFields,
 ) -> Result<TodoItem> {
-    if let Some(ref p) = updates.priority {
-        validate_priority(p)?;
-    }
-    if let Some(ref s) = updates.status {
-        validate_status(s)?;
-    }
-
-    // Fixed sharding bounds memory but may serialize unrelated IDs in one shard.
-    // Separate processes still require storage-level compare-and-swap.
-    let _write_guard = write_locks.lock(todo_id).await;
-
-    let existing = store.get(TODOS_TABLE, &[todo_id.to_string()]).await?;
-    if existing.is_empty() {
-        return Err(crate::error::MemcanError::Other(format!(
-            "todo not found: {todo_id}"
-        )));
-    }
-
-    let mut item = parse_todo(&existing[0]);
+    let blocked_by = match updates.blocked_by {
+        Some(blocked_by) => Some(resolve_blocked_by(store, blocked_by).await?),
+        None => None,
+    };
+    let mut item = parse_todo(&existing);
 
     let mut text_changed = false;
     if let Some(title) = updates.title {
@@ -372,8 +421,8 @@ pub async fn update_todo(
     if let Some(owner) = updates.owner {
         item.owner = normalize_optional_text(owner);
     }
-    if let Some(blocked_by) = updates.blocked_by {
-        item.blocked_by = normalize_id_list(blocked_by);
+    if let Some(blocked_by) = blocked_by {
+        item.blocked_by = blocked_by;
     }
     if let Some(status) = updates.status {
         let was_terminal = is_terminal(&item.status);
@@ -391,7 +440,7 @@ pub async fn update_todo(
         let vecs = embedder.embed(std::slice::from_ref(&data)).await?;
         vecs[0].clone()
     } else {
-        let old_data = existing[0]
+        let old_data = existing
             .payload
             .get("data")
             .and_then(|v| v.as_str())
@@ -408,6 +457,46 @@ pub async fn update_todo(
     };
     store.upsert(TODOS_TABLE, &[point], table_schema).await?;
     Ok(item)
+}
+
+pub async fn update_todo(
+    store: &dyn VectorStore,
+    embedder: &dyn EmbeddingProvider,
+    table_schema: &dyn TableSchema,
+    write_locks: &TodoWriteLocks,
+    todo_id: &str,
+    updates: UpdateTodoFields,
+) -> Result<TodoItem> {
+    if let Some(ref priority) = updates.priority {
+        validate_priority(priority)?;
+    }
+    if let Some(ref status) = updates.status {
+        validate_status(status)?;
+    }
+
+    // Fixed sharding bounds memory but may serialize unrelated IDs in one shard.
+    // Separate processes still require storage-level compare-and-swap.
+    let exact_guard = write_locks.lock(todo_id).await;
+    let exact = store.get(TODOS_TABLE, &[todo_id.to_string()]).await?;
+    if let Some(existing) = exact.into_iter().next() {
+        return apply_todo_update(store, embedder, table_schema, existing, updates).await;
+    }
+    drop(exact_guard);
+
+    let Some(resolved_id) = resolve_todo_prefix(store, todo_id).await? else {
+        return Err(crate::error::MemcanError::Other(format!(
+            "todo not found: {todo_id}"
+        )));
+    };
+    let _write_guard = write_locks.lock(&resolved_id).await;
+    let existing = store
+        .get(TODOS_TABLE, std::slice::from_ref(&resolved_id))
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| crate::error::MemcanError::Other(format!("todo not found: {todo_id}")))?;
+
+    apply_todo_update(store, embedder, table_schema, existing, updates).await
 }
 
 pub async fn complete_todo(
@@ -434,7 +523,17 @@ pub async fn complete_todo(
 /// Fetch a single TODO by ID.
 /// Returns `Ok(None)` when the ID does not exist.
 pub async fn get_todo(store: &dyn VectorStore, todo_id: &str) -> Result<Option<TodoItem>> {
-    let results = store.get(TODOS_TABLE, &[todo_id.to_string()]).await?;
+    let exact = store.get(TODOS_TABLE, &[todo_id.to_string()]).await?;
+    if let Some(item) = exact.first() {
+        return Ok(Some(parse_todo(item)));
+    }
+
+    let Some(resolved_id) = resolve_todo_prefix(store, todo_id).await? else {
+        return Ok(None);
+    };
+    let results = store
+        .get(TODOS_TABLE, std::slice::from_ref(&resolved_id))
+        .await?;
     Ok(results.first().map(parse_todo))
 }
 
@@ -442,9 +541,33 @@ pub async fn delete_todo(
     store: &dyn VectorStore,
     write_locks: &TodoWriteLocks,
     todo_id: &str,
-) -> Result<()> {
-    let _write_guard = write_locks.lock(todo_id).await;
-    store.delete(TODOS_TABLE, &[todo_id.to_string()]).await
+) -> Result<String> {
+    let exact_guard = write_locks.lock(todo_id).await;
+    let exact = store.get(TODOS_TABLE, &[todo_id.to_string()]).await?;
+    if !exact.is_empty() {
+        store.delete(TODOS_TABLE, &[todo_id.to_string()]).await?;
+        return Ok(todo_id.to_string());
+    }
+    drop(exact_guard);
+
+    let Some(resolved_id) = resolve_todo_prefix(store, todo_id).await? else {
+        return Err(crate::error::MemcanError::Other(format!(
+            "todo not found: {todo_id}"
+        )));
+    };
+    let _write_guard = write_locks.lock(&resolved_id).await;
+    let existing = store
+        .get(TODOS_TABLE, std::slice::from_ref(&resolved_id))
+        .await?;
+    if existing.is_empty() {
+        return Err(crate::error::MemcanError::Other(format!(
+            "todo not found: {todo_id}"
+        )));
+    }
+    store
+        .delete(TODOS_TABLE, std::slice::from_ref(&resolved_id))
+        .await?;
+    Ok(resolved_id)
 }
 
 #[cfg(test)]
@@ -561,18 +684,48 @@ mod tests {
         ) -> Result<Vec<SearchResult>> {
             *self.last_filter.lock().unwrap() = filter.map(String::from);
             let mut records: Vec<_> = self.records.lock().unwrap().values().cloned().collect();
-            if let Some(filter) = filter
-                && let Some(status) = filter
+            if let Some(filter) = filter {
+                if let Some(prefix) = filter
+                    .strip_prefix("id LIKE '")
+                    .and_then(|value| value.strip_suffix("%'"))
+                {
+                    records.retain(|record| record.id.starts_with(prefix));
+                } else if let Some(status) = filter
                     .strip_prefix("status = '")
                     .and_then(|value| value.strip_suffix('\''))
-            {
-                records.retain(|record| {
-                    record
-                        .payload
-                        .get("status")
-                        .and_then(|value| value.as_str())
-                        == Some(status)
-                });
+                {
+                    records.retain(|record| {
+                        record
+                            .payload
+                            .get("status")
+                            .and_then(|value| value.as_str())
+                            == Some(status)
+                    });
+                } else if let Some(project_filter) = filter.strip_prefix("project = '") {
+                    let project = project_filter
+                        .split('\'')
+                        .next()
+                        .unwrap_or_default()
+                        .replace("''", "'");
+                    records.retain(|record| {
+                        record
+                            .payload
+                            .get("project")
+                            .and_then(|value| value.as_str())
+                            == Some(project.as_str())
+                    });
+                    if let Some(owner) = filter
+                        .split(" AND owner = '")
+                        .nth(1)
+                        .and_then(|value| value.strip_suffix('\''))
+                    {
+                        let owner = owner.replace("''", "'");
+                        records.retain(|record| {
+                            record.payload.get("owner").and_then(|value| value.as_str())
+                                == Some(owner.as_str())
+                        });
+                    }
+                }
             }
             records.truncate(limit);
             Ok(records)
@@ -603,12 +756,12 @@ mod tests {
         }
     }
 
-    fn todo_result(status: &str, completed_at: Option<&str>) -> SearchResult {
+    fn todo_result_with_id(id: &str, status: &str, completed_at: Option<&str>) -> SearchResult {
         SearchResult {
-            id: "todo-id".into(),
+            id: id.into(),
             score: 0.0,
             payload: json!({
-                "id": "todo-id",
+                "id": id,
                 "data": "Test TODO",
                 "title": "Test TODO",
                 "description": null,
@@ -622,6 +775,10 @@ mod tests {
                 "collection": "todos",
             }),
         }
+    }
+
+    fn todo_result(status: &str, completed_at: Option<&str>) -> SearchResult {
+        todo_result_with_id("todo-id", status, completed_at)
     }
 
     fn listed_todo(
@@ -643,6 +800,20 @@ mod tests {
             }),
         }
     }
+
+    fn blocker_result(id: &str) -> SearchResult {
+        listed_todo(
+            id,
+            "dependencies",
+            "medium",
+            "pending",
+            "2026-01-01T00:00:00Z",
+        )
+    }
+
+    const PREFIXED_TODO_ID: &str = "69964ce6-1111-4111-8111-111111111111";
+    const AMBIGUOUS_TODO_ID: &str = "69964ce6-2222-4222-8222-222222222222";
+    const BLOCKER_TODO_ID: &str = "abcdef12-3333-4333-8333-333333333333";
 
     #[test]
     fn test_validate_priority_valid() {
@@ -863,7 +1034,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_todo_round_trips_owner_and_blocked_by() {
-        let store = MockStore::default();
+        let store = MockStore::with_results([blocker_result("id-a"), blocker_result("id-b")]);
         let added = add_todo(
             &store,
             &MockEmbedder,
@@ -918,8 +1089,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_todo_normalizes_blocked_by() {
+        let store = MockStore::with_result(blocker_result("id-a"));
         let added = add_todo(
-            &MockStore::default(),
+            &store,
             &MockEmbedder,
             &MinimalTableSchema,
             AddTodoParams {
@@ -939,7 +1111,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_todo_normalizes_blocked_by() {
-        let store = MockStore::with_result(todo_result("pending", None));
+        let store = MockStore::with_results([todo_result("pending", None), blocker_result("id-a")]);
         let write_locks = TodoWriteLocks::default();
         let updated = update_todo(
             &store,
@@ -967,8 +1139,14 @@ mod tests {
             "id-b".into(),
             " id-c ".into(),
         ];
+        let blocker_results = [
+            blocker_result("id-a"),
+            blocker_result("id-b"),
+            blocker_result("id-c"),
+        ];
+        let add_store = MockStore::with_results(blocker_results.clone());
         let created = add_todo(
-            &MockStore::default(),
+            &add_store,
             &MockEmbedder,
             &MinimalTableSchema,
             AddTodoParams {
@@ -983,7 +1161,9 @@ mod tests {
         .await
         .unwrap();
 
-        let store = MockStore::with_result(todo_result("pending", None));
+        let store = MockStore::with_results(
+            std::iter::once(todo_result("pending", None)).chain(blocker_results),
+        );
         let write_locks = TodoWriteLocks::default();
         let updated = update_todo(
             &store,
@@ -1001,6 +1181,179 @@ mod tests {
 
         assert_eq!(created.blocked_by, vec!["id-b", "id-a", "id-c"]);
         assert_eq!(created.blocked_by, updated.blocked_by);
+    }
+
+    #[tokio::test]
+    async fn test_add_todo_resolves_and_deduplicates_blocker_prefixes() {
+        let store = MockStore::with_result(blocker_result(BLOCKER_TODO_ID));
+
+        let added = add_todo(
+            &store,
+            &MockEmbedder,
+            &MinimalTableSchema,
+            AddTodoParams {
+                title: "Blocked work".into(),
+                description: None,
+                project: "memcan".into(),
+                priority: None,
+                owner: None,
+                blocked_by: Some(vec!["abcdef12".into(), "abcdef12-3333".into()]),
+            },
+        )
+        .await
+        .unwrap();
+        let stored = get_todo(&store, &added.id).await.unwrap().unwrap();
+
+        assert_eq!(added.blocked_by, vec![BLOCKER_TODO_ID]);
+        assert_eq!(stored.blocked_by, vec![BLOCKER_TODO_ID]);
+    }
+
+    #[tokio::test]
+    async fn test_update_todo_resolves_blocker_prefix_to_full_id() {
+        let store = MockStore::with_results([
+            todo_result_with_id(PREFIXED_TODO_ID, "pending", None),
+            blocker_result(BLOCKER_TODO_ID),
+        ]);
+        let write_locks = TodoWriteLocks::default();
+
+        let updated = update_todo(
+            &store,
+            &MockEmbedder,
+            &MinimalTableSchema,
+            &write_locks,
+            "69964ce6",
+            UpdateTodoFields {
+                blocked_by: Some(vec!["abcdef12".into()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let stored = get_todo(&store, PREFIXED_TODO_ID).await.unwrap().unwrap();
+
+        assert_eq!(updated.blocked_by, vec![BLOCKER_TODO_ID]);
+        assert_eq!(stored.blocked_by, vec![BLOCKER_TODO_ID]);
+    }
+
+    #[tokio::test]
+    async fn test_add_todo_rejects_unresolved_blockers_without_writing() {
+        let missing_store = MockStore::default();
+        let missing_error = add_todo(
+            &missing_store,
+            &MockEmbedder,
+            &MinimalTableSchema,
+            AddTodoParams {
+                title: "Blocked work".into(),
+                description: None,
+                project: "memcan".into(),
+                priority: None,
+                owner: None,
+                blocked_by: Some(vec!["deadbeef".into()]),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(missing_error.to_string().contains("'deadbeef'"));
+        assert!(missing_error.to_string().contains("not found"));
+        assert!(missing_store.records.lock().unwrap().is_empty());
+
+        let ambiguous_store = MockStore::with_results([
+            blocker_result(PREFIXED_TODO_ID),
+            blocker_result(AMBIGUOUS_TODO_ID),
+        ]);
+        let ambiguous_error = add_todo(
+            &ambiguous_store,
+            &MockEmbedder,
+            &MinimalTableSchema,
+            AddTodoParams {
+                title: "Blocked work".into(),
+                description: None,
+                project: "memcan".into(),
+                priority: None,
+                owner: None,
+                blocked_by: Some(vec!["69964ce6".into()]),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(ambiguous_error.to_string().contains("'69964ce6'"));
+        assert!(ambiguous_error.to_string().contains("ambiguous"));
+        assert!(
+            ambiguous_error
+                .to_string()
+                .contains("provide the full UUID")
+        );
+        assert_eq!(ambiguous_store.records.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_update_todo_rejects_unresolved_blockers_without_writing() {
+        let missing_store =
+            MockStore::with_result(todo_result_with_id(PREFIXED_TODO_ID, "pending", None));
+        let write_locks = TodoWriteLocks::default();
+        let missing_error = update_todo(
+            &missing_store,
+            &MockEmbedder,
+            &MinimalTableSchema,
+            &write_locks,
+            PREFIXED_TODO_ID,
+            UpdateTodoFields {
+                title: Some("Changed".into()),
+                blocked_by: Some(vec!["deadbeef".into()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(missing_error.to_string().contains("'deadbeef'"));
+        assert!(missing_error.to_string().contains("not found"));
+        assert_eq!(
+            get_todo(&missing_store, PREFIXED_TODO_ID)
+                .await
+                .unwrap()
+                .unwrap()
+                .title,
+            "Test TODO"
+        );
+
+        let ambiguous_store = MockStore::with_results([
+            todo_result_with_id(PREFIXED_TODO_ID, "pending", None),
+            blocker_result("abcdef12-1111-4111-8111-111111111111"),
+            blocker_result("abcdef12-2222-4222-8222-222222222222"),
+        ]);
+        let ambiguous_error = update_todo(
+            &ambiguous_store,
+            &MockEmbedder,
+            &MinimalTableSchema,
+            &write_locks,
+            PREFIXED_TODO_ID,
+            UpdateTodoFields {
+                title: Some("Changed".into()),
+                blocked_by: Some(vec!["abcdef12".into()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(ambiguous_error.to_string().contains("'abcdef12'"));
+        assert!(ambiguous_error.to_string().contains("ambiguous"));
+        assert!(
+            ambiguous_error
+                .to_string()
+                .contains("provide the full UUID")
+        );
+        assert_eq!(
+            get_todo(&ambiguous_store, PREFIXED_TODO_ID)
+                .await
+                .unwrap()
+                .unwrap()
+                .title,
+            "Test TODO"
+        );
     }
 
     #[tokio::test]
@@ -1200,6 +1553,135 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_exact_todo_id_wins_without_prefix_scan() {
+        let store = MockStore::with_results([
+            todo_result_with_id("69964ce6", "pending", None),
+            todo_result_with_id(PREFIXED_TODO_ID, "pending", None),
+        ]);
+
+        let item = get_todo(&store, "69964ce6").await.unwrap().unwrap();
+
+        assert_eq!(item.id, "69964ce6");
+        assert!(store.last_filter.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_todo_resolves_unique_prefix_to_full_id() {
+        let store = MockStore::with_result(todo_result_with_id(PREFIXED_TODO_ID, "pending", None));
+
+        let item = get_todo(&store, "69964ce6").await.unwrap().unwrap();
+
+        assert_eq!(item.id, PREFIXED_TODO_ID);
+        assert_eq!(
+            store.last_filter.lock().unwrap().as_deref(),
+            Some("id LIKE '69964ce6%'")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_todo_short_prefix_returns_not_found_without_scan() {
+        let store = MockStore::with_result(todo_result_with_id(PREFIXED_TODO_ID, "pending", None));
+
+        assert!(get_todo(&store, "69964ce").await.unwrap().is_none());
+        assert!(store.last_filter.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_todo_long_unknown_prefix_returns_not_found() {
+        let store = MockStore::default();
+
+        assert!(get_todo(&store, "deadbeef").await.unwrap().is_none());
+        assert_eq!(
+            store.last_filter.lock().unwrap().as_deref(),
+            Some("id LIKE 'deadbeef%'")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_todo_ambiguous_prefix_lists_candidates() {
+        let store = MockStore::with_results([
+            todo_result_with_id(PREFIXED_TODO_ID, "pending", None),
+            todo_result_with_id(AMBIGUOUS_TODO_ID, "pending", None),
+        ]);
+
+        let error = get_todo(&store, "69964ce6").await.unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("ambiguous todo id prefix '69964ce6'"));
+        assert!(message.contains("matches 2 todos"));
+        assert!(message.contains(PREFIXED_TODO_ID));
+        assert!(message.contains(AMBIGUOUS_TODO_ID));
+        assert!(message.contains("provide the full UUID"));
+    }
+
+    #[tokio::test]
+    async fn test_update_todo_resolves_unique_prefix_to_full_id() {
+        let store = MockStore::with_result(todo_result_with_id(PREFIXED_TODO_ID, "pending", None));
+        let write_locks = TodoWriteLocks::default();
+
+        let item = update_todo(
+            &store,
+            &MockEmbedder,
+            &MinimalTableSchema,
+            &write_locks,
+            "69964ce6",
+            UpdateTodoFields {
+                priority: Some("high".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(item.id, PREFIXED_TODO_ID);
+        assert_eq!(item.priority, "high");
+    }
+
+    #[tokio::test]
+    async fn test_complete_todo_resolves_unique_prefix_to_full_id() {
+        let store = MockStore::with_result(todo_result_with_id(PREFIXED_TODO_ID, "pending", None));
+        let write_locks = TodoWriteLocks::default();
+
+        let item = complete_todo(
+            &store,
+            &MockEmbedder,
+            &MinimalTableSchema,
+            &write_locks,
+            "69964ce6",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(item.id, PREFIXED_TODO_ID);
+        assert_eq!(item.status, "done");
+    }
+
+    #[tokio::test]
+    async fn test_delete_todo_resolves_unique_prefix_and_returns_full_id() {
+        let store = MockStore::with_result(todo_result_with_id(PREFIXED_TODO_ID, "pending", None));
+        let write_locks = TodoWriteLocks::default();
+
+        let deleted_id = delete_todo(&store, &write_locks, "69964ce6").await.unwrap();
+
+        assert_eq!(deleted_id, PREFIXED_TODO_ID);
+        assert!(get_todo(&store, PREFIXED_TODO_ID).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_two_prefix_lengths_resolve_to_same_full_id() {
+        let store = MockStore::with_result(todo_result_with_id(PREFIXED_TODO_ID, "pending", None));
+
+        let short = resolve_todo_id(&store, "69964ce6").await.unwrap().unwrap();
+        let longer = resolve_todo_id(&store, "69964ce6-1111")
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(short, PREFIXED_TODO_ID);
+        assert_eq!(longer, PREFIXED_TODO_ID);
+    }
+
+    #[tokio::test]
     async fn test_update_todo_owner_set_clear_and_unchanged() {
         let store = MockStore::with_result(todo_result("pending", None));
         let write_locks = TodoWriteLocks::default();
@@ -1328,7 +1810,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_todo_blocked_by_replace_clear_and_unchanged() {
-        let store = MockStore::with_result(todo_result("pending", None));
+        let store = MockStore::with_results([
+            todo_result("pending", None),
+            blocker_result("id-a"),
+            blocker_result("id-b"),
+        ]);
         let write_locks = TodoWriteLocks::default();
 
         let unchanged = update_todo(
