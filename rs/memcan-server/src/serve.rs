@@ -1389,7 +1389,7 @@ impl MemcanService {
     }
 
     #[tool(
-        description = "Add a per-project TODO item. TODOs are also searchable via the unified 'search' tool."
+        description = "Add a per-project TODO item; blocked_by accepts unique short-ID prefixes. TODOs are also searchable via the unified 'search' tool."
     )]
     async fn add_todo(
         &self,
@@ -1472,7 +1472,7 @@ impl MemcanService {
     }
 
     #[tool(
-        description = "Update a TODO item's title, description, priority, status, owner, or blocked_by."
+        description = "Update a TODO item's title, description, priority, status, owner, or blocked_by; IDs accept unique short-ID prefixes."
     )]
     async fn update_todo(
         &self,
@@ -1520,7 +1520,7 @@ impl MemcanService {
         )]))
     }
 
-    #[tool(description = "Mark a TODO item as done.")]
+    #[tool(description = "Mark a TODO item as done; its ID accepts a unique short-ID prefix.")]
     async fn complete_todo(
         &self,
         Parameters(params): Parameters<CompleteTodoParams>,
@@ -1557,7 +1557,7 @@ impl MemcanService {
         )]))
     }
 
-    #[tool(description = "Delete a TODO item by ID.")]
+    #[tool(description = "Delete a TODO item by ID or a unique short-ID prefix.")]
     async fn delete_todo(
         &self,
         Parameters(params): Parameters<DeleteTodoParams>,
@@ -1569,7 +1569,7 @@ impl MemcanService {
             .check(DependencyId::LanceDb)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
-        todo::delete_todo(
+        let resolved_id = todo::delete_todo(
             self.state.store.as_ref(),
             self.state.todo_write_locks.as_ref(),
             &params.todo_id,
@@ -1582,14 +1582,14 @@ impl MemcanService {
 
         self.state.health.report_success(DependencyId::LanceDb);
 
-        let response = serde_json::json!({ "status": "deleted", "todo_id": params.todo_id });
+        let response = serde_json::json!({ "status": "deleted", "todo_id": resolved_id });
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string(&response).unwrap_or_default(),
         )]))
     }
 
     #[tool(
-        description = "Fetch a single TODO by id. Returns the item, or a not-found marker for an unknown id."
+        description = "Fetch a single TODO by ID or unique short-ID prefix. Returns the item, or a not-found marker for an unknown ID."
     )]
     async fn get_todo(
         &self,
@@ -2297,16 +2297,28 @@ mod tests {
             async fn scroll(
                 &self,
                 _: &str,
-                _: Option<&str>,
-                _: usize,
+                filter: Option<&str>,
+                limit: usize,
                 _: usize,
             ) -> memcan_core::error::Result<Vec<SearchResult>> {
-                Ok(vec![])
+                let mut records: Vec<_> = self.records.lock().unwrap().values().cloned().collect();
+                if let Some(prefix) = filter
+                    .and_then(|value| value.strip_prefix("id LIKE '"))
+                    .and_then(|value| value.strip_suffix("%'"))
+                {
+                    records.retain(|record| record.id.starts_with(prefix));
+                }
+                records.truncate(limit);
+                Ok(records)
             }
             async fn count(&self, _: &str, _: Option<&str>) -> memcan_core::error::Result<usize> {
                 Ok(0)
             }
-            async fn delete(&self, _: &str, _: &[String]) -> memcan_core::error::Result<()> {
+            async fn delete(&self, _: &str, ids: &[String]) -> memcan_core::error::Result<()> {
+                let mut records = self.records.lock().unwrap();
+                for id in ids {
+                    records.remove(id);
+                }
                 Ok(())
             }
             async fn delete_by_filter(
@@ -2441,6 +2453,27 @@ mod tests {
     }
 
     #[test]
+    fn todo_tool_descriptions_advertise_short_id_prefixes() {
+        let service = make_test_service();
+        let tools = service.tool_router.list_all();
+
+        for name in [
+            "add_todo",
+            "get_todo",
+            "update_todo",
+            "complete_todo",
+            "delete_todo",
+        ] {
+            let tool = tools.iter().find(|tool| tool.name == name).unwrap();
+            let description = tool.description.as_deref().unwrap_or_default();
+            assert!(
+                description.contains("prefix"),
+                "{name} does not advertise short-ID-prefix support: {description}"
+            );
+        }
+    }
+
+    #[test]
     fn todo_param_schemas_keep_owner_and_blocked_by_optional() {
         let add_schema = serde_json::to_value(rmcp::schemars::schema_for!(AddTodoParams)).unwrap();
         let add_properties = add_schema["properties"].as_object().unwrap();
@@ -2495,6 +2528,47 @@ mod tests {
     #[tokio::test]
     async fn get_todo_success_returns_serialized_item_fields() {
         let service = make_test_service();
+        let first_blocker = service
+            .add_todo(Parameters(AddTodoParams {
+                title: "First dependency".into(),
+                description: None,
+                project: "memcan".into(),
+                priority: None,
+                owner: None,
+                blocked_by: None,
+            }))
+            .await
+            .unwrap();
+        let first_blocker: serde_json::Value = serde_json::from_str(
+            first_blocker.content[0]
+                .as_text()
+                .expect("text response")
+                .text
+                .as_ref(),
+        )
+        .unwrap();
+        let first_blocker_id = first_blocker["id"].as_str().unwrap().to_string();
+        let second_blocker = service
+            .add_todo(Parameters(AddTodoParams {
+                title: "Second dependency".into(),
+                description: None,
+                project: "memcan".into(),
+                priority: None,
+                owner: None,
+                blocked_by: None,
+            }))
+            .await
+            .unwrap();
+        let second_blocker: serde_json::Value = serde_json::from_str(
+            second_blocker.content[0]
+                .as_text()
+                .expect("text response")
+                .text
+                .as_ref(),
+        )
+        .unwrap();
+        let second_blocker_id = second_blocker["id"].as_str().unwrap().to_string();
+
         let added = service
             .add_todo(Parameters(AddTodoParams {
                 title: "Blocked work".into(),
@@ -2502,7 +2576,7 @@ mod tests {
                 project: "memcan".into(),
                 priority: None,
                 owner: Some("bilby".into()),
-                blocked_by: Some(vec!["dependency-a".into(), "dependency-b".into()]),
+                blocked_by: Some(vec![first_blocker_id.clone(), second_blocker_id.clone()]),
             }))
             .await
             .unwrap();
@@ -2536,9 +2610,54 @@ mod tests {
         assert_eq!(response["owner"], "bilby");
         assert_eq!(
             response["blocked_by"],
-            serde_json::json!(["dependency-a", "dependency-b"])
+            serde_json::json!([first_blocker_id, second_blocker_id])
         );
         assert_eq!(response["status"], "pending");
+    }
+
+    #[tokio::test]
+    async fn delete_todo_prefix_response_returns_resolved_full_id() {
+        let service = make_test_service();
+        let added = service
+            .add_todo(Parameters(AddTodoParams {
+                title: "Delete me".into(),
+                description: None,
+                project: "memcan".into(),
+                priority: None,
+                owner: None,
+                blocked_by: None,
+            }))
+            .await
+            .unwrap();
+        let added: serde_json::Value = serde_json::from_str(
+            added.content[0]
+                .as_text()
+                .expect("text response")
+                .text
+                .as_ref(),
+        )
+        .unwrap();
+        let full_id = added["id"].as_str().unwrap();
+        let prefix = &full_id[..8];
+
+        let deleted = service
+            .delete_todo(Parameters(DeleteTodoParams {
+                todo_id: prefix.into(),
+            }))
+            .await
+            .unwrap();
+        let response: serde_json::Value = serde_json::from_str(
+            deleted.content[0]
+                .as_text()
+                .expect("text response")
+                .text
+                .as_ref(),
+        )
+        .unwrap();
+
+        assert_eq!(response["status"], "deleted");
+        assert_eq!(response["todo_id"], full_id);
+        assert_ne!(response["todo_id"], prefix);
     }
 
     #[test]
