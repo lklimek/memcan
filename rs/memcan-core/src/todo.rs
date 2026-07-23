@@ -26,6 +26,7 @@ const VALID_STATUSES: &[&str] = &[
     "postponed",
     "cancelled",
 ];
+const MAX_LIST_TODOS_SCAN: usize = 10_000;
 const MAX_LIST_ALL_TODOS_SCAN: usize = 10_000;
 const MIN_ID_PREFIX_LEN: usize = 8;
 const MAX_ID_PREFIX_MATCHES: usize = 5;
@@ -319,6 +320,10 @@ pub async fn add_todo(
     Ok(item)
 }
 
+/// List TODO items for one project, optionally filtered by status and owner.
+///
+/// The store scan is hard-capped at 10,000 matching rows before sorting.
+/// Once matching rows reach that cap, results can silently omit TODOs outside the scan.
 pub async fn list_todos(
     store: &dyn VectorStore,
     project: &str,
@@ -344,15 +349,27 @@ pub async fn list_todos(
         filter.push_str(&format!(" AND owner = '{safe_owner}'"));
     }
 
-    let results = store.scroll(TODOS_TABLE, Some(&filter), limit, 0).await?;
+    let results = store
+        .scroll(TODOS_TABLE, Some(&filter), MAX_LIST_TODOS_SCAN, 0)
+        .await?;
+    if results.len() == MAX_LIST_TODOS_SCAN {
+        tracing::warn!(
+            scan_limit = MAX_LIST_TODOS_SCAN,
+            project,
+            status_filter = status_filter.unwrap_or("all"),
+            owner_filter = owner_filter.as_deref().unwrap_or("all"),
+            "Project TODO list scan reached the hard cap; results may omit stored tasks"
+        );
+    }
 
     let mut todos: Vec<TodoItem> = results.iter().map(parse_todo).collect();
     todos.sort_by(|a, b| {
         priority_rank(&a.priority)
             .cmp(&priority_rank(&b.priority))
             .then_with(|| a.created_at.cmp(&b.created_at))
+            .then_with(|| a.id.cmp(&b.id))
     });
-
+    todos.truncate(limit);
     Ok(todos)
 }
 
@@ -574,7 +591,7 @@ pub async fn delete_todo(
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
     use std::sync::Mutex;
 
     use crate::traits::MinimalTableSchema;
@@ -608,14 +625,14 @@ mod tests {
 
     #[derive(Default)]
     struct MockStore {
-        records: Mutex<HashMap<String, SearchResult>>,
+        records: Mutex<BTreeMap<String, SearchResult>>,
         last_filter: Mutex<Option<String>>,
     }
 
     impl MockStore {
         fn with_result(result: SearchResult) -> Self {
             Self {
-                records: Mutex::new(HashMap::from([(result.id.clone(), result)])),
+                records: Mutex::new(BTreeMap::from([(result.id.clone(), result)])),
                 last_filter: Mutex::new(None),
             }
         }
@@ -1411,6 +1428,26 @@ mod tests {
             store.last_filter.lock().unwrap().as_deref(),
             Some("project = 'memcan' AND owner = 'bilby''s'")
         );
+    }
+
+    #[tokio::test]
+    async fn test_list_todos_applies_limit_after_sorting() {
+        let store = MockStore::with_results([
+            listed_todo("a-low", "memcan", "low", "pending", "2026-01-01T00:00:00Z"),
+            listed_todo("b-low", "memcan", "low", "pending", "2026-01-02T00:00:00Z"),
+            listed_todo(
+                "z-high",
+                "memcan",
+                "high",
+                "pending",
+                "2026-01-03T00:00:00Z",
+            ),
+        ]);
+
+        let listed = list_todos(&store, "memcan", None, None, 2).await.unwrap();
+        let ids: Vec<_> = listed.iter().map(|item| item.id.as_str()).collect();
+
+        assert_eq!(ids, ["z-high", "a-low"]);
     }
 
     #[tokio::test]
