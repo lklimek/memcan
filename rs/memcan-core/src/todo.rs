@@ -28,7 +28,9 @@ const VALID_STATUSES: &[&str] = &[
 ];
 const MAX_LIST_TODOS_SCAN: usize = 10_000;
 const MAX_LIST_ALL_TODOS_SCAN: usize = 10_000;
+/// Minimum prefix length before scanning: eight hex characters provide a 32-bit collision-resistance floor.
 const MIN_ID_PREFIX_LEN: usize = 8;
+/// Caps ambiguous candidates listed before the error falls back to "N+" wording.
 const MAX_ID_PREFIX_MATCHES: usize = 5;
 
 const TODO_WRITE_LOCK_SHARDS: usize = 64;
@@ -145,7 +147,7 @@ async fn resolve_todo_prefix(store: &dyn VectorStore, todo_id: &str) -> Result<O
 
     let filter = format!("id LIKE '{}%'", sanitize_like(todo_id));
     let candidates = store
-        .scroll(TODOS_TABLE, Some(&filter), MAX_ID_PREFIX_MATCHES, 0)
+        .scroll(TODOS_TABLE, Some(&filter), MAX_ID_PREFIX_MATCHES + 1, 0)
         .await?;
     let mut candidate_ids: Vec<_> = candidates
         .into_iter()
@@ -157,6 +159,13 @@ async fn resolve_todo_prefix(store: &dyn VectorStore, todo_id: &str) -> Result<O
     match candidate_ids.len() {
         0 => Ok(None),
         1 => Ok(candidate_ids.pop()),
+        count if count > MAX_ID_PREFIX_MATCHES => {
+            candidate_ids.truncate(MAX_ID_PREFIX_MATCHES);
+            Err(crate::error::MemcanError::Other(format!(
+                "ambiguous todo id prefix '{todo_id}' matches at least {MAX_ID_PREFIX_MATCHES}+ todos (showing {MAX_ID_PREFIX_MATCHES}: {}) — provide the full UUID",
+                candidate_ids.join(", ")
+            )))
+        }
         count => Err(crate::error::MemcanError::Other(format!(
             "ambiguous todo id prefix '{todo_id}' matches {count} todos ({}) — provide the full UUID",
             candidate_ids.join(", ")
@@ -1649,6 +1658,34 @@ mod tests {
         assert!(message.contains(PREFIXED_TODO_ID));
         assert!(message.contains(AMBIGUOUS_TODO_ID));
         assert!(message.contains("provide the full UUID"));
+    }
+
+    #[tokio::test]
+    async fn test_get_todo_ambiguous_prefix_reports_truncated_count() {
+        let ids = [
+            "69964ce6-1111-4111-8111-111111111111",
+            "69964ce6-2222-4222-8222-222222222222",
+            "69964ce6-3333-4333-8333-333333333333",
+            "69964ce6-4444-4444-8444-444444444444",
+            "69964ce6-5555-4555-8555-555555555555",
+            "69964ce6-6666-4666-8666-666666666666",
+        ];
+        let store = MockStore::with_results(
+            ids.into_iter()
+                .map(|id| todo_result_with_id(id, "pending", None)),
+        );
+
+        let error = get_todo(&store, "69964ce6").await.unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "ambiguous todo id prefix '69964ce6' matches at least \
+                 {MAX_ID_PREFIX_MATCHES}+ todos (showing {MAX_ID_PREFIX_MATCHES}: {}) — provide \
+                 the full UUID",
+                ids[..MAX_ID_PREFIX_MATCHES].join(", ")
+            )
+        );
     }
 
     #[tokio::test]

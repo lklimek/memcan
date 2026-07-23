@@ -123,10 +123,10 @@ Server exposes these MCP tools (via HTTP at `/mcp`):
 | `drop_indexed_standards` | Drop all indexed data for a standard_id |
 | `add_todo` | Add a per-project TODO item, optionally setting `owner` and `blocked_by` |
 | `list_todos` | List TODOs by project/owner/status with `has_more` pagination (default 100, max 200) |
-| `update_todo` | Update a TODO item's fields, including `owner` and `blocked_by`; statuses are `pending`, `done`, `in_progress`, `blocked`, `postponed`, or `cancelled` |
-| `complete_todo` | Mark a TODO item as done |
-| `delete_todo` | Delete a TODO item by ID |
-| `get_todo` | Fetch a single TODO item by ID |
+| `update_todo` | Update a TODO item's fields, including `owner` and `blocked_by`; statuses are `pending`, `done`, `in_progress`, `blocked`, `postponed`, or `cancelled`; `todo_id` accepts a full UUID or unambiguous short-ID prefix (>= 8 chars), while ambiguous prefixes fail and ask for the full UUID |
+| `complete_todo` | Mark a TODO item as done; `todo_id` accepts a full UUID or unambiguous short-ID prefix (>= 8 chars), while ambiguous prefixes fail and ask for the full UUID |
+| `delete_todo` | Delete a TODO item; `todo_id` accepts a full UUID or unambiguous short-ID prefix (>= 8 chars), while ambiguous prefixes fail and ask for the full UUID |
+| `get_todo` | Fetch a single TODO item; `todo_id` accepts a full UUID or unambiguous short-ID prefix (>= 8 chars), while ambiguous prefixes fail and ask for the full UUID |
 | `export_collection` | Export a collection as JSONL (paginated, no vectors) |
 | `_import_records` | Import JSONL records: embed + upsert (internal/hidden) |
 | `index_code_files` | Index source code files: symbol extraction + LLM + embedding |
