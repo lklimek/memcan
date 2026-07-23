@@ -50,6 +50,15 @@ pub struct UnifiedSearchResult {
     pub metadata: serde_json::Value,
 }
 
+/// A globally ranked unified-search page and its candidate-pool continuation indicator.
+#[derive(Debug, Clone, Serialize)]
+pub struct UnifiedSearchPage {
+    /// Globally ranked results, capped at the effective limit.
+    pub results: Vec<UnifiedSearchResult>,
+    /// Whether the combined over-fetched candidate pool exceeded the effective limit.
+    pub has_more: bool,
+}
+
 fn table_for_collection(name: &str) -> Option<&'static str> {
     match name {
         "memories" => Some(MEMORIES_TABLE),
@@ -157,14 +166,18 @@ fn to_unified(collection: &str, results: Vec<SearchResult>) -> Vec<UnifiedSearch
         .collect()
 }
 
-/// Search across multiple collections in parallel, merging results by score.
+/// Search collections in parallel and return a globally ranked page.
+///
+/// `has_more` reports whether the combined pool fetched at `limit + 1` per selected
+/// collection exceeded the global limit. It does not inspect candidates beyond that pool.
 pub async fn unified_search(
     params: &UnifiedSearchParams,
     store: &dyn VectorStore,
     embedder: &dyn EmbeddingProvider,
     default_user_id: &str,
-) -> Result<Vec<UnifiedSearchResult>> {
+) -> Result<UnifiedSearchPage> {
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT) as usize;
+    let fetch_limit = limit + 1;
 
     let collections: Vec<&str> = match &params.collections {
         Some(cols) => cols
@@ -183,7 +196,10 @@ pub async fn unified_search(
     };
 
     if collections.is_empty() {
-        return Ok(vec![]);
+        return Ok(UnifiedSearchPage {
+            results: Vec::new(),
+            has_more: false,
+        });
     }
 
     let vectors = embedder.embed(std::slice::from_ref(&params.query)).await?;
@@ -221,7 +237,7 @@ pub async fn unified_search(
         }
         let table = table_for_collection("memories").unwrap();
         match store
-            .search(table, vector, mem_filter.as_deref(), limit, 0)
+            .search(table, vector, mem_filter.as_deref(), fetch_limit, 0)
             .await
         {
             Ok(r) => to_unified("memories", r),
@@ -238,7 +254,7 @@ pub async fn unified_search(
         }
         let table = table_for_collection("standards").unwrap();
         match store
-            .search(table, vector, std_filter.as_deref(), limit, 0)
+            .search(table, vector, std_filter.as_deref(), fetch_limit, 0)
             .await
         {
             Ok(r) => to_unified("standards", r),
@@ -255,7 +271,7 @@ pub async fn unified_search(
         }
         let table = table_for_collection("code").unwrap();
         match store
-            .search(table, vector, code_filter.as_deref(), limit, 0)
+            .search(table, vector, code_filter.as_deref(), fetch_limit, 0)
             .await
         {
             Ok(r) => to_unified("code", r),
@@ -272,7 +288,7 @@ pub async fn unified_search(
         }
         let table = table_for_collection("todos").unwrap();
         match store
-            .search(table, vector, todos_filter.as_deref(), limit, 0)
+            .search(table, vector, todos_filter.as_deref(), fetch_limit, 0)
             .await
         {
             Ok(r) => to_unified("todos", r),
@@ -297,9 +313,13 @@ pub async fn unified_search(
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+    let has_more = all.len() > limit;
     // Global cap: keep only the top-`limit` results across all collections.
     all.truncate(limit);
-    Ok(all)
+    Ok(UnifiedSearchPage {
+        results: all,
+        has_more,
+    })
 }
 
 #[cfg(test)]
@@ -432,11 +452,13 @@ mod tests {
             file_path: None,
         };
 
-        let results = unified_search(&params, &store, &MockEmbedder, "global")
+        let page = unified_search(&params, &store, &MockEmbedder, "global")
             .await
             .unwrap();
+        let results = page.results;
 
         assert_eq!(results.len(), 4);
+        assert!(!page.has_more);
         assert_eq!(results[0].collection, "memories");
         assert_eq!(results[0].score, 0.9);
         assert_eq!(results[1].collection, "standards");
@@ -462,12 +484,13 @@ mod tests {
             file_path: None,
         };
 
-        let results = unified_search(&params, &store, &MockEmbedder, "global")
+        let page = unified_search(&params, &store, &MockEmbedder, "global")
             .await
             .unwrap();
 
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].collection, "code");
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].collection, "code");
+        assert!(!page.has_more);
     }
 
     #[tokio::test]
@@ -486,11 +509,12 @@ mod tests {
             file_path: None,
         };
 
-        let results = unified_search(&params, &store, &MockEmbedder, "global")
+        let page = unified_search(&params, &store, &MockEmbedder, "global")
             .await
             .unwrap();
 
-        assert!(results.is_empty());
+        assert!(page.results.is_empty());
+        assert!(!page.has_more);
     }
 
     #[tokio::test]
@@ -514,12 +538,14 @@ mod tests {
             file_path: None,
         };
 
-        let results = unified_search(&params, &store, &MockEmbedder, "global")
+        let page = unified_search(&params, &store, &MockEmbedder, "global")
             .await
             .unwrap();
+        let results = page.results;
 
         assert!(results[0].score >= results[1].score);
         assert_eq!(results[0].collection, "code");
+        assert!(!page.has_more);
     }
 
     #[tokio::test]
@@ -538,11 +564,12 @@ mod tests {
             file_path: None,
         };
 
-        let results = unified_search(&params, &store, &MockEmbedder, "global")
+        let page = unified_search(&params, &store, &MockEmbedder, "global")
             .await
             .unwrap();
 
-        assert!(results.is_empty());
+        assert!(page.results.is_empty());
+        assert!(!page.has_more);
     }
 
     #[test]
@@ -794,9 +821,10 @@ mod tests {
             file_path: None,
         };
 
-        let results = unified_search(&params, &store, &MockEmbedder, "global")
+        let page = unified_search(&params, &store, &MockEmbedder, "global")
             .await
             .unwrap();
+        let results = page.results;
 
         assert_eq!(
             results.len(),
@@ -811,6 +839,7 @@ mod tests {
         assert_eq!(results[0].score, 0.9);
         assert_eq!(results[1].score, 0.85);
         assert_eq!(results[2].score, 0.7);
+        assert!(page.has_more);
     }
 
     // T4: data shorter than the cap is returned unchanged (no ellipsis appended).
