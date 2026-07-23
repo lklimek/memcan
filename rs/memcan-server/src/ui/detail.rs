@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     Extension,
-    extract::Path,
+    extract::{Path, Query, rejection::QueryRejection},
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -13,7 +13,7 @@ use memcan_core::{
 };
 use tracing::error;
 
-use super::{encode_task_id, fmt_date_long, layout, priority_badge, status_badge};
+use super::{encode_task_id, fmt_date_long, layout, priority_badge, status_badge, url_with_query};
 
 pub(super) async fn redirect() -> Response {
     (
@@ -25,25 +25,28 @@ pub(super) async fn redirect() -> Response {
 
 pub(super) async fn task(
     Path(id): Path<String>,
+    params: Result<Query<Vec<(String, String)>>, QueryRejection>,
     Extension(store): Extension<Arc<dyn VectorStore>>,
 ) -> Response {
+    let params = params.map_or_else(|_| Vec::new(), |Query(params)| params);
+    let back_url = url_with_query("/ui/tasks", &params);
     match get_todo(store.as_ref(), &id).await {
         Ok(Some(item)) => layout(
             &format!("{} · MemCan Tasks", item.title),
-            task_markup(&item),
+            task_markup(&item, &back_url, &params),
         )
         .into_response(),
-        Ok(None) => not_found(),
+        Ok(None) => not_found(&back_url),
         Err(source) => {
             error!(error = %source, task_id = ?id, "web UI task detail could not load");
-            service_unavailable()
+            service_unavailable(&back_url)
         }
     }
 }
 
-fn task_markup(item: &TodoItem) -> Markup {
+fn task_markup(item: &TodoItem, back_url: &str, params: &[(String, String)]) -> Markup {
     html! {
-        nav aria-label="Breadcrumb" { a href="/ui/tasks" { "Back to tasks" } }
+        nav aria-label="Breadcrumb" { a href=(back_url) { "Back to tasks" } }
         article class="panel task-detail" {
             h1 { (&item.title) }
             dl class="details" {
@@ -80,7 +83,10 @@ fn task_markup(item: &TodoItem) -> Markup {
                     ul {
                         @for blocker in &item.blocked_by {
                             li {
-                                a href=(format!("/ui/tasks/{}", encode_task_id(blocker))) { (blocker) }
+                                a href=(url_with_query(
+                                    &format!("/ui/tasks/{}", encode_task_id(blocker)),
+                                    params,
+                                )) { (blocker) }
                             }
                         }
                     }
@@ -90,13 +96,13 @@ fn task_markup(item: &TodoItem) -> Markup {
     }
 }
 
-fn not_found() -> Response {
+fn not_found(back_url: &str) -> Response {
     (
         StatusCode::NOT_FOUND,
         layout(
             "Task not found",
             html! {
-                nav aria-label="Breadcrumb" { a href="/ui/tasks" { "Back to tasks" } }
+                nav aria-label="Breadcrumb" { a href=(back_url) { "Back to tasks" } }
                 section class="panel empty-state" {
                     h1 { "Task not found." }
                     p { "The requested task does not exist." }
@@ -107,12 +113,13 @@ fn not_found() -> Response {
         .into_response()
 }
 
-pub(super) fn service_unavailable() -> Response {
+pub(super) fn service_unavailable(back_url: &str) -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
         layout(
             "Tasks unavailable",
             html! {
+                nav aria-label="Breadcrumb" { a href=(back_url) { "Back to tasks" } }
                 h1 { "Tasks unavailable" }
                 p { "Unable to load tasks right now." }
             },
@@ -174,6 +181,23 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    async fn detail_view_preserves_and_safely_encodes_incoming_filter_query() {
+        let app = app_with_items(base_items()).await;
+        let (status, body) = get(
+            &app.router,
+            "/ui/tasks/T-HIGH-1?status=pending%26blocked&project=alpha%26beta%3Dgamma%23frag&sort=created",
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains(
+            "href=\"/ui/tasks?status=pending%26blocked&amp;project=alpha%26beta%3Dgamma%23frag&amp;sort=created\">Back to tasks</a>"
+        ));
+        assert!(!body.contains("project=alpha&amp;beta=gamma#frag"));
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn detail_view_omits_empty_blocked_by_and_uses_optional_placeholders() {
         let mut task = item(
             "LEGACY",
@@ -222,11 +246,17 @@ mod tests {
     #[serial]
     async fn detail_view_unknown_id_returns_friendly_404() {
         let app = app_with_items(base_items()).await;
-        let (status, body) = get(&app.router, "/ui/tasks/does-not-exist").await;
+        let (status, body) = get(
+            &app.router,
+            "/ui/tasks/does-not-exist?status=done&status_filter_present=1",
+        )
+        .await;
 
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(body.contains("Task not found."));
-        assert!(body.contains("href=\"/ui/tasks\">Back to tasks</a>"));
+        assert!(body.contains(
+            "href=\"/ui/tasks?status=done&amp;status_filter_present=1\">Back to tasks</a>"
+        ));
         for internal in ["panic", "unwrap", ".rs:", "lancedb"] {
             assert!(!body.contains(internal));
         }
@@ -236,10 +266,17 @@ mod tests {
     #[serial]
     async fn detail_view_store_failure_returns_friendly_503_without_internal_text() {
         let app = app_with_error_store();
-        let (status, body) = get(&app.router, "/ui/tasks/T-HIGH-1").await;
+        let (status, body) = get(
+            &app.router,
+            "/ui/tasks/T-HIGH-1?project=backend&sort=status",
+        )
+        .await;
 
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(body.contains("Unable to load tasks right now."));
+        assert!(
+            body.contains("href=\"/ui/tasks?project=backend&amp;sort=status\">Back to tasks</a>")
+        );
         for internal in ["/data/", "lancedb", "SELECT", "panic", ".rs:"] {
             assert!(!body.contains(internal));
         }
