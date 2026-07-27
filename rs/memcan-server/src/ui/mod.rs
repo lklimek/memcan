@@ -35,38 +35,56 @@ const PATH_SEGMENT_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'_')
     .remove(b'~');
 const STYLES: &str = r#"
-:root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.5; }
-body { margin: 0; color: #1f2933; background: #f5f7fa; }
+:root {
+  color-scheme: light;
+  --paper: #f2f5f4;
+  --paper-raised: #ffffff;
+  --ink: #15181a;
+  --ink-soft: #454f4d;
+  --ink-faint: #6d7876;
+  --line: #d7deda;
+  --line-soft: #e6ebe8;
+  --accent: #2f6a64;
+  --danger: #a4432f;
+  --shadow: 0 1px 2px rgba(21, 24, 26, .04), 0 6px 20px rgba(21, 24, 26, .06);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+}
+* { box-sizing: border-box; }
+body { margin: 0; color: var(--ink); background: var(--paper); }
 header, main { width: min(72rem, calc(100% - 2rem)); margin-inline: auto; }
 header { padding-block: 1rem; }
 main { padding-bottom: 3rem; }
-a { color: #075985; }
-a:focus-visible, button:focus-visible, select:focus-visible { outline: 3px solid #f59e0b; outline-offset: 2px; }
-.panel { background: white; border: 1px solid #cbd5e1; border-radius: .5rem; padding: 1rem; }
+a { color: var(--accent); }
+a:focus-visible, button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.panel { background: var(--paper-raised); border: 1px solid var(--line); border-radius: .5rem; padding: 1rem; box-shadow: var(--shadow); }
 .filters { margin-block: 1rem; display: flex; flex-wrap: wrap; gap: .65rem; align-items: end; }
-label { font-weight: 650; }
-select, button { font: inherit; padding: .35rem .5rem; }
+label, legend { font-weight: 650; }
+fieldset { min-width: 0; margin: 0; border: 1px solid var(--line); border-radius: .35rem; padding: .35rem .5rem .5rem; }
+.status-options { display: flex; flex-wrap: wrap; gap: .35rem .75rem; }
+.status-option { display: inline-flex; gap: .3rem; align-items: center; font-weight: 500; }
+input[type="checkbox"] { accent-color: var(--accent); }
+select, button { font: inherit; border: 1px solid var(--line); border-radius: .35rem; padding: .35rem .5rem; }
+select { color: var(--ink); background: var(--paper-raised); }
+button { color: var(--paper-raised); background: var(--accent); border-color: var(--accent); cursor: pointer; }
 .table-wrap { overflow-x: auto; padding: 0; }
 table { width: 100%; border-collapse: collapse; }
-th, td { padding: .7rem; border-bottom: 1px solid #cbd5e1; text-align: left; vertical-align: top; }
-th { white-space: nowrap; }
-.task-count { color: #475569; }
+th, td { padding: .7rem; border-bottom: 1px solid var(--line-soft); text-align: left; vertical-align: top; }
+th { color: var(--ink-soft); white-space: nowrap; }
+.task-count { color: var(--ink-soft); }
 .task-detail { margin-top: 1rem; }
 .details { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .5rem 1rem; }
 .details dt { font-weight: 700; }
 .details dd { margin: 0; overflow-wrap: anywhere; }
 .description { white-space: pre-wrap; overflow-wrap: anywhere; }
 .badge { display: inline-flex; gap: .35rem; align-items: center; border-radius: 999px; padding: .1rem .55rem; font-size: .875rem; font-weight: 650; }
-.status-pending, .priority-low { background: #e2e8f0; color: #334155; }
-.status-in-progress, .priority-medium { background: #dbeafe; color: #1e3a8a; }
-.status-blocked, .priority-high { background: #fee2e2; color: #7f1d1d; }
-.status-done { background: #dcfce7; color: #14532d; }
-.status-postponed, .status-cancelled, .neutral { background: #e5e7eb; color: #374151; }
-@media (prefers-color-scheme: dark) {
-  body { color: #e5e7eb; background: #111827; }
-  .panel { background: #1f2937; border-color: #475569; }
-  a { color: #7dd3fc; }
-}
+.status-pending, .priority-low { background: #e3e9e6; color: #354541; }
+.status-in-progress, .priority-medium { background: #dce8e6; color: #28514c; }
+.status-blocked, .priority-high { background: #f0ded9; color: #743829; }
+.status-done { background: #dce8df; color: #2f5940; }
+.status-postponed { background: #e8e6dc; color: #5d5740; }
+.status-cancelled { background: #eee0dc; color: #793f32; }
+.neutral { background: #e7e9e7; color: #4f5957; }
 "#;
 
 /// Build the authenticated tasks UI when both shared credentials are configured.
@@ -169,6 +187,7 @@ pub(super) fn layout(title: &str, body: Markup) -> Markup {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
+                meta name="color-scheme" content="light";
                 title { (title) }
                 style { (PreEscaped(STYLES)) }
             }
@@ -207,6 +226,17 @@ pub(super) fn priority_badge(priority: &str) -> Markup {
 
 pub(super) fn encode_task_id(id: &str) -> impl std::fmt::Display + '_ {
     utf8_percent_encode(id, PATH_SEGMENT_ENCODE_SET)
+}
+
+pub(super) fn url_with_query(path: &str, params: &[(String, String)]) -> String {
+    let mut url = String::from(path);
+    for (index, (key, value)) in params.iter().enumerate() {
+        url.push(if index == 0 { '?' } else { '&' });
+        url.push_str(&utf8_percent_encode(key, PATH_SEGMENT_ENCODE_SET).to_string());
+        url.push('=');
+        url.push_str(&utf8_percent_encode(value, PATH_SEGMENT_ENCODE_SET).to_string());
+    }
+    url
 }
 
 pub(super) fn fmt_date_long(value: &str) -> String {
@@ -494,6 +524,57 @@ mod tests {
         assert!(!rendered.contains("<script"));
         assert!(rendered.contains("&lt;script&gt;future&lt;/script&gt;"));
         assert!(rendered.contains("urgent-plus"));
+        for token in [
+            "--paper: #f2f5f4",
+            "--paper-raised: #ffffff",
+            "--ink: #15181a",
+            "--ink-soft: #454f4d",
+            "--ink-faint: #6d7876",
+            "--line: #d7deda",
+            "--line-soft: #e6ebe8",
+            "--accent: #2f6a64",
+            "--danger: #a4432f",
+            "--shadow: 0 1px 2px rgba(21, 24, 26, .04), 0 6px 20px rgba(21, 24, 26, .06)",
+            "color-scheme: light",
+            "input[type=\"checkbox\"]:focus-visible",
+        ] {
+            assert!(rendered.contains(token), "missing theme token {token}");
+        }
+        for old_theme in [
+            "color-scheme: light dark",
+            "prefers-color-scheme",
+            "system-ui, sans-serif",
+            "#1f2933",
+            "#f5f7fa",
+            "#075985",
+            "#f59e0b",
+            "#cbd5e1",
+            "#475569",
+            "#e2e8f0",
+            "#dbeafe",
+            "#fee2e2",
+            "#dcfce7",
+            "#334155",
+            "#1e3a8a",
+            "#7f1d1d",
+            "#14532d",
+            "#e5e7eb",
+            "#374151",
+            "#111827",
+            "#1f2937",
+            "#7dd3fc",
+        ] {
+            assert!(
+                !rendered.contains(old_theme),
+                "old theme remains: {old_theme}"
+            );
+        }
+        assert!(rendered.contains(
+            "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif"
+        ));
+        assert!(rendered.contains(
+            "a:focus-visible, button:focus-visible, select:focus-visible, input[type=\"checkbox\"]:focus-visible"
+        ));
         assert!(!rendered.contains("outline:none"));
         assert!(!rendered.contains("outline: none"));
     }

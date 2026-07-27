@@ -355,7 +355,7 @@ pub struct ListTodosParams {
     /// Filter by owner; trimmed before matching. Omit — or pass an empty or
     /// whitespace-only string — for all owners. There is no filter for unowned TODOs.
     pub owner: Option<String>,
-    /// Max results (default 50, max 200).
+    /// Max results (default 100, max 200).
     pub limit: Option<u32>,
 }
 
@@ -440,6 +440,12 @@ fn user_filter(user_id: &str) -> String {
     format!("user_id = '{safe}'")
 }
 
+fn truncate_to_limit<T>(mut results: Vec<T>, limit: usize) -> (Vec<T>, bool) {
+    let has_more = results.len() > limit;
+    results.truncate(limit);
+    (results, has_more)
+}
+
 fn format_memory_results(results: &[memcan_core::traits::SearchResult]) -> serde_json::Value {
     let entries: Vec<serde_json::Value> = results
         .iter()
@@ -515,20 +521,19 @@ fn format_code_results(results: &[memcan_core::traits::SearchResult]) -> serde_j
     serde_json::Value::Array(entries)
 }
 
-fn empty_hint(filters: &[(&str, Option<&str>)]) -> serde_json::Value {
+fn empty_hint(filters: &[(&str, Option<&str>)]) -> String {
     let active: Vec<String> = filters
         .iter()
         .filter_map(|(k, v)| v.map(|val| format!("{k}='{val}'")))
         .collect();
-    let hint = if active.is_empty() {
+    if active.is_empty() {
         "No semantic matches found. Try broadening your query.".to_string()
     } else {
         format!(
             "No matches found. Applied filters: {}. Use list_collections() to discover valid filter values.",
             active.join(", ")
         )
-    };
-    serde_json::json!({ "results": [], "hint": hint })
+    }
 }
 
 /// Classify storage or embedding errors and report the dependency as failed.
@@ -668,7 +673,7 @@ impl MemcanService {
     }
 
     #[tool(
-        description = "Search memories with user/project scope filtering. For general search across all knowledge, prefer the unified 'search' tool."
+        description = "Search memories with user/project scope filtering. Returns {\"memories\": [...], \"has_more\": bool}; has_more indicates additional matches beyond the returned limit. For general search across all knowledge, prefer the unified 'search' tool."
     )]
     async fn search_memories(
         &self,
@@ -695,9 +700,10 @@ impl MemcanService {
         let results = self
             .state
             .store
-            .search(MEMORIES_TABLE, &vectors[0], Some(&filter), limit, 0)
+            .search(MEMORIES_TABLE, &vectors[0], Some(&filter), limit + 1, 0)
             .await
             .map_err(|e| ErrorData::internal_error(format!("search failed: {e}"), None))?;
+        let (results, has_more) = truncate_to_limit(results, limit);
 
         info!(
             results = results.len(),
@@ -705,13 +711,18 @@ impl MemcanService {
             "search completed"
         );
 
-        let output = format_memory_results(&results);
+        let output = serde_json::json!({
+            "memories": format_memory_results(&results),
+            "has_more": has_more,
+        });
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string(&output).unwrap_or_default(),
         )]))
     }
 
-    #[tool(description = "List memories for a given scope (up to limit).")]
+    #[tool(
+        description = "List memories for a given scope. Returns {\"memories\": [...], \"has_more\": bool}; has_more indicates additional matches beyond the returned limit."
+    )]
     async fn get_memories(
         &self,
         Parameters(params): Parameters<GetMemoriesParams>,
@@ -729,11 +740,15 @@ impl MemcanService {
         let results = self
             .state
             .store
-            .scroll(MEMORIES_TABLE, Some(&filter), limit, 0)
+            .scroll(MEMORIES_TABLE, Some(&filter), limit + 1, 0)
             .await
             .map_err(|e| ErrorData::internal_error(format!("scroll failed: {e}"), None))?;
+        let (results, has_more) = truncate_to_limit(results, limit);
 
-        let output = format_memory_results(&results);
+        let output = serde_json::json!({
+            "memories": format_memory_results(&results),
+            "has_more": has_more,
+        });
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string(&output).unwrap_or_default(),
         )]))
@@ -926,7 +941,7 @@ impl MemcanService {
     }
 
     #[tool(
-        description = "Search indexed standards (CWE, OWASP, etc.) with advanced filters. For general search across all knowledge, prefer the unified 'search' tool."
+        description = "Search indexed standards (CWE, OWASP, etc.) with advanced filters. Returns {\"standards\": [...], \"has_more\": bool}; has_more indicates additional matches beyond the returned limit. For general search across all knowledge, prefer the unified 'search' tool."
     )]
     async fn search_standards(
         &self,
@@ -980,11 +995,18 @@ impl MemcanService {
         let results = self
             .state
             .store
-            .search(STANDARDS_TABLE, &vectors[0], filter.as_deref(), limit, 0)
+            .search(
+                STANDARDS_TABLE,
+                &vectors[0],
+                filter.as_deref(),
+                limit + 1,
+                0,
+            )
             .await
             .map_err(|e| ErrorData::internal_error(format!("search failed: {e}"), None))?;
+        let (results, has_more) = truncate_to_limit(results, limit);
 
-        let output = if results.is_empty() {
+        let hint = if results.is_empty() {
             let hint_filters: Vec<(&str, Option<&str>)> = vec![
                 ("standard_type", standard_type.as_deref()),
                 ("standard_id", standard_id.as_deref()),
@@ -992,10 +1014,15 @@ impl MemcanService {
                 ("tech_stack", tech_stack.as_deref()),
                 ("lang", lang.as_deref()),
             ];
-            empty_hint(&hint_filters)
+            Some(empty_hint(&hint_filters))
         } else {
-            format_standards_results(&results)
+            None
         };
+        let output = serde_json::json!({
+            "standards": format_standards_results(&results),
+            "has_more": has_more,
+            "hint": hint,
+        });
 
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string(&output).unwrap_or_default(),
@@ -1003,7 +1030,7 @@ impl MemcanService {
     }
 
     #[tool(
-        description = "Search indexed code snippets with project/file/stack filters. For general search across all knowledge, prefer the unified 'search' tool."
+        description = "Search indexed code snippets with project/file/stack filters. Returns {\"code\": [...], \"has_more\": bool}; has_more indicates additional matches beyond the returned limit. For general search across all knowledge, prefer the unified 'search' tool."
     )]
     async fn search_code(
         &self,
@@ -1047,20 +1074,26 @@ impl MemcanService {
         let results = self
             .state
             .store
-            .search(CODE_TABLE, &vectors[0], filter.as_deref(), limit, 0)
+            .search(CODE_TABLE, &vectors[0], filter.as_deref(), limit + 1, 0)
             .await
             .map_err(|e| ErrorData::internal_error(format!("search failed: {e}"), None))?;
+        let (results, has_more) = truncate_to_limit(results, limit);
 
-        let output = if results.is_empty() {
+        let hint = if results.is_empty() {
             let hint_filters: Vec<(&str, Option<&str>)> = vec![
                 ("project", project.as_deref()),
                 ("tech_stack", tech_stack.as_deref()),
                 ("file_path", file_path.as_deref()),
             ];
-            empty_hint(&hint_filters)
+            Some(empty_hint(&hint_filters))
         } else {
-            format_code_results(&results)
+            None
         };
+        let output = serde_json::json!({
+            "code": format_code_results(&results),
+            "has_more": has_more,
+            "hint": hint,
+        });
 
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string(&output).unwrap_or_default(),
@@ -1068,7 +1101,7 @@ impl MemcanService {
     }
 
     #[tool(
-        description = "Search across all knowledge (memories, code, standards) in one query. Use this as the default search tool. Results are merged by relevance score. Optionally filter by collection or apply collection-specific filters."
+        description = "Search across all knowledge in one query. Use this as the default search tool. Returns {\"results\": [...], \"has_more\": bool}, merged by relevance score. has_more is true when the combined candidate pool from fetching up to limit + 1 rows per selected collection exceeds the global limit; it does not establish whether matches exist beyond that candidate pool. Optionally filter by collection or apply collection-specific filters."
     )]
     async fn search(
         &self,
@@ -1097,7 +1130,7 @@ impl MemcanService {
             file_path: params.file_path,
         };
 
-        let results = match search::unified_search(
+        let page = match search::unified_search(
             &core_params,
             self.state.store.as_ref(),
             self.state.embedder.as_ref(),
@@ -1120,14 +1153,15 @@ impl MemcanService {
         };
 
         info!(
-            results = results.len(),
-            top_score = results.first().map(|r| r.score).unwrap_or(0.0),
+            results = page.results.len(),
+            top_score = page.results.first().map(|r| r.score).unwrap_or(0.0),
             collections = ?core_params.collections,
             "search completed"
         );
 
         let output = serde_json::json!({
-            "results": results,
+            "results": page.results,
+            "has_more": page.has_more,
         });
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string(&output).unwrap_or_default(),
@@ -1389,7 +1423,7 @@ impl MemcanService {
     }
 
     #[tool(
-        description = "Add a per-project TODO item. TODOs are also searchable via the unified 'search' tool."
+        description = "Add a per-project TODO item; blocked_by accepts unique short-ID prefixes. TODOs are also searchable via the unified 'search' tool."
     )]
     async fn add_todo(
         &self,
@@ -1436,7 +1470,7 @@ impl MemcanService {
     }
 
     #[tool(
-        description = "List TODO items for a project, sorted by priority (high first). TODOs are also searchable via the unified 'search' tool."
+        description = "List TODO items for a project, sorted by priority (high first). Returns {\"todos\": [...], \"has_more\": bool}; has_more indicates additional matches beyond the returned limit. TODOs are also searchable via the unified 'search' tool."
     )]
     async fn list_todos(
         &self,
@@ -1449,14 +1483,14 @@ impl MemcanService {
             .check(DependencyId::LanceDb)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
-        let limit = params.limit.unwrap_or(50).clamp(1, 200) as usize;
+        let limit = params.limit.unwrap_or(100).clamp(1, 200) as usize;
 
         let todos = todo::list_todos(
             self.state.store.as_ref(),
             &params.project,
             params.status.as_deref(),
             params.owner.as_deref(),
-            limit,
+            limit + 1,
         )
         .await
         .map_err(|e| {
@@ -1465,14 +1499,19 @@ impl MemcanService {
         })?;
 
         self.state.health.report_success(DependencyId::LanceDb);
+        let (todos, has_more) = truncate_to_limit(todos, limit);
+        let output = serde_json::json!({
+            "todos": todos,
+            "has_more": has_more,
+        });
 
         Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string(&todos).unwrap_or_default(),
+            serde_json::to_string(&output).unwrap_or_default(),
         )]))
     }
 
     #[tool(
-        description = "Update a TODO item's title, description, priority, status, owner, or blocked_by."
+        description = "Update a TODO item's title, description, priority, status, owner, or blocked_by; IDs accept unique short-ID prefixes."
     )]
     async fn update_todo(
         &self,
@@ -1520,7 +1559,7 @@ impl MemcanService {
         )]))
     }
 
-    #[tool(description = "Mark a TODO item as done.")]
+    #[tool(description = "Mark a TODO item as done; its ID accepts a unique short-ID prefix.")]
     async fn complete_todo(
         &self,
         Parameters(params): Parameters<CompleteTodoParams>,
@@ -1557,7 +1596,7 @@ impl MemcanService {
         )]))
     }
 
-    #[tool(description = "Delete a TODO item by ID.")]
+    #[tool(description = "Delete a TODO item by ID or a unique short-ID prefix.")]
     async fn delete_todo(
         &self,
         Parameters(params): Parameters<DeleteTodoParams>,
@@ -1569,7 +1608,7 @@ impl MemcanService {
             .check(DependencyId::LanceDb)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
-        todo::delete_todo(
+        let resolved_id = todo::delete_todo(
             self.state.store.as_ref(),
             self.state.todo_write_locks.as_ref(),
             &params.todo_id,
@@ -1582,14 +1621,14 @@ impl MemcanService {
 
         self.state.health.report_success(DependencyId::LanceDb);
 
-        let response = serde_json::json!({ "status": "deleted", "todo_id": params.todo_id });
+        let response = serde_json::json!({ "status": "deleted", "todo_id": resolved_id });
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string(&response).unwrap_or_default(),
         )]))
     }
 
     #[tool(
-        description = "Fetch a single TODO by id. Returns the item, or a not-found marker for an unknown id."
+        description = "Fetch a single TODO by ID or unique short-ID prefix. Returns the item, or a not-found marker for an unknown ID."
     )]
     async fn get_todo(
         &self,
@@ -2243,121 +2282,163 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use memcan_core::health::DependencyHealth;
+    use memcan_core::traits::{
+        EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, SearchResult, TableSchema,
+        VectorPoint, VectorStore,
+    };
+
+    #[derive(Default)]
+    struct MockStore {
+        records: StdMutex<HashMap<String, SearchResult>>,
+        tables: StdMutex<HashMap<String, Vec<SearchResult>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl VectorStore for MockStore {
+        async fn ensure_table(
+            &self,
+            _: &str,
+            _: usize,
+            _: &dyn TableSchema,
+        ) -> memcan_core::error::Result<()> {
+            Ok(())
+        }
+
+        async fn upsert(
+            &self,
+            _: &str,
+            points: &[VectorPoint],
+            _: &dyn TableSchema,
+        ) -> memcan_core::error::Result<()> {
+            let mut records = self.records.lock().unwrap();
+            for point in points {
+                records.insert(
+                    point.id.clone(),
+                    SearchResult {
+                        id: point.id.clone(),
+                        score: 0.0,
+                        payload: point.payload.clone(),
+                    },
+                );
+            }
+            Ok(())
+        }
+
+        async fn search(
+            &self,
+            table: &str,
+            _: &[f32],
+            _: Option<&str>,
+            limit: usize,
+            offset: usize,
+        ) -> memcan_core::error::Result<Vec<SearchResult>> {
+            Ok(self
+                .tables
+                .lock()
+                .unwrap()
+                .get(table)
+                .into_iter()
+                .flatten()
+                .skip(offset)
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+
+        async fn scroll(
+            &self,
+            table: &str,
+            filter: Option<&str>,
+            limit: usize,
+            offset: usize,
+        ) -> memcan_core::error::Result<Vec<SearchResult>> {
+            // Pagination-style tests seed an ordered per-table Vec directly (bypassing
+            // `upsert`) and rely on real limit/offset slicing; prefix-resolution tests
+            // seed via `records`/`upsert` and rely on `id LIKE 'prefix%'` filtering. A
+            // table entry present in `tables` takes precedence; otherwise fall back to
+            // filtering `records` so both mock-population styles keep working.
+            if let Some(rows) = self.tables.lock().unwrap().get(table) {
+                return Ok(rows.iter().skip(offset).take(limit).cloned().collect());
+            }
+            let mut records: Vec<_> = self.records.lock().unwrap().values().cloned().collect();
+            if let Some(prefix) = filter
+                .and_then(|value| value.strip_prefix("id LIKE '"))
+                .and_then(|value| value.strip_suffix("%'"))
+            {
+                records.retain(|record| record.id.starts_with(prefix));
+            }
+            records.truncate(limit);
+            Ok(records)
+        }
+
+        async fn count(&self, table: &str, _: Option<&str>) -> memcan_core::error::Result<usize> {
+            Ok(self.tables.lock().unwrap().get(table).map_or(0, Vec::len))
+        }
+
+        async fn delete(&self, _: &str, ids: &[String]) -> memcan_core::error::Result<()> {
+            let mut records = self.records.lock().unwrap();
+            for id in ids {
+                records.remove(id);
+            }
+            Ok(())
+        }
+
+        async fn delete_by_filter(&self, _: &str, _: &str) -> memcan_core::error::Result<usize> {
+            Ok(0)
+        }
+
+        async fn get(
+            &self,
+            _: &str,
+            ids: &[String],
+        ) -> memcan_core::error::Result<Vec<SearchResult>> {
+            let records = self.records.lock().unwrap();
+            Ok(ids
+                .iter()
+                .filter_map(|id| records.get(id).cloned())
+                .collect())
+        }
+    }
+
+    struct MockEmbedder;
+
+    #[async_trait::async_trait]
+    impl EmbeddingProvider for MockEmbedder {
+        async fn embed(&self, texts: &[String]) -> memcan_core::error::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![0.0; 3]).collect())
+        }
+
+        fn dimensions(&self) -> usize {
+            3
+        }
+    }
+
+    struct MockLlm;
+
+    #[async_trait::async_trait]
+    impl LlmProvider for MockLlm {
+        async fn chat(
+            &self,
+            _: &str,
+            _: &[LlmMessage],
+            _: Option<LlmOptions>,
+        ) -> memcan_core::error::Result<String> {
+            Ok(String::new())
+        }
+
+        async fn context_window(&self, _: &str) -> Option<usize> {
+            Some(4096)
+        }
+    }
 
     fn make_test_service() -> MemcanService {
-        use memcan_core::health::DependencyHealth;
-        use memcan_core::traits::{
-            EmbeddingProvider, LlmMessage, LlmOptions, LlmProvider, SearchResult, TableSchema,
-            VectorPoint, VectorStore,
-        };
+        make_test_service_with_store(MockStore::default())
+    }
 
-        #[derive(Default)]
-        struct MockStore {
-            records: StdMutex<HashMap<String, SearchResult>>,
-        }
-        #[async_trait::async_trait]
-        impl VectorStore for MockStore {
-            async fn ensure_table(
-                &self,
-                _: &str,
-                _: usize,
-                _: &dyn TableSchema,
-            ) -> memcan_core::error::Result<()> {
-                Ok(())
-            }
-            async fn upsert(
-                &self,
-                _: &str,
-                points: &[VectorPoint],
-                _: &dyn TableSchema,
-            ) -> memcan_core::error::Result<()> {
-                let mut records = self.records.lock().unwrap();
-                for point in points {
-                    records.insert(
-                        point.id.clone(),
-                        SearchResult {
-                            id: point.id.clone(),
-                            score: 0.0,
-                            payload: point.payload.clone(),
-                        },
-                    );
-                }
-                Ok(())
-            }
-            async fn search(
-                &self,
-                _: &str,
-                _: &[f32],
-                _: Option<&str>,
-                _: usize,
-                _: usize,
-            ) -> memcan_core::error::Result<Vec<SearchResult>> {
-                Ok(vec![])
-            }
-            async fn scroll(
-                &self,
-                _: &str,
-                _: Option<&str>,
-                _: usize,
-                _: usize,
-            ) -> memcan_core::error::Result<Vec<SearchResult>> {
-                Ok(vec![])
-            }
-            async fn count(&self, _: &str, _: Option<&str>) -> memcan_core::error::Result<usize> {
-                Ok(0)
-            }
-            async fn delete(&self, _: &str, _: &[String]) -> memcan_core::error::Result<()> {
-                Ok(())
-            }
-            async fn delete_by_filter(
-                &self,
-                _: &str,
-                _: &str,
-            ) -> memcan_core::error::Result<usize> {
-                Ok(0)
-            }
-            async fn get(
-                &self,
-                _: &str,
-                ids: &[String],
-            ) -> memcan_core::error::Result<Vec<SearchResult>> {
-                let records = self.records.lock().unwrap();
-                Ok(ids
-                    .iter()
-                    .filter_map(|id| records.get(id).cloned())
-                    .collect())
-            }
-        }
-
-        struct MockEmbedder;
-        #[async_trait::async_trait]
-        impl EmbeddingProvider for MockEmbedder {
-            async fn embed(&self, texts: &[String]) -> memcan_core::error::Result<Vec<Vec<f32>>> {
-                Ok(texts.iter().map(|_| vec![0.0; 3]).collect())
-            }
-            fn dimensions(&self) -> usize {
-                3
-            }
-        }
-
-        struct MockLlm;
-        #[async_trait::async_trait]
-        impl LlmProvider for MockLlm {
-            async fn chat(
-                &self,
-                _: &str,
-                _: &[LlmMessage],
-                _: Option<LlmOptions>,
-            ) -> memcan_core::error::Result<String> {
-                Ok(String::new())
-            }
-            async fn context_window(&self, _: &str) -> Option<usize> {
-                Some(4096)
-            }
-        }
-
+    fn make_test_service_with_store(store: MockStore) -> MemcanService {
         let state = Arc::new(SharedState {
-            store: Arc::new(MockStore::default()),
+            store: Arc::new(store),
             embedder: Arc::new(MockEmbedder),
             llm: Arc::new(MockLlm),
             config: memcan_core::config::Settings {
@@ -2391,6 +2472,244 @@ mod tests {
         });
 
         MemcanService::new(state)
+    }
+
+    #[derive(Clone, Copy)]
+    enum PaginationTool {
+        ListTodos,
+        Search,
+        SearchMemories,
+        SearchCode,
+        SearchStandards,
+        GetMemories,
+    }
+
+    fn pagination_result(index: usize) -> SearchResult {
+        SearchResult {
+            id: format!("result-{index}"),
+            score: 1.0 - index as f32 / 100.0,
+            payload: serde_json::json!({
+                "data": format!("result {index}"),
+                "title": format!("TODO {index}"),
+                "project": "memcan",
+                "priority": "medium",
+                "status": "pending",
+                "created_at": format!("2026-01-{index:02}T00:00:00Z"),
+                "user_id": "project:memcan",
+            }),
+        }
+    }
+
+    fn pagination_store(table: &str, total: usize) -> MockStore {
+        MockStore {
+            tables: StdMutex::new(HashMap::from([(
+                table.to_string(),
+                (1..=total).map(pagination_result).collect(),
+            )])),
+            ..Default::default()
+        }
+    }
+
+    fn parse_tool_response(result: CallToolResult) -> serde_json::Value {
+        serde_json::from_str(
+            result.content[0]
+                .as_text()
+                .expect("text response")
+                .text
+                .as_ref(),
+        )
+        .unwrap()
+    }
+
+    async fn pagination_response(
+        tool: PaginationTool,
+        total: usize,
+        limit: u32,
+    ) -> serde_json::Value {
+        let table = match tool {
+            PaginationTool::ListTodos => TODOS_TABLE,
+            PaginationTool::Search
+            | PaginationTool::SearchMemories
+            | PaginationTool::GetMemories => MEMORIES_TABLE,
+            PaginationTool::SearchCode => CODE_TABLE,
+            PaginationTool::SearchStandards => STANDARDS_TABLE,
+        };
+        let service = make_test_service_with_store(pagination_store(table, total));
+
+        let result = match tool {
+            PaginationTool::ListTodos => {
+                service
+                    .list_todos(Parameters(ListTodosParams {
+                        project: "memcan".into(),
+                        status: None,
+                        owner: None,
+                        limit: Some(limit),
+                    }))
+                    .await
+            }
+            PaginationTool::Search => {
+                service
+                    .search(Parameters(UnifiedSearchParams {
+                        query: "result".into(),
+                        collections: Some(vec!["memories".into()]),
+                        project: Some("memcan".into()),
+                        user_id: None,
+                        limit: Some(limit),
+                        standard_type: None,
+                        standard_id: None,
+                        tech_stack: None,
+                        file_path: None,
+                    }))
+                    .await
+            }
+            PaginationTool::SearchMemories => {
+                service
+                    .search_memories(Parameters(SearchMemoriesParams {
+                        query: "result".into(),
+                        project: Some("memcan".into()),
+                        user_id: None,
+                        limit: Some(limit),
+                    }))
+                    .await
+            }
+            PaginationTool::SearchCode => {
+                service
+                    .search_code(Parameters(SearchCodeParams {
+                        query: "result".into(),
+                        project: Some("memcan".into()),
+                        tech_stack: None,
+                        file_path: None,
+                        limit: Some(limit),
+                    }))
+                    .await
+            }
+            PaginationTool::SearchStandards => {
+                service
+                    .search_standards(Parameters(SearchStandardsParams {
+                        query: "result".into(),
+                        standard_type: None,
+                        standard_id: None,
+                        ref_id: None,
+                        tech_stack: None,
+                        lang: None,
+                        limit: Some(limit),
+                    }))
+                    .await
+            }
+            PaginationTool::GetMemories => {
+                service
+                    .get_memories(Parameters(GetMemoriesParams {
+                        project: Some("memcan".into()),
+                        user_id: None,
+                        limit: Some(limit),
+                    }))
+                    .await
+            }
+        }
+        .unwrap();
+
+        parse_tool_response(result)
+    }
+
+    async fn assert_pagination(
+        tool: PaginationTool,
+        array_key: &str,
+        total: usize,
+        expected_count: usize,
+        expected_has_more: bool,
+    ) {
+        let response = pagination_response(tool, total, 2).await;
+        assert_eq!(
+            response[array_key].as_array().map(Vec::len),
+            Some(expected_count)
+        );
+        assert_eq!(response["has_more"], expected_has_more);
+    }
+
+    macro_rules! pagination_contract_tests {
+        (
+            $over_limit:ident,
+            $below_limit:ident,
+            $at_limit:ident,
+            $tool:expr,
+            $array_key:literal
+        ) => {
+            #[tokio::test]
+            async fn $over_limit() {
+                assert_pagination($tool, $array_key, 3, 2, true).await;
+            }
+
+            #[tokio::test]
+            async fn $below_limit() {
+                assert_pagination($tool, $array_key, 1, 1, false).await;
+            }
+
+            #[tokio::test]
+            async fn $at_limit() {
+                assert_pagination($tool, $array_key, 2, 2, false).await;
+            }
+        };
+    }
+
+    pagination_contract_tests!(
+        list_todos_has_more_when_results_exceed_limit,
+        list_todos_has_more_false_below_limit,
+        list_todos_has_more_false_at_exact_limit,
+        PaginationTool::ListTodos,
+        "todos"
+    );
+    pagination_contract_tests!(
+        search_has_more_when_candidates_exceed_limit,
+        search_has_more_false_below_limit,
+        search_has_more_false_at_exact_limit,
+        PaginationTool::Search,
+        "results"
+    );
+    pagination_contract_tests!(
+        search_memories_has_more_when_results_exceed_limit,
+        search_memories_has_more_false_below_limit,
+        search_memories_has_more_false_at_exact_limit,
+        PaginationTool::SearchMemories,
+        "memories"
+    );
+    pagination_contract_tests!(
+        search_code_has_more_when_results_exceed_limit,
+        search_code_has_more_false_below_limit,
+        search_code_has_more_false_at_exact_limit,
+        PaginationTool::SearchCode,
+        "code"
+    );
+    pagination_contract_tests!(
+        search_standards_has_more_when_results_exceed_limit,
+        search_standards_has_more_false_below_limit,
+        search_standards_has_more_false_at_exact_limit,
+        PaginationTool::SearchStandards,
+        "standards"
+    );
+    pagination_contract_tests!(
+        get_memories_has_more_when_results_exceed_limit,
+        get_memories_has_more_false_below_limit,
+        get_memories_has_more_false_at_exact_limit,
+        PaginationTool::GetMemories,
+        "memories"
+    );
+
+    #[tokio::test]
+    async fn list_todos_default_limit_is_100() {
+        let service = make_test_service_with_store(pagination_store(TODOS_TABLE, 101));
+        let response = service
+            .list_todos(Parameters(ListTodosParams {
+                project: "memcan".into(),
+                status: None,
+                owner: None,
+                limit: None,
+            }))
+            .await
+            .map(parse_tool_response)
+            .unwrap();
+
+        assert_eq!(response["todos"].as_array().map(Vec::len), Some(100));
+        assert_eq!(response["has_more"], true);
     }
 
     // Note: these tests exercise `tool_router.list_all()` + the `_`-prefix filter directly
@@ -2438,6 +2757,27 @@ mod tests {
         assert!(names.contains(&"add_memory"), "missing add_memory");
         assert!(names.contains(&"search"), "missing search");
         assert!(names.contains(&"get_todo"), "missing get_todo");
+    }
+
+    #[test]
+    fn todo_tool_descriptions_advertise_short_id_prefixes() {
+        let service = make_test_service();
+        let tools = service.tool_router.list_all();
+
+        for name in [
+            "add_todo",
+            "get_todo",
+            "update_todo",
+            "complete_todo",
+            "delete_todo",
+        ] {
+            let tool = tools.iter().find(|tool| tool.name == name).unwrap();
+            let description = tool.description.as_deref().unwrap_or_default();
+            assert!(
+                description.contains("prefix"),
+                "{name} does not advertise short-ID-prefix support: {description}"
+            );
+        }
     }
 
     #[test]
@@ -2495,6 +2835,47 @@ mod tests {
     #[tokio::test]
     async fn get_todo_success_returns_serialized_item_fields() {
         let service = make_test_service();
+        let first_blocker = service
+            .add_todo(Parameters(AddTodoParams {
+                title: "First dependency".into(),
+                description: None,
+                project: "memcan".into(),
+                priority: None,
+                owner: None,
+                blocked_by: None,
+            }))
+            .await
+            .unwrap();
+        let first_blocker: serde_json::Value = serde_json::from_str(
+            first_blocker.content[0]
+                .as_text()
+                .expect("text response")
+                .text
+                .as_ref(),
+        )
+        .unwrap();
+        let first_blocker_id = first_blocker["id"].as_str().unwrap().to_string();
+        let second_blocker = service
+            .add_todo(Parameters(AddTodoParams {
+                title: "Second dependency".into(),
+                description: None,
+                project: "memcan".into(),
+                priority: None,
+                owner: None,
+                blocked_by: None,
+            }))
+            .await
+            .unwrap();
+        let second_blocker: serde_json::Value = serde_json::from_str(
+            second_blocker.content[0]
+                .as_text()
+                .expect("text response")
+                .text
+                .as_ref(),
+        )
+        .unwrap();
+        let second_blocker_id = second_blocker["id"].as_str().unwrap().to_string();
+
         let added = service
             .add_todo(Parameters(AddTodoParams {
                 title: "Blocked work".into(),
@@ -2502,7 +2883,7 @@ mod tests {
                 project: "memcan".into(),
                 priority: None,
                 owner: Some("bilby".into()),
-                blocked_by: Some(vec!["dependency-a".into(), "dependency-b".into()]),
+                blocked_by: Some(vec![first_blocker_id.clone(), second_blocker_id.clone()]),
             }))
             .await
             .unwrap();
@@ -2536,9 +2917,54 @@ mod tests {
         assert_eq!(response["owner"], "bilby");
         assert_eq!(
             response["blocked_by"],
-            serde_json::json!(["dependency-a", "dependency-b"])
+            serde_json::json!([first_blocker_id, second_blocker_id])
         );
         assert_eq!(response["status"], "pending");
+    }
+
+    #[tokio::test]
+    async fn delete_todo_prefix_response_returns_resolved_full_id() {
+        let service = make_test_service();
+        let added = service
+            .add_todo(Parameters(AddTodoParams {
+                title: "Delete me".into(),
+                description: None,
+                project: "memcan".into(),
+                priority: None,
+                owner: None,
+                blocked_by: None,
+            }))
+            .await
+            .unwrap();
+        let added: serde_json::Value = serde_json::from_str(
+            added.content[0]
+                .as_text()
+                .expect("text response")
+                .text
+                .as_ref(),
+        )
+        .unwrap();
+        let full_id = added["id"].as_str().unwrap();
+        let prefix = &full_id[..8];
+
+        let deleted = service
+            .delete_todo(Parameters(DeleteTodoParams {
+                todo_id: prefix.into(),
+            }))
+            .await
+            .unwrap();
+        let response: serde_json::Value = serde_json::from_str(
+            deleted.content[0]
+                .as_text()
+                .expect("text response")
+                .text
+                .as_ref(),
+        )
+        .unwrap();
+
+        assert_eq!(response["status"], "deleted");
+        assert_eq!(response["todo_id"], full_id);
+        assert_ne!(response["todo_id"], prefix);
     }
 
     #[test]
