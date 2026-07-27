@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use memcan_core::error::MemcanError;
 
+mod body_timeout;
 mod export;
 mod import_triaged;
 mod index_code;

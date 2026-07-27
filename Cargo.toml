@@ -55,8 +55,11 @@ schemars = "0.8"
 # HTTP server
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
 base64 = "0.22.1"
+bytes = "1"
+http-body-util = "0.1"
 maud = { version = "0.27.0", features = ["axum"] }
 percent-encoding = "2.3.2"
+tower-http = { version = "0.6", default-features = false, features = ["timeout"] }
 
 # Crypto
 subtle = "2"

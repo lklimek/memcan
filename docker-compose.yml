@@ -53,6 +53,7 @@ services:
       RUST_LOG: ${RUST_LOG:-info,memcan_core=debug,memcan_server=debug}
       MEMCAN_LOG_FILE: ""
       MEMCAN_LISTEN: 0.0.0.0:8191
+      MEMCAN_BODY_READ_TIMEOUT: ${MEMCAN_BODY_READ_TIMEOUT:-30}
       DISTILL_MEMORIES: ${DISTILL_MEMORIES:-true}
       EMBED_MODEL: ${EMBED_MODEL:-MultilingualE5Large}
     volumes:

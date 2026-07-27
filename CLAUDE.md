@@ -213,6 +213,7 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 | `MEMCAN_WEBUI_PASSWORD` | *(none)* | Shared password for the read-only task UI. Empty means unset; the value is masked in `Settings` debug output. |
 | `MEMCAN_URL` | `http://localhost:8190` | Server URL for thin clients (`memcan`) |
 | `MEMCAN_LOG_FILE` | *(none = stdout)* | Log file path (renamed from `LOG_FILE`) |
+| `MEMCAN_BODY_READ_TIMEOUT` | `30` | Seconds the `/mcp` route waits for the next chunk of an incoming request body. The clock resets on every chunk received, so a large body that keeps arriving is never cut off, while a stalled connection is answered `408` and logged at `error` instead of parking silently. Bounds only body ingestion — not handler execution, not the SSE response stream. `0` disables the bound; a non-numeric value logs a `warn!` and falls back to `30`. |
 | `LANCEDB_PATH` | `~/.local/share/memcan/lancedb` | LanceDB storage directory |
 | `DEFAULT_USER_ID` | `global` | Default memory scope |
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction |

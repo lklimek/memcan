@@ -98,6 +98,11 @@ pub struct Settings {
     /// Auto-compact a table once it reaches this many data fragments. `0`
     /// disables auto-compaction (startup compaction is gated separately).
     pub compact_fragment_threshold: usize,
+    /// Maximum idle time, in seconds, while receiving an incoming HTTP request
+    /// body on `/mcp`. The clock resets on every received chunk, so it bounds a
+    /// stalled connection without penalizing a large body that keeps arriving.
+    /// `0` disables the bound.
+    pub mcp_body_read_timeout_secs: u64,
 }
 
 impl std::fmt::Debug for Settings {
@@ -137,6 +142,10 @@ impl std::fmt::Debug for Settings {
                 "compact_fragment_threshold",
                 &self.compact_fragment_threshold,
             )
+            .field(
+                "mcp_body_read_timeout_secs",
+                &self.mcp_body_read_timeout_secs,
+            )
             .finish()
     }
 }
@@ -166,6 +175,7 @@ impl Default for Settings {
             url: "http://localhost:8190".into(),
             compact_on_startup: true,
             compact_fragment_threshold: 64,
+            mcp_body_read_timeout_secs: 30,
         }
     }
 }
@@ -280,6 +290,10 @@ impl Settings {
         )
         .parse::<usize>()
         .unwrap_or(defaults.compact_fragment_threshold);
+        let mcp_body_read_timeout_secs = env_u64_or_warn(
+            "MEMCAN_BODY_READ_TIMEOUT",
+            defaults.mcp_body_read_timeout_secs,
+        );
 
         let settings = Settings {
             lancedb_path,
@@ -304,6 +318,7 @@ impl Settings {
             url,
             compact_on_startup,
             compact_fragment_threshold,
+            mcp_body_read_timeout_secs,
         };
         settings.validate()?;
         if llm_model_is_ignored(
@@ -408,6 +423,25 @@ impl Settings {
 /// Read an environment variable, falling back to a default.
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+/// Read an unsigned integer setting from the environment, warning on garbage.
+///
+/// A mistyped value falls back to `default` like any other setting, but says so:
+/// a timeout that quietly reverts to its default is the same class of silent
+/// failure the timeout itself guards against.
+fn env_u64_or_warn(key: &str, default: u64) -> u64 {
+    let Ok(raw) = std::env::var(key) else {
+        return default;
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return default;
+    }
+    trimmed.parse::<u64>().unwrap_or_else(|_| {
+        warn!("{key}='{raw}' is not a non-negative integer; falling back to {default}");
+        default
+    })
 }
 
 /// Report whether a configured `LLM_MODEL` has no effect.
@@ -685,6 +719,37 @@ mod tests {
         assert!(d.distill_memories);
         assert!(d.compact_on_startup);
         assert_eq!(d.compact_fragment_threshold, 64);
+        assert_eq!(d.mcp_body_read_timeout_secs, 30);
+    }
+
+    #[test]
+    #[serial]
+    fn body_read_timeout_reads_env_and_falls_back_on_garbage() {
+        let default = Settings::default().mcp_body_read_timeout_secs;
+
+        let _set = EnvGuard::set(&[("MEMCAN_BODY_READ_TIMEOUT", Some("5"))]);
+        assert_eq!(env_u64_or_warn("MEMCAN_BODY_READ_TIMEOUT", default), 5);
+        drop(_set);
+
+        // `0` is the documented "disabled" value, not a parse failure.
+        let _zero = EnvGuard::set(&[("MEMCAN_BODY_READ_TIMEOUT", Some("0"))]);
+        assert_eq!(env_u64_or_warn("MEMCAN_BODY_READ_TIMEOUT", default), 0);
+        drop(_zero);
+
+        for garbage in ["", "  ", "thirty", "-1", "1.5"] {
+            let _bad = EnvGuard::set(&[("MEMCAN_BODY_READ_TIMEOUT", Some(garbage))]);
+            assert_eq!(
+                env_u64_or_warn("MEMCAN_BODY_READ_TIMEOUT", default),
+                default,
+                "{garbage:?} should fall back to the default"
+            );
+        }
+
+        let _unset = EnvGuard::set(&[("MEMCAN_BODY_READ_TIMEOUT", None)]);
+        assert_eq!(
+            env_u64_or_warn("MEMCAN_BODY_READ_TIMEOUT", default),
+            default
+        );
     }
 
     #[test]

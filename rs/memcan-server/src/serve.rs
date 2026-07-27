@@ -7,6 +7,7 @@ use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
 
 use axum::Router;
 use axum::extract::Request;
@@ -55,6 +56,7 @@ use memcan_core::{
 };
 
 use crate::ServeArgs;
+use crate::body_timeout;
 
 /// Maximum content size for standards indexing (500 KB).
 const MAX_STANDARDS_CONTENT_SIZE: usize = 500 * 1024;
@@ -2217,11 +2219,26 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
             config,
         );
 
+        let body_read_timeout = Duration::from_secs(ctx.settings.mcp_body_read_timeout_secs);
+        if body_read_timeout.is_zero() {
+            warn!(
+                "MCP request body read timeout disabled (MEMCAN_BODY_READ_TIMEOUT=0); a stalled client body will park its request indefinitely"
+            );
+        } else {
+            info!(
+                timeout_secs = body_read_timeout.as_secs(),
+                "MCP request body read timeout armed"
+            );
+        }
+
         let mcp_clone = mcp_service.clone();
         let mcp_router = Router::new().route(
             "/mcp",
             axum::routing::any(move |req: axum::extract::Request| async move {
-                mcp_clone.handle(req).await
+                body_timeout::guard(req, body_read_timeout, |req| async move {
+                    mcp_clone.handle(req).await.into_response()
+                })
+                .await
             }),
         );
 
