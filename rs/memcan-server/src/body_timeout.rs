@@ -201,6 +201,19 @@ mod tests {
         }
     }
 
+    /// Await the stream's next frame, failing loudly rather than hanging.
+    ///
+    /// The wait is a live poll, not a clock jump: a timer armed on the stream
+    /// elapses while this poll is outstanding, which is what makes a stream
+    /// that quietly dies distinguishable from one that stays open.
+    async fn next_frame(body: &mut Body, what: &str) {
+        let frame = tokio::time::timeout(TIMEOUT * 4, body.frame())
+            .await
+            .unwrap_or_else(|_| panic!("SSE stream produced no {what}"))
+            .unwrap_or_else(|| panic!("SSE stream closed before the {what}"));
+        frame.unwrap_or_else(|e| panic!("SSE stream failed at the {what}: {e}"));
+    }
+
     async fn body_text(response: Response) -> String {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         String::from_utf8(bytes.to_vec()).unwrap()
@@ -354,15 +367,19 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()[CONTENT_TYPE], "text/event-stream");
 
-        // Leave the stream untouched for well past the body timeout, then
-        // confirm it is still live: neither failed nor closed.
+        // Poll before moving the clock. A timeout wrapping this stream arms its
+        // timer lazily on the first poll, so advancing first would hand it a
+        // fresh window and prove nothing about surviving an idle period.
         let mut body = response.into_body();
+        next_frame(&mut body, "priming event").await;
+
+        // A poll left pending across a quiet interval: any timer armed on the
+        // stream elapses here, while the poll is outstanding.
+        next_frame(&mut body, "first keep-alive").await;
+
+        // Then a jump far past the body timeout, stream still armed.
         tokio::time::advance(TIMEOUT * 3).await;
-        let frame = tokio::time::timeout(TIMEOUT, body.frame())
-            .await
-            .expect("idle SSE stream stopped producing keep-alives")
-            .expect("SSE stream closed while idle");
-        frame.expect("SSE stream failed while idle");
+        next_frame(&mut body, "keep-alive after the idle window").await;
 
         let logs = logs.text();
         assert!(!logs.contains("stalled"), "logs: {logs}");
@@ -386,7 +403,13 @@ mod tests {
             .header(HEADER_SESSION_ID, &session_id)
             .body(stalled_body())
             .unwrap();
-        let response = app.oneshot(request).await.unwrap();
+
+        // Bounded so that losing the guard fails this test instead of wedging
+        // the whole binary on the unbounded read it exists to prevent.
+        let response = tokio::time::timeout(TIMEOUT * 10, app.oneshot(request))
+            .await
+            .expect("request never completed — the body read is unbounded")
+            .unwrap();
 
         assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
         assert!(
