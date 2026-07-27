@@ -6,10 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project fol
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
-- Incoming `/mcp` request bodies now have a bounded receive window (`MEMCAN_BODY_READ_TIMEOUT`, default 30s). The MCP transport collects a POST body in full before any session lookup or log line, with no timer of its own, so a client or proxy that opened a request and then stalled mid-body parked the call indefinitely and left no trace in the server log — the request simply vanished from the session. A stall is now answered `408` and logged at `error` with the session ID. The bound is per-chunk and resets on every chunk received, so it never truncates a large body that keeps arriving, never limits handler execution once the body is complete (LLM-backed calls legitimately run for tens of seconds), and never touches the long-lived SSE response stream. This is defensive hardening against the leading hypothesis for the silent-drop reports, not a confirmed root-cause fix; a slow client dribbling bytes indefinitely is still unbounded, as no request body size limit exists.
-- Every `/mcp` request now logs a `debug` line on arrival (method, session ID, content length) before the body is read, so a request that reaches the process but produces no further output is distinguishable from one that never arrived. The bundled Docker Compose already runs at `memcan_server=debug`.
+- `MEMCAN_BODY_READ_TIMEOUT` (default 30s) bounds how long `/mcp` waits for the next chunk of an incoming request body. The MCP transport collects a POST body in full before any session lookup or log line, with no timer of its own, so a client or proxy that opens a request and then stalls mid-body parks the call indefinitely and leaves no trace in the server log — the request simply vanishes from the session. Such a stall is now answered `408` and logged at `error` with the session ID. The bound is per-chunk and resets on every chunk received, so it never truncates a large body that keeps arriving, never limits handler execution once the body is complete (LLM-backed calls legitimately run for tens of seconds), and never touches the long-lived SSE response stream. This is hardening against the leading hypothesis for the silent-drop reports rather than a confirmed root-cause fix, and it is not a general resource bound: a client dribbling bytes indefinitely stays unbounded, since no request body size limit exists. `0` disables it.
+- A `debug` line on every `/mcp` request arrival (method, session ID, content length), emitted before the body is read, so a request that reaches the process but produces no further output is distinguishable from one that never arrived. The bundled Docker Compose already runs at `memcan_server=debug`.
+
+### Changed
+
 - A non-numeric `MEMCAN_BODY_READ_TIMEOUT` logs a `warn!` naming the offending value instead of silently reverting to the default.
 
 ## [2.0.0] - 2026-07-27

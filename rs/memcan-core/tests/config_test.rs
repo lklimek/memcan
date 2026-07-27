@@ -77,6 +77,39 @@ fn test_env_override() {
     }
 }
 
+// -- Test 2b: MCP body read timeout override ---------------------------------
+
+#[test]
+#[serial]
+fn test_body_read_timeout_env_override() {
+    let original = env::var("MEMCAN_BODY_READ_TIMEOUT").ok();
+
+    // SAFETY: see test_env_override — integration tests run serially per binary.
+    unsafe { env::set_var("MEMCAN_BODY_READ_TIMEOUT", "7") };
+    let settings = Settings::load().expect("load should succeed");
+    assert_eq!(settings.mcp_body_read_timeout_secs, 7);
+
+    // `0` is the documented way to disable the bound, not a parse failure.
+    unsafe { env::set_var("MEMCAN_BODY_READ_TIMEOUT", "0") };
+    let disabled = Settings::load().expect("load should succeed");
+    assert_eq!(disabled.mcp_body_read_timeout_secs, 0);
+
+    // Garbage falls back to the default rather than failing the whole load.
+    unsafe { env::set_var("MEMCAN_BODY_READ_TIMEOUT", "half a minute") };
+    let fallback = Settings::load().expect("load should succeed");
+    assert_eq!(
+        fallback.mcp_body_read_timeout_secs,
+        Settings::default().mcp_body_read_timeout_secs
+    );
+
+    unsafe {
+        match original {
+            Some(v) => env::set_var("MEMCAN_BODY_READ_TIMEOUT", v),
+            None => env::remove_var("MEMCAN_BODY_READ_TIMEOUT"),
+        }
+    }
+}
+
 // -- Test 3: .env file loading -----------------------------------------------
 
 #[test]

@@ -105,7 +105,15 @@ mod tests {
     use std::io;
     use std::sync::Mutex;
 
+    use axum::Router;
     use axum::body::Body;
+    use axum::http::header::{ACCEPT, CONTENT_TYPE, HOST};
+    use rmcp::ServerHandler;
+    use rmcp::transport::streamable_http_server::{
+        session::local::LocalSessionManager,
+        tower::{StreamableHttpServerConfig, StreamableHttpService},
+    };
+    use tower::ServiceExt;
     use tracing::subscriber::DefaultGuard;
     use tracing_subscriber::fmt::MakeWriter;
 
@@ -126,13 +134,58 @@ mod tests {
         }))
     }
 
-    fn request(body: Body) -> Request {
+    fn request(method: &str, body: Body) -> Request {
         Request::builder()
-            .method("POST")
+            .method(method)
             .uri("/mcp")
             .header(HEADER_SESSION_ID, "session-under-test")
             .body(body)
             .unwrap()
+    }
+
+    /// Minimal MCP server — enough for the transport to run real sessions.
+    #[derive(Clone)]
+    struct TestHandler;
+
+    impl ServerHandler for TestHandler {}
+
+    /// The production `/mcp` route, wired to a stub MCP server.
+    fn mcp_app(timeout: Duration) -> Router {
+        crate::serve::mcp_router(
+            StreamableHttpService::new(
+                || Ok(TestHandler),
+                Arc::new(LocalSessionManager::default()),
+                StreamableHttpServerConfig::default(),
+            ),
+            timeout,
+        )
+    }
+
+    /// Open a real MCP session through the route and return its ID.
+    ///
+    /// The `Host` header is what hyper always supplies and the transport's
+    /// DNS-rebinding check requires; a hand-built request must carry it too.
+    async fn initialize(app: &Router) -> String {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header(HOST, "localhost")
+            .header(ACCEPT, "application/json, text/event-stream")
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"body-timeout-test","version":"0.0.0"}}}"#,
+            ))
+            .unwrap();
+
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "initialize was rejected");
+        response
+            .headers()
+            .get(HEADER_SESSION_ID)
+            .expect("transport must assign a session id")
+            .to_str()
+            .unwrap()
+            .to_owned()
     }
 
     /// Read the body to completion and echo the outcome, like the MCP handler does.
@@ -197,7 +250,7 @@ mod tests {
         let (logs, _guard) = capture_logs();
 
         let response = guard(
-            request(Body::from(r#"{"jsonrpc":"2.0"}"#)),
+            request("POST", Body::from(r#"{"jsonrpc":"2.0"}"#)),
             TIMEOUT,
             collect_body,
         )
@@ -213,7 +266,7 @@ mod tests {
     async fn stalled_body_is_logged_and_answered_with_408() {
         let (logs, _guard) = capture_logs();
 
-        let response = guard(request(stalled_body()), TIMEOUT, collect_body).await;
+        let response = guard(request("POST", stalled_body()), TIMEOUT, collect_body).await;
 
         assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
         assert!(body_text(response).await.contains("not fully received"));
@@ -233,7 +286,11 @@ mod tests {
     /// Without the guard the same stalled body hangs forever — the bug itself.
     #[tokio::test(start_paused = true)]
     async fn stalled_body_hangs_when_the_timeout_is_disabled() {
-        let call = guard(request(stalled_body()), Duration::ZERO, collect_body);
+        let call = guard(
+            request("POST", stalled_body()),
+            Duration::ZERO,
+            collect_body,
+        );
 
         let outcome = tokio::time::timeout(Duration::from_secs(3600), call).await;
 
@@ -244,24 +301,27 @@ mod tests {
     /// for tens of seconds against the LLM after their body is complete.
     #[tokio::test(start_paused = true)]
     async fn slow_handler_after_a_complete_body_is_not_interrupted() {
-        let response = guard(request(Body::from("payload")), TIMEOUT, |req| async move {
-            let body = req.into_body().collect().await.unwrap().to_bytes();
-            tokio::time::sleep(TIMEOUT * 10).await;
-            (StatusCode::OK, body).into_response()
-        })
+        let response = guard(
+            request("POST", Body::from("payload")),
+            TIMEOUT,
+            |req| async move {
+                let body = req.into_body().collect().await.unwrap().to_bytes();
+                tokio::time::sleep(TIMEOUT * 10).await;
+                (StatusCode::OK, body).into_response()
+            },
+        )
         .await;
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(body_text(response).await, "payload");
     }
 
-    /// The MCP SSE stream is a GET whose request body is dropped unread while the
-    /// response stays open indefinitely. An unpolled body must never time out.
+    /// A handler that drops the body unread arms no timer, however long it runs.
     #[tokio::test(start_paused = true)]
     async fn unread_body_never_times_out() {
         let (logs, _guard) = capture_logs();
 
-        let response = guard(request(Body::empty()), TIMEOUT, |req| async move {
+        let response = guard(request("GET", Body::empty()), TIMEOUT, |req| async move {
             drop(req.into_body());
             tokio::time::sleep(TIMEOUT * 100).await;
             StatusCode::OK.into_response()
@@ -272,13 +332,103 @@ mod tests {
         assert!(!logs.text().contains("stalled"), "logs: {}", logs.text());
     }
 
+    /// The same guarantee against the real transport: an SSE stream opened by a
+    /// real GET through the real route must outlive the body timeout, because
+    /// the transport drops the GET's request body without ever polling it.
+    #[tokio::test(start_paused = true)]
+    async fn real_sse_get_outlives_the_body_timeout() {
+        let (logs, _guard) = capture_logs();
+        let app = mcp_app(TIMEOUT);
+        let session_id = initialize(&app).await;
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/mcp")
+            .header(HOST, "localhost")
+            .header(ACCEPT, "text/event-stream")
+            .header(HEADER_SESSION_ID, &session_id)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[CONTENT_TYPE], "text/event-stream");
+
+        // Leave the stream untouched for well past the body timeout, then
+        // confirm it is still live: neither failed nor closed.
+        let mut body = response.into_body();
+        tokio::time::advance(TIMEOUT * 3).await;
+        let frame = tokio::time::timeout(TIMEOUT, body.frame())
+            .await
+            .expect("idle SSE stream stopped producing keep-alives")
+            .expect("SSE stream closed while idle");
+        frame.expect("SSE stream failed while idle");
+
+        let logs = logs.text();
+        assert!(!logs.contains("stalled"), "logs: {logs}");
+        assert!(logs.contains("method=GET"), "logs: {logs}");
+    }
+
+    /// End to end against the real transport: the stall is cut short by the
+    /// guard instead of parking inside the transport's unbounded body read.
+    #[tokio::test(start_paused = true)]
+    async fn real_post_with_stalled_body_returns_408() {
+        let (logs, _guard) = capture_logs();
+        let app = mcp_app(TIMEOUT);
+        let session_id = initialize(&app).await;
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header(HOST, "localhost")
+            .header(ACCEPT, "application/json, text/event-stream")
+            .header(CONTENT_TYPE, "application/json")
+            .header(HEADER_SESSION_ID, &session_id)
+            .body(stalled_body())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+        assert!(
+            logs.text().contains("MCP request body stalled"),
+            "logs: {}",
+            logs.text()
+        );
+    }
+
+    /// The arrival line is the only trace a vanished request leaves, so its
+    /// fields must carry real values.
+    #[tokio::test]
+    async fn arrival_line_records_the_method_and_content_length() {
+        let (logs, _guard) = capture_logs();
+        let payload = r#"{"jsonrpc":"2.0","method":"ping"}"#;
+
+        let request = Request::builder()
+            .method("DELETE")
+            .uri("/mcp")
+            .header(HEADER_SESSION_ID, "session-under-test")
+            .header(CONTENT_LENGTH, payload.len().to_string())
+            .body(Body::from(payload))
+            .unwrap();
+        let response = guard(request, TIMEOUT, collect_body).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let logs = logs.text();
+        assert!(logs.contains("method=DELETE"), "logs: {logs}");
+        assert!(
+            logs.contains(&format!(r#"content_length="{}""#, payload.len())),
+            "logs: {logs}"
+        );
+    }
+
     /// A body that fails for another reason is reported, but keeps the handler's
     /// own status — only a stall is a timeout.
     #[tokio::test(start_paused = true)]
     async fn broken_body_is_warned_and_keeps_the_handler_status() {
         let (logs, _guard) = capture_logs();
 
-        let response = guard(request(broken_body()), TIMEOUT, collect_body).await;
+        let response = guard(request("POST", broken_body()), TIMEOUT, collect_body).await;
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 

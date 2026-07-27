@@ -26,6 +26,7 @@ use rmcp::{
     tool, tool_router,
     transport::io::stdio,
     transport::streamable_http_server::{
+        session::SessionManager,
         session::local::LocalSessionManager,
         tower::{StreamableHttpServerConfig, StreamableHttpService},
     },
@@ -2109,6 +2110,32 @@ async fn health_handler(
     }))
 }
 
+// --- MCP route ---
+
+/// Mount an MCP streamable-HTTP service on `/mcp` with a bounded body read.
+///
+/// `body_read_timeout` bounds only how long the server waits for the next chunk
+/// of an incoming request body; `Duration::ZERO` disables it. See
+/// [`body_timeout::guard`].
+pub(crate) fn mcp_router<S, M>(
+    service: StreamableHttpService<S, M>,
+    body_read_timeout: Duration,
+) -> Router
+where
+    S: rmcp::service::Service<RoleServer> + Send + 'static,
+    M: SessionManager,
+{
+    Router::new().route(
+        "/mcp",
+        axum::routing::any(move |req: axum::extract::Request| async move {
+            body_timeout::guard(req, body_read_timeout, |req| async move {
+                service.handle(req).await.into_response()
+            })
+            .await
+        }),
+    )
+}
+
 // --- Entry point ---
 
 pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
@@ -2231,16 +2258,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
             );
         }
 
-        let mcp_clone = mcp_service.clone();
-        let mcp_router = Router::new().route(
-            "/mcp",
-            axum::routing::any(move |req: axum::extract::Request| async move {
-                body_timeout::guard(req, body_read_timeout, |req| async move {
-                    mcp_clone.handle(req).await.into_response()
-                })
-                .await
-            }),
-        );
+        let mcp_router = mcp_router(mcp_service.clone(), body_read_timeout);
 
         let mcp_router = if let Some(ref key) = ctx.settings.api_key {
             let expected = format!("Bearer {key}");
