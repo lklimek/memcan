@@ -4,11 +4,23 @@ All notable changes to this project are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.0.0] - 2026-07-27
+
+### BREAKING
+
+- `list_todos`, `search`, `search_memories`, `search_code`, `search_standards`, and `get_memories` MCP tools now return a wrapped object carrying a `has_more` flag instead of a bare JSON array — any consumer that assumed a top-level array from these tools must be updated. `list_todos`' default limit also changes from 50 to 100; every other tool's default is unchanged.
+
+### Added
+
+- `get_todo`/`update_todo`/`complete_todo`/`delete_todo` accept an unambiguous short-ID prefix (>=8 hex characters) of a TODO's UUID, not just the full UUID. Exact match is tried first (no behavior change for full IDs); zero matches keeps the existing not-found error; an overly ambiguous prefix fails with an actionable error listing the first 5 candidates, indicating with "at least 5+" wording when the true match count exceeds that cap rather than silently under-reporting it. `blocked_by` references on `add_todo`/`update_todo` are resolved and canonicalized to full UUIDs at write time, avoiding future ambiguity drift.
+- `has_more` pagination indicator on `list_todos`, `search`, `search_memories`, `search_code`, `search_standards`, and `get_memories` (see BREAKING above), computed via a limit+1 over-fetch so it's correct exactly at the limit boundary, unlike a naive `returned_count == limit` check.
+- Tasks web UI: light-only "paper" theme, multi-select status-filter checkboxes (defaults to hiding `done`/`cancelled`), and filter-preserving navigation between the list and detail views.
 
 ### Fixed
 
-- `setup-memcan` skill's Step 5 verify pass now checks the CLI's own version against the plugin baseline (previously only the server was checked, so the CLI could silently drift for many releases). Version fixes (CLI update, server `docker compose pull && up -d`) are now detected and presented to the user as a wizard before anything runs, instead of being applied automatically — matching Step 1's existing install-choice pattern. The summary now leads with a Before → After versions table for CLI/server/plugin instead of a flat status list.
+- `list_todos` now scans up to a 10,000-row hard cap and sorts before truncating to the caller's limit, matching `list_all_todos`'s existing pattern — previously a high-priority TODO outside the first `limit` rows in storage scan order could be silently invisible, breaking the documented priority-sorted contract.
+- Traefik now emits JSON access logs (`--accesslog`), giving request outcome (status, duration) visibility end-to-end for diagnosing dropped MCP requests.
+- `setup-memcan` skill's Step 5 verify pass now also checks the CLI's own version against the plugin baseline (previously only the server was checked, so the CLI could silently drift for many releases), and requires user approval before applying any fix — all detected version drift is collected and presented together via a Before → After table (mirroring Step 1's install-choice pattern) instead of auto-applying fixes as they're found.
 
 ## [1.1.0] - 2026-07-16
 
