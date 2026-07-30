@@ -2258,11 +2258,11 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
             );
         }
 
-        let mcp_router = mcp_router(mcp_service.clone(), body_read_timeout);
+        let mcp_app_router = mcp_router(mcp_service.clone(), body_read_timeout);
 
-        let mcp_router = if let Some(ref key) = ctx.settings.api_key {
+        let mcp_app_router = if let Some(ref key) = ctx.settings.api_key {
             let expected = format!("Bearer {key}");
-            mcp_router.layer(middleware::from_fn(move |req: Request, next: Next| {
+            mcp_app_router.layer(middleware::from_fn(move |req: Request, next: Next| {
                 let expected = expected.clone();
                 async move {
                     let auth = req
@@ -2282,7 +2282,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
                 }
             }))
         } else {
-            mcp_router
+            mcp_app_router
         };
 
         let app = Router::new()
@@ -2290,7 +2290,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
                 "/health",
                 get(health_handler).with_state(Arc::clone(&health)),
             )
-            .merge(mcp_router);
+            .merge(mcp_app_router);
 
         // `ui::router` already warns with the specific reason when it declines to mount.
         let app = match crate::ui::router(&ctx.settings) {
