@@ -4156,7 +4156,7 @@ dependencies = [
 
 [[package]]
 name = "memcan"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "clap",
  "dirs",
@@ -4175,7 +4175,7 @@ dependencies = [
 
 [[package]]
 name = "memcan-core"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4207,15 +4207,18 @@ dependencies = [
 
 [[package]]
 name = "memcan-server"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
+ "bytes",
  "chrono",
  "clap",
  "clap_complete",
  "dirs",
+ "futures",
+ "http-body-util",
  "lru 0.16.4",
  "maud",
  "memcan-core",
@@ -4231,6 +4234,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower",
+ "tower-http",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",

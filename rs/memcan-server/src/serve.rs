@@ -7,6 +7,7 @@ use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
 
 use axum::Router;
 use axum::extract::Request;
@@ -25,6 +26,7 @@ use rmcp::{
     tool, tool_router,
     transport::io::stdio,
     transport::streamable_http_server::{
+        session::SessionManager,
         session::local::LocalSessionManager,
         tower::{StreamableHttpServerConfig, StreamableHttpService},
     },
@@ -55,6 +57,7 @@ use memcan_core::{
 };
 
 use crate::ServeArgs;
+use crate::body_timeout;
 
 /// Maximum content size for standards indexing (500 KB).
 const MAX_STANDARDS_CONTENT_SIZE: usize = 500 * 1024;
@@ -2107,6 +2110,32 @@ async fn health_handler(
     }))
 }
 
+// --- MCP route ---
+
+/// Mount an MCP streamable-HTTP service on `/mcp` with a bounded body read.
+///
+/// `body_read_timeout` bounds only how long the server waits for the next chunk
+/// of an incoming request body; `Duration::ZERO` disables it. See
+/// [`body_timeout::guard`].
+pub(crate) fn mcp_router<S, M>(
+    service: StreamableHttpService<S, M>,
+    body_read_timeout: Duration,
+) -> Router
+where
+    S: rmcp::service::Service<RoleServer> + Send + 'static,
+    M: SessionManager,
+{
+    Router::new().route(
+        "/mcp",
+        axum::routing::any(move |req: axum::extract::Request| async move {
+            body_timeout::guard(req, body_read_timeout, |req| async move {
+                service.handle(req).await.into_response()
+            })
+            .await
+        }),
+    )
+}
+
 // --- Entry point ---
 
 pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
@@ -2217,17 +2246,23 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
             config,
         );
 
-        let mcp_clone = mcp_service.clone();
-        let mcp_router = Router::new().route(
-            "/mcp",
-            axum::routing::any(move |req: axum::extract::Request| async move {
-                mcp_clone.handle(req).await
-            }),
-        );
+        let body_read_timeout = Duration::from_secs(ctx.settings.mcp_body_read_timeout_secs);
+        if body_read_timeout.is_zero() {
+            warn!(
+                "MCP request body read timeout disabled (MEMCAN_BODY_READ_TIMEOUT=0); a stalled client body will park its request indefinitely"
+            );
+        } else {
+            info!(
+                timeout_secs = body_read_timeout.as_secs(),
+                "MCP request body read timeout armed"
+            );
+        }
 
-        let mcp_router = if let Some(ref key) = ctx.settings.api_key {
+        let mcp_app_router = mcp_router(mcp_service.clone(), body_read_timeout);
+
+        let mcp_app_router = if let Some(ref key) = ctx.settings.api_key {
             let expected = format!("Bearer {key}");
-            mcp_router.layer(middleware::from_fn(move |req: Request, next: Next| {
+            mcp_app_router.layer(middleware::from_fn(move |req: Request, next: Next| {
                 let expected = expected.clone();
                 async move {
                     let auth = req
@@ -2247,7 +2282,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
                 }
             }))
         } else {
-            mcp_router
+            mcp_app_router
         };
 
         let app = Router::new()
@@ -2255,7 +2290,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
                 "/health",
                 get(health_handler).with_state(Arc::clone(&health)),
             )
-            .merge(mcp_router);
+            .merge(mcp_app_router);
 
         // `ui::router` already warns with the specific reason when it declines to mount.
         let app = match crate::ui::router(&ctx.settings) {
