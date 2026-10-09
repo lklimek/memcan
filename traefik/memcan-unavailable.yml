@@ -1,0 +1,13 @@
+# Docker removes routes when a backend is absent or unhealthy. Keep the MemCan
+# endpoint present with a 503 until the authenticated Docker route takes over.
+http:
+  routers:
+    memcan-unavailable:
+      entryPoints: [memcan]
+      rule: "PathPrefix(`/`)"
+      priority: 1
+      service: memcan-unavailable
+  services:
+    memcan-unavailable:
+      loadBalancer:
+        servers: []

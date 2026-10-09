@@ -223,6 +223,13 @@ setup_server() {
     curl -fsSL -o "${SERVER_DIR}/docker-compose.yml" "${compose_url}"
     ok "docker-compose.yml saved to ${SERVER_DIR}/docker-compose.yml"
 
+    # Older release tags used a standalone Compose file without this provider.
+    if grep -q 'traefik/memcan-unavailable.yml' "${SERVER_DIR}/docker-compose.yml"; then
+        mkdir -p "${SERVER_DIR}/traefik"
+        curl -fsSL -o "${SERVER_DIR}/traefik/memcan-unavailable.yml" \
+            "https://raw.githubusercontent.com/${REPO}/${tag}/traefik/memcan-unavailable.yml"
+    fi
+
     # Generate API keys if needed
     if [ -f "${SERVER_DIR}/.env" ] && grep -qE '^MEMCAN_API_KEY=' "${SERVER_DIR}/.env" 2>/dev/null; then
         api_key="$(grep -E '^MEMCAN_API_KEY=' "${SERVER_DIR}/.env" | head -1 | cut -d= -f2-)"

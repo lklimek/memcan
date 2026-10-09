@@ -34,6 +34,17 @@ The `docker-compose.yml` provides:
 
 Set `MEMCAN_API_KEY` in `.env` before deploying — it's used for both MemCan server auth and Traefik middleware auth.
 
+Keep `traefik/memcan-unavailable.yml` beside `docker-compose.yml`, preserving that
+relative path. `setup.sh` downloads both files. When upgrading an existing deployment,
+update both files from the same release before running `docker compose up -d`;
+pulling only the server image does not install the proxy fix. Preserve any local
+Compose customizations when updating.
+
+The fallback route returns `503` while MemCan is starting, unhealthy, stopped, or
+absent. Once healthy, the normal route with its IP allowlist and Bearer authentication
+takes precedence. This removes the misleading startup `404`; retry timing remains
+the client's responsibility. It cannot answer requests while Traefik itself is down.
+
 ### Building from Source
 
 ```bash

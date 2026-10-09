@@ -32,6 +32,10 @@ MemCan uses a two-component architecture:
 - **CLI** (`memcan`) — thin HTTP client. Installed by `/setup-memcan`. No fastembed/LanceDB deps.
 
 The Claude Code plugin connects to the server via HTTP MCP transport (Streamable HTTP).
+HTTP requests use stateless JSON responses, so idle clients do not lose an expiring
+server session. Queued writes live independently of individual HTTP requests.
+While the Docker backend is unavailable, Traefik returns `503 Service Unavailable`
+instead of advertising a missing endpoint with `404`.
 
 ### Read-only tasks web UI
 

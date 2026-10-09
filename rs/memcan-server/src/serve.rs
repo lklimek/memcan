@@ -2138,6 +2138,18 @@ where
 
 // --- Entry point ---
 
+fn http_mcp_router(shared: Arc<SharedState>, body_read_timeout: Duration) -> Router {
+    let service = StreamableHttpService::new(
+        move || Ok(MemcanService::new(Arc::clone(&shared))),
+        Arc::new(LocalSessionManager::default()),
+        // Tool state and queued writes belong to SharedState, not idle HTTP sessions.
+        StreamableHttpServerConfig::default()
+            .with_stateful_mode(false)
+            .with_json_response(true),
+    );
+    mcp_router(service, body_read_timeout)
+}
+
 pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
     let ctx = MemcanContext::init().await?;
     setup_logging(&ctx.settings.log_file);
@@ -2237,15 +2249,6 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
             .await
             .map_err(|e| MemcanError::Other(format!("MCP server error: {e}")))?;
     } else {
-        let config = StreamableHttpServerConfig::default();
-        let session_manager = Arc::new(LocalSessionManager::default());
-        let shared_clone = Arc::clone(&shared);
-        let mcp_service = StreamableHttpService::new(
-            move || Ok(MemcanService::new(Arc::clone(&shared_clone))),
-            session_manager,
-            config,
-        );
-
         let body_read_timeout = Duration::from_secs(ctx.settings.mcp_body_read_timeout_secs);
         if body_read_timeout.is_zero() {
             warn!(
@@ -2258,7 +2261,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
             );
         }
 
-        let mcp_app_router = mcp_router(mcp_service.clone(), body_read_timeout);
+        let mcp_app_router = http_mcp_router(Arc::clone(&shared), body_read_timeout);
 
         let mcp_app_router = if let Some(ref key) = ctx.settings.api_key {
             let expected = format!("Bearer {key}");
@@ -2507,6 +2510,193 @@ mod tests {
         });
 
         MemcanService::new(state)
+    }
+
+    mod http_transport {
+        use super::*;
+        use axum::body::Body;
+        use axum::http::{Method, StatusCode};
+        use http_body_util::BodyExt;
+        use serde_json::{Value, json};
+        use tower::ServiceExt;
+
+        fn app(service: &MemcanService) -> Router {
+            http_mcp_router(Arc::clone(&service.state), Duration::from_secs(30))
+        }
+
+        async fn request(app: &Router, message: Value, session: Option<&str>) -> Response {
+            let mut request = Request::builder()
+                .method(Method::POST)
+                .uri("/mcp")
+                .header("host", "localhost")
+                .header("accept", "application/json, text/event-stream")
+                .header("content-type", "application/json")
+                .header("mcp-protocol-version", "2025-11-25");
+            if let Some(session) = session {
+                request = request.header("mcp-session-id", session);
+            }
+            app.clone()
+                .oneshot(request.body(Body::from(message.to_string())).unwrap())
+                .await
+                .unwrap()
+        }
+
+        async fn initialize(app: &Router) -> Response {
+            request(
+                app,
+                json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                        "clientInfo": {"name": "memcan-http-test", "version": "1"}}
+                }),
+                None,
+            )
+            .await
+        }
+
+        async fn json_response(response: Response) -> Value {
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            serde_json::from_slice(&body).unwrap()
+        }
+
+        async fn call(app: &Router, name: &str, arguments: Value) -> Value {
+            let response = request(
+                app,
+                json!({"jsonrpc":"2.0", "id":2,
+                "method":"tools/call", "params":{"name":name, "arguments":arguments}}),
+                None,
+            )
+            .await;
+            let result = json_response(response).await;
+            assert!(result.get("error").is_none(), "{result}");
+            assert_ne!(result["result"]["isError"], true, "{result}");
+            serde_json::from_str(result["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+        }
+
+        #[tokio::test]
+        async fn initialization_and_tool_discovery_are_stateless_json() {
+            let app = app(&make_test_service());
+            let response = initialize(&app).await;
+            assert!(response.headers().get("mcp-session-id").is_none());
+            assert_eq!(response.headers()["content-type"], "application/json");
+            assert_eq!(
+                json_response(response).await["result"]["serverInfo"]["name"],
+                "memcan"
+            );
+            let response = request(
+                &app,
+                json!({"jsonrpc":"2.0", "method":"notifications/initialized"}),
+                None,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+            let tools = json_response(
+                request(
+                    &app,
+                    json!({"jsonrpc":"2.0", "id":2, "method":"tools/list"}),
+                    None,
+                )
+                .await,
+            )
+            .await;
+            assert!(
+                tools["result"]["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|t| t["name"] == "add_memory")
+            );
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn tools_remain_available_after_idle_and_transport_recreation() {
+            let service = make_test_service();
+            let first_app = app(&service);
+            let response = initialize(&first_app).await;
+            let session = response
+                .headers()
+                .get("mcp-session-id")
+                .map(|v| v.to_str().unwrap().to_owned());
+            response.into_body().collect().await.unwrap();
+            request(
+                &first_app,
+                json!({"jsonrpc":"2.0", "method":"notifications/initialized"}),
+                session.as_deref(),
+            )
+            .await;
+            tokio::task::yield_now().await;
+            tokio::time::advance(Duration::from_secs(7200)).await;
+            tokio::task::yield_now().await;
+            let message = json!({"jsonrpc":"2.0", "id":2, "method":"tools/call",
+                "params":{"name":"count_memories", "arguments":{}}});
+            let response = request(&first_app, message.clone(), session.as_deref()).await;
+            assert!(json_response(response).await["result"].is_object());
+            drop(first_app);
+            let response = request(&app(&service), message, Some("obsolete-session-id")).await;
+            assert!(json_response(response).await["result"].is_object());
+        }
+
+        #[tokio::test]
+        async fn queued_memory_survives_request_and_transport_drop() {
+            let service = make_test_service();
+            let permit = service.state.llm_semaphore.acquire().await.unwrap();
+            let first_app = app(&service);
+            let result = call(
+                &first_app,
+                "add_memory",
+                json!({"memory":"Durable test memory", "project":"transport-test"}),
+            )
+            .await;
+            assert_eq!(result["status"], "queued");
+            let operation_id = result["operation_id"].as_str().unwrap();
+            drop(first_app);
+            drop(permit);
+            let next_app = app(&service);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let status = call(
+                        &next_app,
+                        "get_queue_status",
+                        json!({"operation_id":operation_id}),
+                    )
+                    .await;
+                    assert!(status["error"].is_null(), "{status}");
+                    if status["status"] == "completed" {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            let records = service
+                .state
+                .store
+                .scroll(MEMORIES_TABLE, None, 10, 0)
+                .await
+                .unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].payload["data"], "Durable test memory");
+        }
+
+        #[tokio::test]
+        async fn stateless_transport_declines_notification_streams() {
+            let response = app(&make_test_service())
+                .oneshot(
+                    Request::builder()
+                        .method(Method::GET)
+                        .uri("/mcp")
+                        .header("host", "localhost")
+                        .header("accept", "text/event-stream")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+            assert_eq!(response.headers()["allow"], "POST");
+        }
     }
 
     #[derive(Clone, Copy)]

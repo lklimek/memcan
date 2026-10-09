@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.0.2] - 2026-10-09
+
+### Fixed
+
+- HTTP MCP now uses stateless JSON responses, avoiding disconnects from expired in-memory sessions after idle periods or server restarts. Queued writes remain independent of HTTP request lifetimes; stdio behavior is unchanged.
+- Docker deployments return `503 Service Unavailable` while the MemCan backend is unavailable, using a low-priority Traefik fallback route instead of returning `404`. The installer downloads the fallback configuration alongside Compose; existing deployments must update both files.
+
 ## [2.0.1] - 2026-07-27
 
 ### Added
