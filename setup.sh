@@ -210,25 +210,34 @@ check_docker() {
 }
 
 # --- Set up server via Docker Compose ---
+download_server_config() (
+    local tag="$1" staging_dir
+    staging_dir="$(mktemp -d "${SERVER_DIR}/.config-download.XXXXXX")"
+    trap 'rm -rf -- "${staging_dir}"' EXIT
+
+    curl -fsSL -o "${staging_dir}/docker-compose.yml" \
+        "https://raw.githubusercontent.com/${REPO}/${tag}/docker-compose.yml"
+    # Older release tags use a standalone Compose file without this provider.
+    if grep -q 'traefik/memcan-unavailable.yml' "${staging_dir}/docker-compose.yml"; then
+        curl -fsSL -o "${staging_dir}/memcan-unavailable.yml" \
+            "https://raw.githubusercontent.com/${REPO}/${tag}/traefik/memcan-unavailable.yml"
+        mkdir -p "${SERVER_DIR}/traefik"
+        mv "${staging_dir}/memcan-unavailable.yml" "${SERVER_DIR}/traefik/memcan-unavailable.yml"
+    fi
+    # Publish Compose only after every configuration download has succeeded.
+    mv "${staging_dir}/docker-compose.yml" "${SERVER_DIR}/docker-compose.yml"
+)
+
 setup_server() {
     local tag="$1"
-    local compose_url api_key ollama_key
+    local api_key ollama_key
 
     info "Setting up server in ${SERVER_DIR}..."
     mkdir -p "${SERVER_DIR}"
 
-    # Download docker-compose.yml
-    compose_url="https://raw.githubusercontent.com/${REPO}/${tag}/docker-compose.yml"
-    info "Downloading docker-compose.yml..."
-    curl -fsSL -o "${SERVER_DIR}/docker-compose.yml" "${compose_url}"
+    info "Downloading server configuration..."
+    download_server_config "${tag}"
     ok "docker-compose.yml saved to ${SERVER_DIR}/docker-compose.yml"
-
-    # Older release tags used a standalone Compose file without this provider.
-    if grep -q 'traefik/memcan-unavailable.yml' "${SERVER_DIR}/docker-compose.yml"; then
-        mkdir -p "${SERVER_DIR}/traefik"
-        curl -fsSL -o "${SERVER_DIR}/traefik/memcan-unavailable.yml" \
-            "https://raw.githubusercontent.com/${REPO}/${tag}/traefik/memcan-unavailable.yml"
-    fi
 
     # Generate API keys if needed
     if [ -f "${SERVER_DIR}/.env" ] && grep -qE '^MEMCAN_API_KEY=' "${SERVER_DIR}/.env" 2>/dev/null; then

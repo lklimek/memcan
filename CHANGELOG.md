@@ -10,6 +10,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project fol
 
 - HTTP MCP now uses stateless JSON responses, avoiding disconnects from expired in-memory sessions after idle periods or server restarts. Queued writes remain independent of HTTP request lifetimes; stdio behavior is unchanged.
 - Docker deployments return `503 Service Unavailable` while the MemCan backend is unavailable, using a low-priority Traefik fallback route instead of returning `404`. The installer downloads the fallback configuration alongside Compose; existing deployments must update both files.
+- Failed configuration downloads leave installed Compose and Traefik files intact.
+- Update locked HTTP/TLS dependencies for RUSTSEC-2026-0258 and RUSTSEC-2026-0285, and async/error macros for current Clippy compatibility.
 
 ## [2.0.1] - 2026-07-27
 
