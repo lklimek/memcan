@@ -18,6 +18,7 @@ services:
       - "--providers.docker.exposedbydefault=false"
       - "--providers.docker.network=ollama_traefik"
       - "--providers.docker.constraints=Label(`traefik.instance`,`ollama`)"
+      - "--providers.file.filename=/etc/traefik/memcan-unavailable.yml"
       - "--entrypoints.ollama.address=:11434"
       - "--entrypoints.webui.address=:11400"
       - "--entrypoints.memcan.address=:8190"
@@ -31,6 +32,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/memcan-unavailable.yml:/etc/traefik/memcan-unavailable.yml:ro
     restart: unless-stopped
 
   memcan:

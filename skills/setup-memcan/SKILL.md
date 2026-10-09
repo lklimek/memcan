@@ -41,8 +41,12 @@ bash <(curl -fsSL https://raw.githubusercontent.com/lklimek/memcan/main/setup.sh
 
 The script:
 - Downloads and installs the `memcan` CLI binary
-- (Full install) Downloads `docker-compose.yml` and creates `.env` files with generated API keys
+- (Full install) Downloads `docker-compose.yml` and its `traefik/memcan-unavailable.yml` configuration, and creates `.env` files with generated API keys
 - Does NOT auto-start the server — prints instructions for `docker compose up -d`
+
+Existing Docker deployments upgrading from before 2.0.2 also need the Compose and
+Traefik configuration updates described in [SETUP.md](../../SETUP.md). An image-only
+upgrade does not install the startup fallback route; preserve local Compose customizations.
 
 Verify the install succeeded (`command -v memcan`). If it fails, stop and report the error.
 

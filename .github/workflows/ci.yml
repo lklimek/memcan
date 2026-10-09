@@ -14,6 +14,16 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  mcp-proxy:
+    name: MCP proxy recovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Version tags are retained for readability.
+      - uses: actions/checkout@v4
+      - run: python3 scripts/test_setup.py
+      - run: python3 scripts/test_mcp_proxy.py
+
   check:
     name: Check
     runs-on: ubuntu-latest
