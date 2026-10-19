@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.0.3] - 2026-10-19
+
+### Fixed
+
+- Opening `/ui/` now redirects authenticated users to `/ui/tasks`, matching `/ui`, instead of returning `404 Not Found`. Both entry points retain authentication and `Cache-Control: no-store` (#39).
+
+### Changed
+
+- Update 20 direct Rust dependencies and compatible transitive dependencies without additional Rust source changes, while retaining compatibility with the CLI's Rust 1.92 minimum. Notable updates include fastembed 7.1.2, rmcp 1.8.0, schemars 1.2.3, and Tokio 1.53.3 (#39).
+- Remove the obsolete proc-macro-error2 audit exception after the dependency leaves the resolved dependency tree (#39).
+
+### Security
+
+- Update quinn-proto to 0.11.19 and rustls to 0.23.46, resolving RUSTSEC-2026-0338 through RUSTSEC-2026-0342 and RUSTSEC-2026-0346 through RUSTSEC-2026-0349. Three existing transitive audit warnings remain (#39).
+
 ## [2.0.2] - 2026-10-09
 
 ### Fixed
