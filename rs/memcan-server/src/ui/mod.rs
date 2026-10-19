@@ -124,6 +124,7 @@ pub fn router(settings: &Settings) -> Option<Router> {
     // Login throttling belongs at the TLS proxy layer, where trusted client IPs are available.
     let routes = Router::new()
         .route("/ui", get(detail::redirect))
+        .route("/ui/", get(detail::redirect))
         .route("/ui/tasks", get(list::tasks))
         .route("/ui/tasks/{id}", get(detail::task))
         .layer(middleware::from_fn(move |request: Request, next: Next| {
@@ -457,12 +458,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn webui_roots_redirect_to_tasks() {
+        for uri in ["/ui", "/ui/"] {
+            let response = mounted(&credentials())
+                .oneshot(request(uri, Some(&basic("testuser:testpass"))))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::FOUND, "{uri}");
+            assert_eq!(
+                response.headers().get(header::LOCATION).unwrap(),
+                "/ui/tasks"
+            );
+            assert_eq!(
+                response.headers().get(header::CACHE_CONTROL).unwrap(),
+                "no-store"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn webui_auth_runs_before_ui_redirect() {
-        let unauthorized = mounted(&credentials())
-            .oneshot(request("/ui", None))
-            .await
-            .unwrap();
-        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        for uri in ["/ui", "/ui/"] {
+            let unauthorized = mounted(&credentials())
+                .oneshot(request(uri, None))
+                .await
+                .unwrap();
+            assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED, "{uri}");
+        }
     }
 
     #[tokio::test]
