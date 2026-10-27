@@ -4,6 +4,29 @@ All notable changes to this project are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Native Anthropic backend (`anthropic`, alias `claude`) on the Messages API, with an ephemeral prompt-cache breakpoint on the system prompt, no `temperature`/`response_format`/`thinking` parameters, and a 4096 `max_tokens` default. Token telemetry reports prompt-cache read/creation counts.
+- Provider aliases `openai` and `openai-compatible` (alias `openai-compat`), each with a default base URL; unknown provider values fail startup listing the accepted ones.
+- Per-slot LLM settings: `LLM_MODEL`, `LLM_API_KEY`, `LLM_BASE_URL` for the primary and `LLM_FALLBACK_MODEL`, `LLM_FALLBACK_API_KEY`, `LLM_FALLBACK_BASE_URL` for the fallback. Any backend combination is valid, including the same kind twice; errors name the exact missing or invalid variable. Each slot's backend, model, and base URL are logged at startup.
+- A startup warning for an `openai` / `openrouter` / `openai-compatible` slot aimed at `api.anthropic.com`, whose OpenAI-compatible endpoint has been observed to reject JSON mode with a 400; use `anthropic` there.
+
+### Changed
+
+- **Breaking:** `/health` reports LLM dependencies per slot as `llm_primary` / `llm_fallback` (with `backend` and `model`), replacing the `ollama` and `openrouter` keys. Each slot has its own circuit breaker.
+- `LLM_MODEL` names the primary slot's model for any backend (see Deprecated for pre-slot `.env` files); Docker Compose no longer injects a default Ollama model.
+- Base URLs in logs, `Debug` output, and configuration errors omit userinfo, query, and fragment.
+
+### Deprecated
+
+- `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, and `OPENROUTER_BASE_URL` still configure the first `openrouter` / `openai-compatible` slot, with a startup warning; a set slot variable wins, and errors about their values name the `OPENROUTER_*` variable. Pre-slot `.env` files keep their meaning: on a primary `openrouter` slot with both `LLM_MODEL` and `OPENROUTER_MODEL` set and no per-slot setting in use, `OPENROUTER_MODEL` is the primary model and `LLM_MODEL` stays the Ollama model — it moves to an Ollama fallback, or is ignored without one — and an `openrouter` fallback without its own settings duplicates the primary and is dropped, as before.
+
+### Fixed
+
+- Cloud (OpenAI-compatible) backends no longer receive `temperature`; code and standards indexing failed with a 400 on Anthropic's OpenAI-compatible endpoint and on OpenAI reasoning models.
+
 ## [2.0.3] - 2026-10-19
 
 ### Fixed

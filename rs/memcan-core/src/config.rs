@@ -9,19 +9,50 @@ use crate::error::{MemcanError, Result};
 /// Runtime-selectable LLM backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmProviderKind {
+    /// Ollama server, configured by the slot's `*_MODEL` / `*_BASE_URL`
+    /// (default `OLLAMA_HOST`) / `*_API_KEY` (default `OLLAMA_API_KEY`).
     Ollama,
+    /// Native Anthropic Messages API.
+    Anthropic,
+    /// OpenAI Chat Completions API.
+    OpenAi,
+    /// OpenRouter through its OpenAI-compatible API.
     OpenRouter,
+    /// Any OpenAI-compatible API; the slot's `*_BASE_URL` is required.
+    OpenAiCompatible,
+}
+
+/// Accepted `LLM_PROVIDER` / `LLM_FALLBACK_PROVIDER` values, for error messages.
+const ACCEPTED_PROVIDERS: &str = "'ollama', 'anthropic' (alias 'claude'), 'openai', 'openrouter', \
+     'openai-compatible' (alias 'openai-compat')";
+
+impl LlmProviderKind {
+    /// Base URL used when the slot's `*_BASE_URL` is unset.
+    ///
+    /// `None` for Ollama (configured by `OLLAMA_HOST`) and for the generic
+    /// OpenAI-compatible backend, which has no meaningful default.
+    pub fn default_base_url(self) -> Option<&'static str> {
+        match self {
+            Self::Anthropic => Some("https://api.anthropic.com/v1/"),
+            Self::OpenAi => Some("https://api.openai.com/v1"),
+            Self::OpenRouter => Some("https://openrouter.ai/api/v1"),
+            Self::Ollama | Self::OpenAiCompatible => None,
+        }
+    }
 }
 
 impl FromStr for LlmProviderKind {
     type Err = MemcanError;
 
     fn from_str(value: &str) -> Result<Self> {
-        match value.to_ascii_lowercase().as_str() {
+        match value.trim().to_ascii_lowercase().as_str() {
             "ollama" => Ok(Self::Ollama),
+            "anthropic" | "claude" => Ok(Self::Anthropic),
+            "openai" => Ok(Self::OpenAi),
             "openrouter" => Ok(Self::OpenRouter),
+            "openai-compatible" | "openai-compat" => Ok(Self::OpenAiCompatible),
             _ => Err(MemcanError::Config(format!(
-                "unknown LLM provider '{value}'; expected 'ollama' or 'openrouter'"
+                "unknown LLM provider '{value}'; expected one of {ACCEPTED_PROVIDERS}"
             ))),
         }
     }
@@ -29,10 +60,128 @@ impl FromStr for LlmProviderKind {
 
 impl std::fmt::Display for LlmProviderKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Ollama => f.write_str("ollama"),
-            Self::OpenRouter => f.write_str("openrouter"),
+        f.write_str(match self {
+            Self::Ollama => "ollama",
+            Self::Anthropic => "anthropic",
+            Self::OpenAi => "openai",
+            Self::OpenRouter => "openrouter",
+            Self::OpenAiCompatible => "openai-compatible",
+        })
+    }
+}
+
+/// Ollama model used when an Ollama slot sets no model.
+pub const DEFAULT_OLLAMA_MODEL: &str = "lklimek/gemma4-text:26b-a4b-it-qat";
+
+/// One of the two LLM backend slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LlmRole {
+    /// Serves every request while it is available (`LLM_*`).
+    Primary,
+    /// Serves requests while the primary is unavailable (`LLM_FALLBACK_*`).
+    Fallback,
+}
+
+/// Per-slot setting, for naming its environment variable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlotVar {
+    Provider,
+    Model,
+    ApiKey,
+    BaseUrl,
+}
+
+impl LlmRole {
+    /// Environment variable holding `var` for this slot.
+    fn var(self, var: SlotVar) -> &'static str {
+        match (self, var) {
+            (Self::Primary, SlotVar::Provider) => "LLM_PROVIDER",
+            (Self::Primary, SlotVar::Model) => "LLM_MODEL",
+            (Self::Primary, SlotVar::ApiKey) => "LLM_API_KEY",
+            (Self::Primary, SlotVar::BaseUrl) => "LLM_BASE_URL",
+            (Self::Fallback, SlotVar::Provider) => "LLM_FALLBACK_PROVIDER",
+            (Self::Fallback, SlotVar::Model) => "LLM_FALLBACK_MODEL",
+            (Self::Fallback, SlotVar::ApiKey) => "LLM_FALLBACK_API_KEY",
+            (Self::Fallback, SlotVar::BaseUrl) => "LLM_FALLBACK_BASE_URL",
         }
+    }
+}
+
+impl SlotVar {
+    /// The deprecated `OPENROUTER_*` variable that used to supply this setting.
+    fn legacy_name(self) -> Option<&'static str> {
+        match self {
+            Self::Provider => None,
+            Self::Model => Some("OPENROUTER_MODEL"),
+            Self::ApiKey => Some("OPENROUTER_API_KEY"),
+            Self::BaseUrl => Some("OPENROUTER_BASE_URL"),
+        }
+    }
+}
+
+/// Which slot settings came from deprecated `OPENROUTER_*` variables, so
+/// configuration errors name the variable the operator actually set.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LegacyVarOrigins {
+    /// Slot the legacy variables were mapped onto.
+    role: Option<LlmRole>,
+    /// Settings of that slot whose value a legacy variable supplied.
+    supplied: Vec<SlotVar>,
+}
+
+impl LegacyVarOrigins {
+    /// Variable that supplied the (set) value of `var` in `role`.
+    fn supplied_by(&self, role: LlmRole, var: SlotVar) -> &'static str {
+        match var.legacy_name() {
+            Some(legacy) if self.role == Some(role) && self.supplied.contains(&var) => legacy,
+            _ => role.var(var),
+        }
+    }
+
+    /// Variable(s) that could supply the missing value of `var` in `role`.
+    fn missing(&self, role: LlmRole, var: SlotVar) -> String {
+        match var.legacy_name() {
+            Some(legacy) if self.role == Some(role) => {
+                format!("{} (or the deprecated {legacy})", role.var(var))
+            }
+            _ => role.var(var).to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for LlmRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Primary => "primary",
+            Self::Fallback => "fallback",
+        })
+    }
+}
+
+/// A fully resolved LLM backend slot, with every default applied.
+#[derive(Clone, PartialEq, Eq)]
+pub struct LlmSlot {
+    pub role: LlmRole,
+    pub provider: LlmProviderKind,
+    /// Model id sent to the backend.
+    pub model: String,
+    /// `x-api-key` for Anthropic, bearer token otherwise. Always set for a
+    /// cloud backend; for Ollama, defaults to `OLLAMA_API_KEY`.
+    pub api_key: Option<String>,
+    /// Endpoint. Always set for a cloud backend; for Ollama, defaults to
+    /// `OLLAMA_HOST`, and `None` leaves the client default.
+    pub base_url: Option<String>,
+}
+
+impl std::fmt::Debug for LlmSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LlmSlot")
+            .field("role", &self.role)
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field("api_key", &self.api_key.as_ref().map(|_| "***"))
+            .field("base_url", &self.base_url.as_deref().map(redact_url))
+            .finish()
     }
 }
 
@@ -58,28 +207,37 @@ pub struct Settings {
     pub tech_stack: String,
     pub distill_memories: bool,
     pub log_file: String,
-    /// Ollama model name, e.g. `"qwen3.5:9b"`.
-    /// The legacy `"ollama::"` prefix is accepted for compatibility.
-    pub llm_model: String,
-    /// Primary LLM backend.
+    /// Primary LLM backend (`LLM_PROVIDER`).
     pub llm_provider: LlmProviderKind,
-    /// Optional LLM backend used when the primary is unavailable.
+    /// Primary model (`LLM_MODEL`). `None` selects [`DEFAULT_OLLAMA_MODEL`]
+    /// for Ollama and is a configuration error for a cloud backend. The
+    /// legacy `"ollama::"` prefix is accepted for Ollama.
+    pub llm_model: Option<String>,
+    /// Primary API key (`LLM_API_KEY`); Ollama falls back to `OLLAMA_API_KEY`.
+    pub llm_api_key: Option<String>,
+    /// Primary base URL (`LLM_BASE_URL`); `None` selects the backend default
+    /// (`OLLAMA_HOST` for Ollama).
+    pub llm_base_url: Option<String>,
+    /// Optional fallback backend (`LLM_FALLBACK_PROVIDER`), used while the
+    /// primary is unavailable.
     pub llm_fallback_provider: Option<LlmProviderKind>,
-    /// Bearer key for OpenRouter.
-    pub openrouter_api_key: Option<String>,
-    /// OpenRouter model slug, e.g. `"openai/gpt-4o-mini"`.
-    pub openrouter_model: String,
-    /// OpenRouter-compatible API base URL.
-    pub openrouter_base_url: String,
+    /// Fallback model (`LLM_FALLBACK_MODEL`), defaulted like `llm_model`.
+    pub llm_fallback_model: Option<String>,
+    /// Fallback API key (`LLM_FALLBACK_API_KEY`), defaulted like `llm_api_key`.
+    pub llm_fallback_api_key: Option<String>,
+    /// Fallback base URL (`LLM_FALLBACK_BASE_URL`), defaulted like `llm_base_url`.
+    pub llm_fallback_base_url: Option<String>,
+    /// Slot settings supplied by deprecated `OPENROUTER_*` variables.
+    pub llm_legacy_origins: LegacyVarOrigins,
     /// Fastembed model name, e.g. `"AllMiniLML6V2"`, `"BGESmallENV15"`.
     pub embed_model: String,
     /// Embedding vector dimensions (derived automatically from embed_model).
     pub embed_dims: usize,
-    /// Ollama server URL, e.g. `"http://10.29.188.1:11434"`.
-    /// Passed explicitly to the LLM client.
+    /// Ollama server URL, e.g. `"http://10.29.188.1:11434"`; the default base
+    /// URL of every Ollama slot.
     pub ollama_host: Option<String>,
-    /// Bearer token for Ollama endpoint auth. When set, every Ollama
-    /// request sends `Authorization: Bearer <key>`.
+    /// Bearer token for Ollama endpoint auth; the default API key of every
+    /// Ollama slot, sent as `Authorization: Bearer <key>`.
     pub ollama_api_key: Option<String>,
     /// Server listen address, e.g. `"127.0.0.1:8191"`.
     pub listen: String,
@@ -113,18 +271,27 @@ impl std::fmt::Debug for Settings {
             .field("tech_stack", &self.tech_stack)
             .field("distill_memories", &self.distill_memories)
             .field("log_file", &self.log_file)
-            .field("llm_model", &self.llm_model)
             .field("llm_provider", &self.llm_provider)
-            .field("llm_fallback_provider", &self.llm_fallback_provider)
+            .field("llm_model", &self.llm_model)
+            .field("llm_api_key", &self.llm_api_key.as_ref().map(|_| "***"))
             .field(
-                "openrouter_api_key",
-                &self.openrouter_api_key.as_ref().map(|_| "***"),
+                "llm_base_url",
+                &self.llm_base_url.as_deref().map(redact_url),
             )
-            .field("openrouter_model", &self.openrouter_model)
-            .field("openrouter_base_url", &self.openrouter_base_url)
+            .field("llm_fallback_provider", &self.llm_fallback_provider)
+            .field("llm_fallback_model", &self.llm_fallback_model)
+            .field(
+                "llm_fallback_api_key",
+                &self.llm_fallback_api_key.as_ref().map(|_| "***"),
+            )
+            .field(
+                "llm_fallback_base_url",
+                &self.llm_fallback_base_url.as_deref().map(redact_url),
+            )
+            .field("llm_legacy_origins", &self.llm_legacy_origins)
             .field("embed_model", &self.embed_model)
             .field("embed_dims", &self.embed_dims)
-            .field("ollama_host", &self.ollama_host)
+            .field("ollama_host", &self.ollama_host.as_deref().map(redact_url))
             .field(
                 "ollama_api_key",
                 &self.ollama_api_key.as_ref().map(|_| "***"),
@@ -158,12 +325,15 @@ impl Default for Settings {
             tech_stack: String::new(),
             distill_memories: true,
             log_file: "~/.claude/logs/memcan-mcp.log".into(),
-            llm_model: "lklimek/gemma4-text:26b-a4b-it-qat".into(),
             llm_provider: LlmProviderKind::Ollama,
+            llm_model: None,
+            llm_api_key: None,
+            llm_base_url: None,
             llm_fallback_provider: None,
-            openrouter_api_key: None,
-            openrouter_model: String::new(),
-            openrouter_base_url: "https://openrouter.ai/api/v1".into(),
+            llm_fallback_model: None,
+            llm_fallback_api_key: None,
+            llm_fallback_base_url: None,
+            llm_legacy_origins: LegacyVarOrigins::default(),
             embed_model: "MultilingualE5Large".into(),
             embed_dims: 1024,
             ollama_host: None,
@@ -223,28 +393,32 @@ impl Settings {
             .or_else(|_| std::env::var("LOG_FILE"))
             .unwrap_or_else(|_| defaults.log_file.clone());
         let log_file = expand_tilde(&log_file_raw);
-        let llm_model_env = std::env::var("LLM_MODEL").ok();
-        let llm_model = llm_model_env
-            .clone()
-            .unwrap_or_else(|| defaults.llm_model.clone());
-        let llm_provider = env_or("LLM_PROVIDER", &defaults.llm_provider.to_string()).parse()?;
-        let llm_fallback_provider = std::env::var("LLM_FALLBACK_PROVIDER")
-            .ok()
-            .filter(|value| !value.is_empty())
+        let llm_provider = env_non_blank("LLM_PROVIDER")
+            .map(|value| value.parse())
+            .transpose()?
+            .unwrap_or(defaults.llm_provider);
+        let mut llm_fallback_provider = env_non_blank("LLM_FALLBACK_PROVIDER")
             .map(|value| value.parse())
             .transpose()?;
-        // Trim before filtering: a whitespace-only value is not a key, and a
-        // padded one would otherwise be sent verbatim as a bearer token and
-        // 401 on every request.
-        let openrouter_api_key = std::env::var("OPENROUTER_API_KEY")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-        if openrouter_api_key.is_some() {
-            debug!("OPENROUTER_API_KEY configured");
+        let mut primary = SlotEnv::read(LlmRole::Primary);
+        let mut fallback = SlotEnv::read(LlmRole::Fallback);
+        let legacy = LegacyOpenRouterEnv::read();
+        let legacy_set = !legacy.is_empty();
+        let legacy_report = apply_legacy_openrouter_env(
+            llm_provider,
+            &mut primary,
+            llm_fallback_provider,
+            &mut fallback,
+            legacy,
+        );
+        legacy_report.log(legacy_set);
+        if legacy_report.drop_fallback {
+            llm_fallback_provider = None;
         }
-        let openrouter_model = env_or("OPENROUTER_MODEL", &defaults.openrouter_model);
-        let openrouter_base_url = env_or("OPENROUTER_BASE_URL", &defaults.openrouter_base_url);
+        let llm_legacy_origins = LegacyVarOrigins {
+            role: legacy_report.role,
+            supplied: legacy_report.supplied,
+        };
         let embed_model = env_or("EMBED_MODEL", &defaults.embed_model);
         let resolved_embed = resolve_model(&embed_model).map_err(|_| {
             MemcanError::Config(format!(
@@ -258,7 +432,7 @@ impl Settings {
         })?;
         let ollama_host = std::env::var("OLLAMA_HOST").ok().filter(|s| !s.is_empty());
         if let Some(ref host) = ollama_host {
-            debug!(ollama_host = %host, "OLLAMA_HOST configured");
+            debug!(ollama_host = %redact_url(host), "OLLAMA_HOST configured");
         }
         let ollama_api_key = std::env::var("OLLAMA_API_KEY")
             .ok()
@@ -301,12 +475,15 @@ impl Settings {
             tech_stack,
             distill_memories,
             log_file,
-            llm_model,
             llm_provider,
+            llm_model: primary.model,
+            llm_api_key: primary.api_key,
+            llm_base_url: primary.base_url,
             llm_fallback_provider,
-            openrouter_api_key,
-            openrouter_model,
-            openrouter_base_url,
+            llm_fallback_model: fallback.model,
+            llm_fallback_api_key: fallback.api_key,
+            llm_fallback_base_url: fallback.base_url,
+            llm_legacy_origins,
             embed_model,
             embed_dims,
             ollama_host,
@@ -321,17 +498,6 @@ impl Settings {
             mcp_body_read_timeout_secs,
         };
         settings.validate()?;
-        if llm_model_is_ignored(
-            settings.llm_provider,
-            llm_model_env.as_deref(),
-            &defaults.llm_model,
-        ) {
-            warn!(
-                llm_model = %settings.llm_model,
-                openrouter_model = %settings.openrouter_model,
-                "LLM_MODEL is ignored while LLM_PROVIDER=openrouter; set OPENROUTER_MODEL to choose the OpenRouter model"
-            );
-        }
         Ok(settings)
     }
 
@@ -341,47 +507,32 @@ impl Settings {
             return Err(MemcanError::Config("LANCEDB_PATH must not be empty".into()));
         }
 
-        let openrouter_participates = self.llm_provider == LlmProviderKind::OpenRouter
-            || self.llm_fallback_provider == Some(LlmProviderKind::OpenRouter);
-        if openrouter_participates {
-            // A blank key is a missing key. `load()` already trims and drops
-            // blank values, so this guards `Settings` built programmatically —
-            // without it such a key reaches the HTTP client as an empty bearer
-            // token and 401s on every request instead of failing at startup.
-            let api_key_is_blank = self
-                .openrouter_api_key
-                .as_ref()
-                .is_none_or(|key| key.trim().is_empty());
-            if api_key_is_blank {
-                return Err(MemcanError::Config(
-                    "OPENROUTER_API_KEY is required when OpenRouter is configured".into(),
-                ));
-            }
-            if self.openrouter_model.is_empty() {
-                return Err(MemcanError::Config(
-                    "OPENROUTER_MODEL is required when OpenRouter is configured".into(),
-                ));
-            }
-
-            let openrouter_url =
-                reqwest::Url::parse(&self.openrouter_base_url).map_err(|error| {
-                    MemcanError::Config(format!("OPENROUTER_BASE_URL is invalid: {error}"))
-                })?;
-            let loopback = matches!(
-                openrouter_url.host_str(),
-                Some("localhost" | "127.0.0.1" | "::1" | "[::1]")
-            );
-            if openrouter_url.scheme() != "https" && !loopback {
-                return Err(MemcanError::Config(
-                    "OPENROUTER_BASE_URL must use HTTPS when configured with a non-loopback host"
-                        .into(),
-                ));
+        let primary = self.primary_slot()?;
+        let fallback = self.fallback_slot()?;
+        for slot in std::iter::once(&primary).chain(fallback.as_ref()) {
+            if breaks_json_mode(slot) {
+                warn!(
+                    role = %slot.role,
+                    backend = %slot.provider,
+                    "The {} LLM slot sends Anthropic's OpenAI-compatible endpoint \
+                     `response_format: json_object`, which it has been observed to reject with \
+                     a 400 (vendor docs say it is ignored), failing every JSON-mode call; set \
+                     {}=anthropic for the native Messages API",
+                    slot.role,
+                    slot.role.var(SlotVar::Provider)
+                );
             }
         }
-        if self.llm_fallback_provider == Some(self.llm_provider) {
+        if fallback.is_some_and(|fallback| {
+            fallback.provider == primary.provider
+                && fallback.model == primary.model
+                && fallback.base_url == primary.base_url
+                && fallback.api_key == primary.api_key
+        }) {
             warn!(
-                provider = %self.llm_provider,
-                "LLM fallback provider matches the primary provider"
+                provider = %primary.provider,
+                model = %primary.model,
+                "The LLM fallback slot duplicates the primary; it can only absorb transient faults"
             );
         }
 
@@ -398,6 +549,83 @@ impl Settings {
         }
 
         Ok(())
+    }
+
+    /// The resolved primary LLM slot.
+    ///
+    /// Fails with an error naming the exact missing or invalid variable when
+    /// a cloud backend lacks its model, API key, or base URL.
+    pub fn primary_slot(&self) -> Result<LlmSlot> {
+        self.resolve_slot(LlmRole::Primary, self.llm_provider)
+    }
+
+    /// The resolved fallback LLM slot, if one is configured.
+    pub fn fallback_slot(&self) -> Result<Option<LlmSlot>> {
+        self.llm_fallback_provider
+            .map(|provider| self.resolve_slot(LlmRole::Fallback, provider))
+            .transpose()
+    }
+
+    /// Raw `(model, api_key, base_url)` of a slot, blank values dropped.
+    fn slot_values(&self, role: LlmRole) -> (Option<&str>, Option<&str>, Option<&str>) {
+        match role {
+            LlmRole::Primary => (
+                non_blank(&self.llm_model),
+                non_blank(&self.llm_api_key),
+                non_blank(&self.llm_base_url),
+            ),
+            LlmRole::Fallback => (
+                non_blank(&self.llm_fallback_model),
+                non_blank(&self.llm_fallback_api_key),
+                non_blank(&self.llm_fallback_base_url),
+            ),
+        }
+    }
+
+    fn resolve_ollama_slot(&self, role: LlmRole) -> LlmSlot {
+        let (model, api_key, base_url) = self.slot_values(role);
+        LlmSlot {
+            role,
+            provider: LlmProviderKind::Ollama,
+            model: model.unwrap_or(DEFAULT_OLLAMA_MODEL).to_string(),
+            api_key: api_key
+                .or(non_blank(&self.ollama_api_key))
+                .map(str::to_string),
+            base_url: base_url
+                .or(non_blank(&self.ollama_host))
+                .map(str::to_string),
+        }
+    }
+
+    fn resolve_slot(&self, role: LlmRole, provider: LlmProviderKind) -> Result<LlmSlot> {
+        if provider == LlmProviderKind::Ollama {
+            return Ok(self.resolve_ollama_slot(role));
+        }
+        let (model, api_key, base_url) = self.slot_values(role);
+        // A blank value counts as missing: a whitespace key would otherwise
+        // reach the HTTP client as an empty credential and 401 on every
+        // request instead of failing at startup.
+        let origins = &self.llm_legacy_origins;
+        let required = |var: SlotVar| {
+            MemcanError::Config(format!(
+                "{} is required when {}={provider}",
+                origins.missing(role, var),
+                role.var(SlotVar::Provider)
+            ))
+        };
+        let api_key = api_key.ok_or_else(|| required(SlotVar::ApiKey))?;
+        let model = model.ok_or_else(|| required(SlotVar::Model))?;
+        let base_url = base_url
+            .or(provider.default_base_url())
+            .ok_or_else(|| required(SlotVar::BaseUrl))?;
+        require_https_or_loopback(origins.supplied_by(role, SlotVar::BaseUrl), base_url)?;
+        Ok(LlmSlot {
+            role,
+            provider,
+            model: model.to_string(),
+            api_key: Some(api_key.to_string()),
+            base_url: Some(base_url.to_string()),
+        })
     }
 
     /// Create the log file's parent directory if it doesn't exist.
@@ -444,19 +672,324 @@ fn env_u64_or_warn(key: &str, default: u64) -> u64 {
     })
 }
 
-/// Report whether a configured `LLM_MODEL` has no effect.
+/// Read an environment variable, trimmed, treating a blank value as unset.
 ///
-/// `LLM_MODEL` names the Ollama model; the OpenRouter backend reads
-/// `OPENROUTER_MODEL` instead. Only an explicit, non-default `llm_model_env`
-/// is worth reporting — an unset or default-valued variable carries no
-/// operator intent to contradict.
-fn llm_model_is_ignored(
-    provider: LlmProviderKind,
-    llm_model_env: Option<&str>,
-    default_model: &str,
-) -> bool {
-    provider == LlmProviderKind::OpenRouter
-        && llm_model_env.is_some_and(|model| !model.is_empty() && model != default_model)
+/// Docker Compose passes unset variables through as empty strings, which must
+/// not shadow a default.
+fn env_non_blank(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Trimmed view of an optional setting, `None` when blank.
+fn non_blank(value: &Option<String>) -> Option<&str> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+/// Render a URL for logs and errors without credentials: userinfo, query,
+/// and fragment are dropped, since gateways sometimes carry a token there.
+pub(crate) fn redact_url(url: &str) -> String {
+    match reqwest::Url::parse(url) {
+        Ok(mut parsed) => {
+            // Both only fail for URLs that cannot carry userinfo at all.
+            let _ = parsed.set_username("");
+            let _ = parsed.set_password(None);
+            parsed.set_query(None);
+            parsed.set_fragment(None);
+            parsed.to_string()
+        }
+        Err(_) => "<unparsable URL>".to_string(),
+    }
+}
+
+/// `true` when an OpenAI-adapter slot targets Anthropic's OpenAI-compatible
+/// endpoint, which has been observed to 400 on `response_format: json_object`.
+fn breaks_json_mode(slot: &LlmSlot) -> bool {
+    let openai_adapter = matches!(
+        slot.provider,
+        LlmProviderKind::OpenAi | LlmProviderKind::OpenRouter | LlmProviderKind::OpenAiCompatible
+    );
+    openai_adapter
+        && slot
+            .base_url
+            .as_deref()
+            .and_then(|url| reqwest::Url::parse(url).ok())
+            .is_some_and(|url| {
+                url.host_str()
+                    .is_some_and(|host| host.eq_ignore_ascii_case("api.anthropic.com"))
+            })
+}
+
+/// Reject a cloud base URL that is unparsable, or plain HTTP to a remote host.
+///
+/// The URL itself is not echoed: an unparsable value may still hold a secret.
+fn require_https_or_loopback(var: &str, base_url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(base_url)
+        .map_err(|error| MemcanError::Config(format!("{var} is not a valid URL: {error}")))?;
+    let loopback = matches!(
+        parsed.host_str(),
+        Some("localhost" | "127.0.0.1" | "::1" | "[::1]")
+    );
+    if parsed.scheme() != "https" && !loopback {
+        return Err(MemcanError::Config(format!(
+            "{var} must use HTTPS when configured with a non-loopback host"
+        )));
+    }
+    Ok(())
+}
+
+/// One slot's `MODEL` / `API_KEY` / `BASE_URL` variables, as read.
+#[derive(Debug, Default)]
+struct SlotEnv {
+    model: Option<String>,
+    api_key: Option<String>,
+    base_url: Option<String>,
+}
+
+impl SlotEnv {
+    fn read(role: LlmRole) -> Self {
+        Self {
+            model: env_non_blank(role.var(SlotVar::Model)),
+            api_key: env_non_blank(role.var(SlotVar::ApiKey)),
+            base_url: env_non_blank(role.var(SlotVar::BaseUrl)),
+        }
+    }
+}
+
+/// The deprecated single-cloud `OPENROUTER_*` variables, as read.
+#[derive(Debug, Default)]
+struct LegacyOpenRouterEnv {
+    api_key: Option<String>,
+    model: Option<String>,
+    base_url: Option<String>,
+}
+
+impl LegacyOpenRouterEnv {
+    fn read() -> Self {
+        Self {
+            api_key: env_non_blank("OPENROUTER_API_KEY"),
+            model: env_non_blank("OPENROUTER_MODEL"),
+            base_url: env_non_blank("OPENROUTER_BASE_URL"),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.api_key.is_none() && self.model.is_none() && self.base_url.is_none()
+    }
+}
+
+/// How a primary-slot clash between `LLM_MODEL` and `OPENROUTER_MODEL` was
+/// settled, reported by `load()` as a warning naming where each value went.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LegacyModelNote {
+    /// Pre-slot `.env`: `LLM_MODEL` kept its old meaning (the Ollama model)
+    /// and became the Ollama fallback's model.
+    LlmModelMovedToFallback { cloud: String, ollama: String },
+    /// Pre-slot `.env` without an Ollama fallback: `LLM_MODEL` kept its old
+    /// meaning and has no slot to configure.
+    LlmModelIgnored { cloud: String, ignored: String },
+    /// The file also uses per-slot settings, so `LLM_MODEL` is the primary
+    /// model and the stale `OPENROUTER_MODEL` is ignored.
+    LegacyModelIgnored { primary: String, ignored: String },
+}
+
+/// What [`apply_legacy_openrouter_env`] did, for the startup warnings.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct LegacyReport {
+    /// Slot the legacy values were mapped onto; `None` when none reads them.
+    role: Option<LlmRole>,
+    /// Legacy variables ignored because the slot variable is set.
+    shadowed: Vec<&'static str>,
+    /// Settings of the mapped slot whose value a legacy variable supplied.
+    supplied: Vec<SlotVar>,
+    model_note: Option<LegacyModelNote>,
+    /// Pre-slot file naming the legacy backend for both slots: the fallback
+    /// duplicates the primary and is dropped, as it was before slots.
+    drop_fallback: bool,
+}
+
+impl LegacyReport {
+    fn log(&self, legacy_set: bool) {
+        if !legacy_set {
+            return;
+        }
+        if self.drop_fallback {
+            warn!(
+                "Ignoring configured LLM fallback because it matches the primary backend \
+                 (deprecated OPENROUTER_* settings configure a single slot)"
+            );
+        }
+        let Some(role) = self.role else {
+            warn!(
+                "Deprecated OPENROUTER_* settings are ignored: no LLM slot uses the \
+                 'openrouter' or 'openai-compatible' backend"
+            );
+            return;
+        };
+        warn!(
+            slot = %role,
+            shadowed = %self.shadowed.join(", "),
+            "Deprecated OPENROUTER_* settings are mapped onto the {role} LLM slot; rename them \
+             to {}, {} and {} (a set slot variable wins over its OPENROUTER_* name)",
+            role.var(SlotVar::ApiKey),
+            role.var(SlotVar::Model),
+            role.var(SlotVar::BaseUrl),
+        );
+        match &self.model_note {
+            Some(LegacyModelNote::LlmModelMovedToFallback { cloud, ollama }) => warn!(
+                "Legacy mode: OPENROUTER_MODEL='{cloud}' is the primary model and \
+                 LLM_MODEL='{ollama}' keeps its pre-slot meaning as the Ollama fallback's model; \
+                 set LLM_FALLBACK_MODEL to make LLM_MODEL the primary model"
+            ),
+            Some(LegacyModelNote::LlmModelIgnored { cloud, ignored }) => warn!(
+                "Legacy mode: OPENROUTER_MODEL='{cloud}' is the primary model and \
+                 LLM_MODEL='{ignored}' (pre-slot meaning: the Ollama model) is ignored; remove \
+                 OPENROUTER_MODEL to make LLM_MODEL the primary model"
+            ),
+            Some(LegacyModelNote::LegacyModelIgnored { primary, ignored }) => warn!(
+                "LLM_MODEL='{primary}' is the primary model; OPENROUTER_MODEL='{ignored}' is \
+                 ignored because per-slot settings are in use"
+            ),
+            None => {}
+        }
+    }
+}
+
+/// Map deprecated `OPENROUTER_*` settings onto the slot they used to configure.
+///
+/// Before per-slot settings, the single cloud backend (`openrouter`, often
+/// aimed at another OpenAI-compatible API through `OPENROUTER_BASE_URL`) read
+/// `OPENROUTER_*`, while `LLM_MODEL` always named the Ollama model. The values
+/// land on the first `openrouter` / `openai-compatible` slot, where a set slot
+/// variable wins.
+///
+/// `LLM_MODEL` is the one ambiguous variable: on a primary legacy slot with
+/// `OPENROUTER_MODEL` also set, it is either a pre-slot Ollama model or a
+/// per-slot primary model. Any setting the pre-slot format did not have — a
+/// non-`openrouter` primary, `LLM_API_KEY` / `LLM_BASE_URL`, an
+/// `LLM_FALLBACK_*` value, or a fallback other than `ollama` / `openrouter` —
+/// proves the per-slot reading, so `LLM_MODEL` stays the primary model.
+/// Otherwise the pre-slot reading holds: `LLM_MODEL` becomes the Ollama
+/// fallback's model, or is ignored without an Ollama fallback.
+fn apply_legacy_openrouter_env(
+    primary_kind: LlmProviderKind,
+    primary: &mut SlotEnv,
+    fallback_kind: Option<LlmProviderKind>,
+    fallback: &mut SlotEnv,
+    legacy: LegacyOpenRouterEnv,
+) -> LegacyReport {
+    let mut report = LegacyReport::default();
+    if legacy.is_empty() {
+        return report;
+    }
+    let reads_legacy = |kind: LlmProviderKind| {
+        matches!(
+            kind,
+            LlmProviderKind::OpenRouter | LlmProviderKind::OpenAiCompatible
+        )
+    };
+    let role = if reads_legacy(primary_kind) {
+        LlmRole::Primary
+    } else if fallback_kind.is_some_and(reads_legacy) {
+        LlmRole::Fallback
+    } else {
+        return report;
+    };
+    report.role = Some(role);
+    report.drop_fallback = role == LlmRole::Primary
+        && fallback_kind == Some(primary_kind)
+        && fallback.model.is_none()
+        && fallback.api_key.is_none()
+        && fallback.base_url.is_none();
+
+    let per_slot_format = primary_kind != LlmProviderKind::OpenRouter
+        || primary.api_key.is_some()
+        || primary.base_url.is_some()
+        || fallback.model.is_some()
+        || fallback.api_key.is_some()
+        || fallback.base_url.is_some()
+        || !matches!(
+            fallback_kind,
+            None | Some(LlmProviderKind::Ollama | LlmProviderKind::OpenRouter)
+        );
+
+    let slot = match role {
+        LlmRole::Primary => {
+            if let Some(cloud) = legacy.model {
+                match primary.model.take() {
+                    None => {
+                        report.supplied.push(SlotVar::Model);
+                        primary.model = Some(cloud);
+                    }
+                    Some(model) if model == cloud => primary.model = Some(model),
+                    Some(model) if per_slot_format => {
+                        report.model_note = Some(LegacyModelNote::LegacyModelIgnored {
+                            primary: model.clone(),
+                            ignored: cloud,
+                        });
+                        primary.model = Some(model);
+                    }
+                    Some(ollama) => {
+                        report.supplied.push(SlotVar::Model);
+                        primary.model = Some(cloud.clone());
+                        if fallback_kind == Some(LlmProviderKind::Ollama) {
+                            report.model_note = Some(LegacyModelNote::LlmModelMovedToFallback {
+                                cloud,
+                                ollama: ollama.clone(),
+                            });
+                            fallback.model = Some(ollama);
+                        } else if crate::ollama::strip_ollama_prefix(&ollama)
+                            != DEFAULT_OLLAMA_MODEL
+                        {
+                            // The old Compose file injected the default model;
+                            // that carries no operator intent worth a warning.
+                            report.model_note = Some(LegacyModelNote::LlmModelIgnored {
+                                cloud,
+                                ignored: ollama,
+                            });
+                        }
+                    }
+                }
+            }
+            primary
+        }
+        LlmRole::Fallback => {
+            match (&fallback.model, legacy.model) {
+                (None, Some(model)) => {
+                    report.supplied.push(SlotVar::Model);
+                    fallback.model = Some(model);
+                }
+                (None, None) => {}
+                (Some(_), Some(_)) => report.shadowed.push("OPENROUTER_MODEL"),
+                (Some(_), None) => {}
+            }
+            fallback
+        }
+    };
+    match (&slot.api_key, legacy.api_key) {
+        (None, Some(key)) => {
+            report.supplied.push(SlotVar::ApiKey);
+            slot.api_key = Some(key);
+        }
+        (None, None) => {}
+        (Some(_), Some(_)) => report.shadowed.push("OPENROUTER_API_KEY"),
+        (Some(_), None) => {}
+    }
+    match (&slot.base_url, legacy.base_url) {
+        (None, Some(url)) => {
+            report.supplied.push(SlotVar::BaseUrl);
+            slot.base_url = Some(url);
+        }
+        (None, None) => {}
+        (Some(_), Some(_)) => report.shadowed.push("OPENROUTER_BASE_URL"),
+        (Some(_), None) => {}
+    }
+    report
 }
 
 #[cfg(test)]
@@ -499,94 +1032,211 @@ mod tests {
         }
     }
 
+    fn cloud_primary(kind: LlmProviderKind) -> Settings {
+        Settings {
+            llm_provider: kind,
+            llm_model: Some("claude-haiku-5-5".into()),
+            llm_api_key: Some("primary-key".into()),
+            ..Settings::default()
+        }
+    }
+
+    fn with_cloud_fallback(settings: Settings, kind: LlmProviderKind) -> Settings {
+        Settings {
+            llm_fallback_provider: Some(kind),
+            llm_fallback_model: Some("gpt-4o-mini".into()),
+            llm_fallback_api_key: Some("fallback-key".into()),
+            ..settings
+        }
+    }
+
+    /// Isolate `Settings::load()` from the host's `.env` files and LLM env.
+    fn isolated_llm_env(temp_path: &str, overrides: &[(&'static str, Option<&str>)]) -> EnvGuard {
+        let mut values: Vec<(&'static str, Option<&str>)> = vec![
+            ("HOME", Some(temp_path)),
+            ("XDG_CONFIG_HOME", Some(temp_path)),
+            ("XDG_DATA_HOME", Some(temp_path)),
+            ("LLM_PROVIDER", None),
+            ("LLM_MODEL", None),
+            ("LLM_API_KEY", None),
+            ("LLM_BASE_URL", None),
+            ("LLM_FALLBACK_PROVIDER", None),
+            ("LLM_FALLBACK_MODEL", None),
+            ("LLM_FALLBACK_API_KEY", None),
+            ("LLM_FALLBACK_BASE_URL", None),
+            ("OPENROUTER_API_KEY", None),
+            ("OPENROUTER_MODEL", None),
+            ("OPENROUTER_BASE_URL", None),
+            ("OLLAMA_HOST", None),
+            ("OLLAMA_API_KEY", None),
+        ];
+        for (key, value) in overrides {
+            match values.iter_mut().find(|(existing, _)| existing == key) {
+                Some(slot) => slot.1 = *value,
+                None => values.push((key, *value)),
+            }
+        }
+        EnvGuard::set(&values)
+    }
+
+    fn load_with(overrides: &[(&'static str, Option<&str>)]) -> Result<Settings> {
+        let temp = tempfile::tempdir().unwrap();
+        let _environment = isolated_llm_env(temp.path().to_str().unwrap(), overrides);
+        Settings::load()
+    }
+
     #[test]
-    fn tc10_openrouter_configuration_requires_key_and_model() {
-        let missing_key = Settings {
-            llm_provider: LlmProviderKind::OpenRouter,
-            openrouter_model: "openai/gpt-4o-mini".into(),
+    fn ollama_slot_defaults_to_the_ollama_model_host_and_key() {
+        let settings = Settings {
+            ollama_host: Some("http://gpu:11434".into()),
+            ollama_api_key: Some("ollama-key".into()),
             ..Settings::default()
         };
-        let error = missing_key.validate().unwrap_err().to_string();
-        assert!(error.contains("OPENROUTER_API_KEY"));
 
-        let missing_model = Settings {
-            llm_provider: LlmProviderKind::OpenRouter,
-            openrouter_api_key: Some("test-key".into()),
-            ..Settings::default()
-        };
-        let error = missing_model.validate().unwrap_err().to_string();
-        assert!(error.contains("OPENROUTER_MODEL"));
+        let primary = settings.primary_slot().unwrap();
+        assert_eq!(primary.role, LlmRole::Primary);
+        assert_eq!(primary.provider, LlmProviderKind::Ollama);
+        assert_eq!(primary.model, DEFAULT_OLLAMA_MODEL);
+        assert_eq!(primary.api_key.as_deref(), Some("ollama-key"));
+        assert_eq!(primary.base_url.as_deref(), Some("http://gpu:11434"));
+        assert_eq!(settings.fallback_slot().unwrap(), None);
 
-        let configured = Settings {
-            llm_provider: LlmProviderKind::OpenRouter,
-            openrouter_api_key: Some("test-key".into()),
-            openrouter_model: "openai/gpt-4o-mini".into(),
-            ..Settings::default()
+        // Slot values win over the Ollama-wide defaults.
+        let overridden = Settings {
+            llm_model: Some("qwen3.5:9b".into()),
+            llm_api_key: Some("slot-key".into()),
+            llm_base_url: Some("http://other:11434".into()),
+            ..settings
         };
-        assert!(configured.validate().is_ok());
+        let primary = overridden.primary_slot().unwrap();
+        assert_eq!(primary.model, "qwen3.5:9b");
+        assert_eq!(primary.api_key.as_deref(), Some("slot-key"));
+        assert_eq!(primary.base_url.as_deref(), Some("http://other:11434"));
+    }
 
-        let fallback = Settings {
-            llm_fallback_provider: Some(LlmProviderKind::OpenRouter),
-            openrouter_api_key: Some("test-key".into()),
-            openrouter_model: "openai/gpt-4o-mini".into(),
-            ..Settings::default()
-        };
-        assert!(fallback.validate().is_ok());
+    #[test]
+    fn cloud_slots_resolve_alias_default_base_urls() {
+        for (kind, url) in [
+            (LlmProviderKind::Anthropic, "https://api.anthropic.com/v1/"),
+            (LlmProviderKind::OpenAi, "https://api.openai.com/v1"),
+            (LlmProviderKind::OpenRouter, "https://openrouter.ai/api/v1"),
+        ] {
+            let primary = cloud_primary(kind).primary_slot().unwrap();
+            assert_eq!(primary.base_url.as_deref(), Some(url), "{kind}");
+            assert_eq!(primary.api_key.as_deref(), Some("primary-key"));
+            assert_eq!(primary.model, "claude-haiku-5-5");
+        }
 
-        let fallback_missing_key = Settings {
-            llm_fallback_provider: Some(LlmProviderKind::OpenRouter),
-            openrouter_model: "openai/gpt-4o-mini".into(),
-            ..Settings::default()
+        let overridden = Settings {
+            llm_base_url: Some("https://gateway.example/v1".into()),
+            ..cloud_primary(LlmProviderKind::Anthropic)
         };
-        assert!(
-            fallback_missing_key
-                .validate()
-                .unwrap_err()
-                .to_string()
-                .contains("OPENROUTER_API_KEY")
-        );
-
-        let fallback_missing_model = Settings {
-            llm_fallback_provider: Some(LlmProviderKind::OpenRouter),
-            openrouter_api_key: Some("test-key".into()),
-            ..Settings::default()
-        };
-        assert!(
-            fallback_missing_model
-                .validate()
-                .unwrap_err()
-                .to_string()
-                .contains("OPENROUTER_MODEL")
+        assert_eq!(
+            overridden.primary_slot().unwrap().base_url.as_deref(),
+            Some("https://gateway.example/v1")
         );
     }
 
     #[test]
-    fn blank_openrouter_api_key_is_rejected_like_a_missing_one() {
-        // An empty or whitespace key would otherwise reach the HTTP client as an
-        // empty bearer token and 401 on every request instead of at startup.
-        for key in ["", "   "] {
-            let settings = Settings {
-                llm_provider: LlmProviderKind::OpenRouter,
-                openrouter_api_key: Some(key.into()),
-                openrouter_model: "openai/gpt-4o-mini".into(),
-                ..Settings::default()
-            };
-
-            assert!(
-                settings
-                    .validate()
-                    .unwrap_err()
-                    .to_string()
-                    .contains("OPENROUTER_API_KEY"),
-                "a {key:?} key must be rejected at startup"
-            );
+    fn missing_cloud_settings_name_the_exact_variable() {
+        let primary = cloud_primary(LlmProviderKind::Anthropic);
+        for (settings, var) in [
+            (
+                Settings {
+                    llm_api_key: None,
+                    ..primary.clone()
+                },
+                "LLM_API_KEY",
+            ),
+            (
+                Settings {
+                    llm_api_key: Some("   ".into()),
+                    ..primary.clone()
+                },
+                "LLM_API_KEY",
+            ),
+            (
+                Settings {
+                    llm_model: None,
+                    ..primary.clone()
+                },
+                "LLM_MODEL",
+            ),
+            (
+                Settings {
+                    llm_fallback_api_key: None,
+                    ..with_cloud_fallback(primary.clone(), LlmProviderKind::OpenAi)
+                },
+                "LLM_FALLBACK_API_KEY",
+            ),
+            (
+                Settings {
+                    llm_fallback_model: Some(String::new()),
+                    ..with_cloud_fallback(primary.clone(), LlmProviderKind::OpenAi)
+                },
+                "LLM_FALLBACK_MODEL",
+            ),
+            (
+                with_cloud_fallback(primary.clone(), LlmProviderKind::OpenAiCompatible),
+                "LLM_FALLBACK_BASE_URL",
+            ),
+            (
+                cloud_primary(LlmProviderKind::OpenAiCompatible),
+                "LLM_BASE_URL",
+            ),
+        ] {
+            let error = settings.validate().unwrap_err().to_string();
+            assert!(error.contains(var), "expected {var}: {error}");
         }
     }
 
     #[test]
-    fn unused_openrouter_base_url_is_not_validated() {
+    fn any_slot_combination_is_valid() {
+        use LlmProviderKind::{Anthropic, Ollama, OpenAi, OpenRouter};
+        for (primary, fallback) in [
+            (Anthropic, Anthropic),
+            (Anthropic, OpenAi),
+            (OpenRouter, Anthropic),
+            (Anthropic, Ollama),
+        ] {
+            let settings = with_cloud_fallback(cloud_primary(primary), fallback);
+            assert!(
+                settings.validate().is_ok(),
+                "{primary} + {fallback} should validate"
+            );
+        }
+
+        let ollama_twice = Settings {
+            llm_fallback_provider: Some(Ollama),
+            llm_fallback_base_url: Some("http://second-gpu:11434".into()),
+            ..Settings::default()
+        };
+        assert!(ollama_twice.validate().is_ok());
+    }
+
+    #[test]
+    fn same_backend_kind_twice_keeps_separate_credentials() {
         let settings = Settings {
-            openrouter_base_url: "not-a-url".into(),
+            llm_fallback_model: Some("claude-opus-5-5".into()),
+            ..with_cloud_fallback(
+                cloud_primary(LlmProviderKind::Anthropic),
+                LlmProviderKind::Anthropic,
+            )
+        };
+
+        let primary = settings.primary_slot().unwrap();
+        let fallback = settings.fallback_slot().unwrap().unwrap();
+        assert_eq!(fallback.role, LlmRole::Fallback);
+        assert_eq!(primary.api_key.as_deref(), Some("primary-key"));
+        assert_eq!(fallback.api_key.as_deref(), Some("fallback-key"));
+        assert_eq!(fallback.model, "claude-opus-5-5");
+        assert_eq!(primary.base_url, fallback.base_url);
+    }
+
+    #[test]
+    fn unused_base_url_is_not_validated() {
+        let settings = Settings {
+            llm_fallback_base_url: Some("not-a-url".into()),
             ..Settings::default()
         };
 
@@ -594,18 +1244,15 @@ mod tests {
     }
 
     #[test]
-    fn openrouter_http_requires_a_loopback_host() {
+    fn cloud_base_url_http_requires_a_loopback_host() {
         for base_url in [
             "http://localhost:8080/v1",
             "http://127.0.0.1:8080/v1",
             "http://[::1]:8080/v1",
         ] {
             let loopback = Settings {
-                llm_provider: LlmProviderKind::OpenRouter,
-                openrouter_api_key: Some("test-key".into()),
-                openrouter_model: "openai/gpt-4o-mini".into(),
-                openrouter_base_url: base_url.into(),
-                ..Settings::default()
+                llm_base_url: Some(base_url.into()),
+                ..cloud_primary(LlmProviderKind::OpenRouter)
             };
             assert!(
                 loopback.validate().is_ok(),
@@ -614,87 +1261,614 @@ mod tests {
         }
 
         let remote = Settings {
-            llm_provider: LlmProviderKind::OpenRouter,
-            openrouter_api_key: Some("test-key".into()),
-            openrouter_model: "openai/gpt-4o-mini".into(),
-            openrouter_base_url: "http://openrouter.example/v1".into(),
-            ..Settings::default()
+            llm_fallback_base_url: Some("http://gateway.example/v1".into()),
+            ..with_cloud_fallback(Settings::default(), LlmProviderKind::OpenAiCompatible)
         };
         let error = remote.validate().unwrap_err().to_string();
-        assert!(error.contains("OPENROUTER_BASE_URL"));
-        assert!(error.contains("HTTPS"));
-    }
+        assert!(error.contains("LLM_FALLBACK_BASE_URL"), "{error}");
+        assert!(error.contains("HTTPS"), "{error}");
 
-    #[test]
-    fn tc11_provider_kind_parsing_is_case_insensitive() {
-        assert_eq!(
-            "ollama".parse::<LlmProviderKind>().unwrap(),
-            LlmProviderKind::Ollama
-        );
-        assert_eq!(
-            "OPENROUTER".parse::<LlmProviderKind>().unwrap(),
-            LlmProviderKind::OpenRouter
-        );
-        assert!("unknown".parse::<LlmProviderKind>().is_err());
-
-        let configured = Settings {
-            llm_provider: "ollama".parse().unwrap(),
-            llm_fallback_provider: Some("openrouter".parse().unwrap()),
-            openrouter_api_key: Some("test-key".into()),
-            openrouter_model: "openai/gpt-4o-mini".into(),
+        // Ollama keeps plain-HTTP LAN hosts working.
+        let ollama = Settings {
+            llm_base_url: Some("http://gpu.lan:11434".into()),
             ..Settings::default()
         };
-        assert_eq!(configured.llm_provider, LlmProviderKind::Ollama);
-        assert_eq!(
-            configured.llm_fallback_provider,
-            Some(LlmProviderKind::OpenRouter)
-        );
-        assert_eq!(Settings::default().llm_fallback_provider, None);
+        assert!(ollama.validate().is_ok());
     }
 
     #[test]
-    fn tc14_settings_debug_redacts_openrouter_api_key() {
+    fn provider_aliases_parse_case_insensitively() {
+        for (raw, expected) in [
+            ("ollama", LlmProviderKind::Ollama),
+            ("OLLAMA", LlmProviderKind::Ollama),
+            ("anthropic", LlmProviderKind::Anthropic),
+            ("Claude", LlmProviderKind::Anthropic),
+            ("openai", LlmProviderKind::OpenAi),
+            ("OpenAI", LlmProviderKind::OpenAi),
+            ("OPENROUTER", LlmProviderKind::OpenRouter),
+            ("openai-compatible", LlmProviderKind::OpenAiCompatible),
+            ("OpenAI-Compat", LlmProviderKind::OpenAiCompatible),
+            (" anthropic ", LlmProviderKind::Anthropic),
+        ] {
+            assert_eq!(
+                raw.parse::<LlmProviderKind>().unwrap(),
+                expected,
+                "{raw:?} should parse"
+            );
+        }
+    }
+
+    #[test]
+    fn display_round_trips_through_parsing() {
+        for kind in [
+            LlmProviderKind::Ollama,
+            LlmProviderKind::Anthropic,
+            LlmProviderKind::OpenAi,
+            LlmProviderKind::OpenRouter,
+            LlmProviderKind::OpenAiCompatible,
+        ] {
+            assert_eq!(kind.to_string().parse::<LlmProviderKind>().unwrap(), kind);
+        }
+    }
+
+    #[test]
+    fn unknown_provider_error_lists_every_accepted_value() {
+        let error = "gemini".parse::<LlmProviderKind>().unwrap_err().to_string();
+        for accepted in [
+            "'gemini'",
+            "ollama",
+            "anthropic",
+            "claude",
+            "openai",
+            "openrouter",
+            "openai-compatible",
+            "openai-compat",
+        ] {
+            assert!(error.contains(accepted), "missing {accepted}: {error}");
+        }
+    }
+
+    #[test]
+    fn debug_redacts_every_api_key() {
         let settings = Settings {
-            openrouter_api_key: Some("raw-openrouter-secret".into()),
+            llm_api_key: Some("raw-primary-secret".into()),
+            llm_fallback_api_key: Some("raw-fallback-secret".into()),
             ..Settings::default()
         };
         let debug = format!("{settings:?}");
-        assert!(!debug.contains("raw-openrouter-secret"));
-        assert!(debug.contains("openrouter_api_key: Some(\"***\")"));
+        assert!(!debug.contains("raw-primary-secret"));
+        assert!(!debug.contains("raw-fallback-secret"));
+        assert!(debug.contains("llm_api_key: Some(\"***\")"));
+        assert!(debug.contains("llm_fallback_api_key: Some(\"***\")"));
+
+        let slot = format!(
+            "{:?}",
+            cloud_primary(LlmProviderKind::Anthropic).primary_slot()
+        );
+        assert!(!slot.contains("primary-key"), "{slot}");
     }
 
     #[test]
-    fn llm_model_is_ignored_only_for_explicit_non_default_under_openrouter() {
-        let default = Settings::default().llm_model;
+    #[serial]
+    fn slot_env_vars_load() {
+        let settings = load_with(&[
+            ("LLM_PROVIDER", Some("Claude")),
+            ("LLM_MODEL", Some("claude-haiku-5-5")),
+            ("LLM_API_KEY", Some("  primary-key  ")),
+            ("LLM_FALLBACK_PROVIDER", Some("openai")),
+            ("LLM_FALLBACK_MODEL", Some("gpt-4o-mini")),
+            ("LLM_FALLBACK_API_KEY", Some("fallback-key")),
+            ("LLM_FALLBACK_BASE_URL", Some("https://gateway.example/v1")),
+        ])
+        .unwrap();
 
-        assert!(
-            llm_model_is_ignored(LlmProviderKind::OpenRouter, Some("qwen3.5:9b"), &default),
-            "an explicit non-default LLM_MODEL is dead config under OpenRouter"
+        let primary = settings.primary_slot().unwrap();
+        assert_eq!(primary.provider, LlmProviderKind::Anthropic);
+        assert_eq!(primary.model, "claude-haiku-5-5");
+        assert_eq!(primary.api_key.as_deref(), Some("primary-key"));
+        assert_eq!(
+            primary.base_url.as_deref(),
+            Some("https://api.anthropic.com/v1/")
+        );
+        let fallback = settings.fallback_slot().unwrap().unwrap();
+        assert_eq!(fallback.provider, LlmProviderKind::OpenAi);
+        assert_eq!(fallback.model, "gpt-4o-mini");
+        assert_eq!(fallback.api_key.as_deref(), Some("fallback-key"));
+        assert_eq!(
+            fallback.base_url.as_deref(),
+            Some("https://gateway.example/v1")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn blank_env_values_count_as_unset() {
+        // Docker Compose passes unset variables as empty strings.
+        let settings = load_with(&[
+            ("LLM_PROVIDER", Some("")),
+            ("LLM_MODEL", Some("")),
+            ("LLM_BASE_URL", Some("  ")),
+            ("LLM_FALLBACK_PROVIDER", Some("")),
+            ("OPENROUTER_BASE_URL", Some("")),
+        ])
+        .unwrap();
+
+        assert_eq!(settings.llm_provider, LlmProviderKind::Ollama);
+        assert_eq!(settings.llm_model, None);
+        assert_eq!(settings.llm_base_url, None);
+        assert_eq!(settings.llm_fallback_provider, None);
+        assert_eq!(settings.primary_slot().unwrap().model, DEFAULT_OLLAMA_MODEL);
+    }
+
+    #[test]
+    #[serial]
+    fn cloud_primary_without_a_model_fails_load_naming_the_variable() {
+        // No Ollama model name may leak into a cloud slot as its default.
+        let error = load_with(&[
+            ("LLM_PROVIDER", Some("anthropic")),
+            ("LLM_API_KEY", Some("key")),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("LLM_MODEL"), "{error}");
+    }
+
+    #[test]
+    #[serial]
+    fn unknown_provider_env_value_fails_load() {
+        let error = load_with(&[("LLM_FALLBACK_PROVIDER", Some("anthropik"))])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("anthropik"), "{error}");
+    }
+
+    #[test]
+    #[serial]
+    fn legacy_openrouter_primary_with_ollama_fallback_keeps_old_semantics() {
+        // The exact pre-slot `.env`: LLM_MODEL named the Ollama model and
+        // OPENROUTER_MODEL the cloud one.
+        let settings = load_with(&[
+            ("LLM_PROVIDER", Some("openrouter")),
+            ("LLM_FALLBACK_PROVIDER", Some("ollama")),
+            ("LLM_MODEL", Some("qwen3.5:9b")),
+            ("OPENROUTER_API_KEY", Some("legacy-key")),
+            ("OPENROUTER_MODEL", Some("claude-haiku-5-5")),
+            ("OPENROUTER_BASE_URL", Some("https://gateway.example/v1")),
+            ("OLLAMA_HOST", Some("http://gpu:11434")),
+        ])
+        .unwrap();
+
+        let primary = settings.primary_slot().unwrap();
+        assert_eq!(primary.provider, LlmProviderKind::OpenRouter);
+        assert_eq!(primary.model, "claude-haiku-5-5");
+        assert_eq!(primary.api_key.as_deref(), Some("legacy-key"));
+        assert_eq!(
+            primary.base_url.as_deref(),
+            Some("https://gateway.example/v1")
+        );
+        let fallback = settings.fallback_slot().unwrap().unwrap();
+        assert_eq!(fallback.provider, LlmProviderKind::Ollama);
+        assert_eq!(fallback.model, "qwen3.5:9b");
+        assert_eq!(fallback.base_url.as_deref(), Some("http://gpu:11434"));
+    }
+
+    #[test]
+    #[serial]
+    fn legacy_ollama_primary_with_openrouter_fallback_keeps_old_semantics() {
+        let settings = load_with(&[
+            ("LLM_PROVIDER", Some("ollama")),
+            ("LLM_FALLBACK_PROVIDER", Some("openrouter")),
+            ("LLM_MODEL", Some("qwen3.5:9b")),
+            ("OPENROUTER_API_KEY", Some("legacy-key")),
+            ("OPENROUTER_MODEL", Some("openai/gpt-4o-mini")),
+        ])
+        .unwrap();
+
+        let primary = settings.primary_slot().unwrap();
+        assert_eq!(primary.provider, LlmProviderKind::Ollama);
+        assert_eq!(primary.model, "qwen3.5:9b");
+        let fallback = settings.fallback_slot().unwrap().unwrap();
+        assert_eq!(fallback.model, "openai/gpt-4o-mini");
+        assert_eq!(fallback.api_key.as_deref(), Some("legacy-key"));
+        assert_eq!(
+            fallback.base_url.as_deref(),
+            Some("https://openrouter.ai/api/v1")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn legacy_openrouter_primary_alone_ignores_the_ollama_llm_model() {
+        let settings = load_with(&[
+            ("LLM_PROVIDER", Some("openrouter")),
+            ("LLM_MODEL", Some("qwen3.5:9b")),
+            ("OPENROUTER_API_KEY", Some("legacy-key")),
+            ("OPENROUTER_MODEL", Some("openai/gpt-4o-mini")),
+        ])
+        .unwrap();
+
+        assert_eq!(settings.primary_slot().unwrap().model, "openai/gpt-4o-mini");
+        assert_eq!(settings.llm_fallback_provider, None);
+    }
+
+    #[test]
+    #[serial]
+    fn slot_vars_win_over_legacy_ones() {
+        let settings = load_with(&[
+            ("LLM_PROVIDER", Some("ollama")),
+            ("LLM_FALLBACK_PROVIDER", Some("openai-compatible")),
+            ("LLM_FALLBACK_MODEL", Some("new-model")),
+            ("LLM_FALLBACK_API_KEY", Some("new-key")),
+            ("LLM_FALLBACK_BASE_URL", Some("https://new.example/v1")),
+            ("OPENROUTER_API_KEY", Some("legacy-key")),
+            ("OPENROUTER_MODEL", Some("legacy-model")),
+            ("OPENROUTER_BASE_URL", Some("https://legacy.example/v1")),
+        ])
+        .unwrap();
+
+        let fallback = settings.fallback_slot().unwrap().unwrap();
+        assert_eq!(fallback.model, "new-model");
+        assert_eq!(fallback.api_key.as_deref(), Some("new-key"));
+        assert_eq!(fallback.base_url.as_deref(), Some("https://new.example/v1"));
+
+        // LLM_FALLBACK_MODEL names the Ollama model, so LLM_MODEL is
+        // unambiguously the primary model and the stale OPENROUTER_MODEL loses.
+        let settings = load_with(&[
+            ("LLM_PROVIDER", Some("openrouter")),
+            ("LLM_FALLBACK_PROVIDER", Some("ollama")),
+            ("LLM_MODEL", Some("anthropic/claude-haiku-5-5")),
+            ("LLM_FALLBACK_MODEL", Some("glm4:9b")),
+            ("OPENROUTER_API_KEY", Some("legacy-key")),
+            ("OPENROUTER_MODEL", Some("openai/gpt-4o-mini")),
+        ])
+        .unwrap();
+        assert_eq!(
+            settings.primary_slot().unwrap().model,
+            "anthropic/claude-haiku-5-5"
+        );
+        assert_eq!(settings.fallback_slot().unwrap().unwrap().model, "glm4:9b");
+    }
+
+    #[test]
+    #[serial]
+    fn legacy_vars_never_configure_a_non_legacy_backend() {
+        // Only `openrouter` / `openai-compatible` slots ever read OPENROUTER_*;
+        // an Anthropic slot must not inherit an OpenRouter key.
+        let error = load_with(&[
+            ("LLM_PROVIDER", Some("anthropic")),
+            ("LLM_MODEL", Some("claude-haiku-5-5")),
+            ("OPENROUTER_API_KEY", Some("legacy-key")),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("LLM_API_KEY"), "{error}");
+    }
+
+    fn legacy(model: Option<&str>, api_key: Option<&str>) -> LegacyOpenRouterEnv {
+        LegacyOpenRouterEnv {
+            api_key: api_key.map(str::to_string),
+            model: model.map(str::to_string),
+            base_url: None,
+        }
+    }
+
+    fn slot_env(model: Option<&str>) -> SlotEnv {
+        SlotEnv {
+            model: model.map(str::to_string),
+            ..SlotEnv::default()
+        }
+    }
+
+    #[test]
+    fn legacy_model_clash_in_a_pre_slot_file_moves_llm_model_to_the_ollama_fallback() {
+        let mut primary = slot_env(Some("qwen3.5:9b"));
+        let mut fallback = SlotEnv::default();
+
+        let report = apply_legacy_openrouter_env(
+            LlmProviderKind::OpenRouter,
+            &mut primary,
+            Some(LlmProviderKind::Ollama),
+            &mut fallback,
+            legacy(Some("openai/gpt-4o-mini"), Some("key")),
         );
 
-        // No operator intent to contradict: stay quiet rather than warn on every boot.
-        assert!(!llm_model_is_ignored(
-            LlmProviderKind::OpenRouter,
-            None,
-            &default
-        ));
-        assert!(!llm_model_is_ignored(
-            LlmProviderKind::OpenRouter,
-            Some(&default),
-            &default
-        ));
-        assert!(!llm_model_is_ignored(
-            LlmProviderKind::OpenRouter,
-            Some(""),
-            &default
-        ));
+        assert_eq!(primary.model.as_deref(), Some("openai/gpt-4o-mini"));
+        assert_eq!(fallback.model.as_deref(), Some("qwen3.5:9b"));
+        assert_eq!(report.role, Some(LlmRole::Primary));
+        assert_eq!(
+            report.model_note,
+            Some(LegacyModelNote::LlmModelMovedToFallback {
+                cloud: "openai/gpt-4o-mini".into(),
+                ollama: "qwen3.5:9b".into(),
+            })
+        );
+    }
 
-        // Ollama primary consumes LLM_MODEL, including as OpenRouter's fallback peer.
-        assert!(!llm_model_is_ignored(
+    #[test]
+    fn legacy_model_clash_without_an_ollama_fallback_reports_the_ignored_llm_model() {
+        let mut primary = slot_env(Some("qwen3.5:9b"));
+        let mut fallback = SlotEnv::default();
+
+        let report = apply_legacy_openrouter_env(
+            LlmProviderKind::OpenRouter,
+            &mut primary,
+            None,
+            &mut fallback,
+            legacy(Some("openai/gpt-4o-mini"), Some("key")),
+        );
+
+        assert_eq!(primary.model.as_deref(), Some("openai/gpt-4o-mini"));
+        assert_eq!(fallback.model, None);
+        assert_eq!(
+            report.model_note,
+            Some(LegacyModelNote::LlmModelIgnored {
+                cloud: "openai/gpt-4o-mini".into(),
+                ignored: "qwen3.5:9b".into(),
+            })
+        );
+
+        // The old Compose file injected the default model: nothing to report.
+        let mut primary = slot_env(Some(&format!("ollama::{DEFAULT_OLLAMA_MODEL}")));
+        let report = apply_legacy_openrouter_env(
+            LlmProviderKind::OpenRouter,
+            &mut primary,
+            None,
+            &mut SlotEnv::default(),
+            legacy(Some("openai/gpt-4o-mini"), Some("key")),
+        );
+        assert_eq!(report.model_note, None);
+    }
+
+    #[test]
+    fn any_per_slot_setting_makes_llm_model_the_primary_model() {
+        // Each of these settings did not exist before slots, so a file using
+        // it is per-slot and LLM_MODEL must keep its per-slot meaning.
+        let cases: [(LlmProviderKind, SlotEnv, Option<LlmProviderKind>, SlotEnv); 5] = [
+            (
+                LlmProviderKind::OpenAiCompatible,
+                slot_env(Some("claude-haiku-5-5")),
+                None,
+                SlotEnv::default(),
+            ),
+            (
+                LlmProviderKind::OpenRouter,
+                SlotEnv {
+                    api_key: Some("new-key".into()),
+                    ..slot_env(Some("claude-haiku-5-5"))
+                },
+                None,
+                SlotEnv::default(),
+            ),
+            (
+                LlmProviderKind::OpenRouter,
+                SlotEnv {
+                    base_url: Some("https://gateway.example/v1".into()),
+                    ..slot_env(Some("claude-haiku-5-5"))
+                },
+                None,
+                SlotEnv::default(),
+            ),
+            (
+                LlmProviderKind::OpenRouter,
+                slot_env(Some("claude-haiku-5-5")),
+                Some(LlmProviderKind::Ollama),
+                slot_env(Some("glm4:9b")),
+            ),
+            (
+                LlmProviderKind::OpenRouter,
+                slot_env(Some("claude-haiku-5-5")),
+                Some(LlmProviderKind::Anthropic),
+                SlotEnv::default(),
+            ),
+        ];
+        for (primary_kind, mut primary, fallback_kind, mut fallback) in cases {
+            let fallback_model = fallback.model.clone();
+            let report = apply_legacy_openrouter_env(
+                primary_kind,
+                &mut primary,
+                fallback_kind,
+                &mut fallback,
+                legacy(Some("openai/gpt-4o-mini"), Some("legacy-key")),
+            );
+
+            assert_eq!(
+                primary.model.as_deref(),
+                Some("claude-haiku-5-5"),
+                "{primary_kind} / {fallback_kind:?}"
+            );
+            assert_eq!(fallback.model, fallback_model);
+            assert_eq!(
+                report.model_note,
+                Some(LegacyModelNote::LegacyModelIgnored {
+                    primary: "claude-haiku-5-5".into(),
+                    ignored: "openai/gpt-4o-mini".into(),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn shadowed_legacy_vars_are_reported() {
+        let mut fallback = SlotEnv {
+            model: Some("new-model".into()),
+            api_key: Some("new-key".into()),
+            base_url: None,
+        };
+        let report = apply_legacy_openrouter_env(
             LlmProviderKind::Ollama,
-            Some("qwen3.5:9b"),
-            &default
-        ));
+            &mut SlotEnv::default(),
+            Some(LlmProviderKind::OpenRouter),
+            &mut fallback,
+            LegacyOpenRouterEnv {
+                api_key: Some("legacy-key".into()),
+                model: Some("legacy-model".into()),
+                base_url: Some("https://legacy.example/v1".into()),
+            },
+        );
+
+        assert_eq!(report.role, Some(LlmRole::Fallback));
+        assert_eq!(report.shadowed, ["OPENROUTER_MODEL", "OPENROUTER_API_KEY"]);
+        assert_eq!(fallback.model.as_deref(), Some("new-model"));
+        assert_eq!(
+            fallback.base_url.as_deref(),
+            Some("https://legacy.example/v1")
+        );
+    }
+
+    #[test]
+    fn json_mode_breakage_is_detected_for_openai_adapters_aimed_at_anthropic() {
+        let slot = |provider, base_url: &str| LlmSlot {
+            role: LlmRole::Primary,
+            provider,
+            model: "claude-haiku-5-5".into(),
+            api_key: Some("key".into()),
+            base_url: Some(base_url.into()),
+        };
+        for provider in [
+            LlmProviderKind::OpenRouter,
+            LlmProviderKind::OpenAiCompatible,
+            LlmProviderKind::OpenAi,
+        ] {
+            assert!(
+                breaks_json_mode(&slot(provider, "https://api.anthropic.com/v1")),
+                "{provider}"
+            );
+            assert!(breaks_json_mode(&slot(
+                provider,
+                "https://API.Anthropic.com/v1/"
+            )));
+            assert!(!breaks_json_mode(&slot(
+                provider,
+                "https://openrouter.ai/api/v1"
+            )));
+        }
+        // The native backend is the fix, not the problem.
+        assert!(!breaks_json_mode(&slot(
+            LlmProviderKind::Anthropic,
+            "https://api.anthropic.com/v1/"
+        )));
+    }
+
+    #[test]
+    fn redact_url_strips_credentials_query_and_fragment() {
+        assert_eq!(
+            redact_url("https://user:token@gw.example:8443/v1?api_key=secret#frag"),
+            "https://gw.example:8443/v1"
+        );
+        assert_eq!(
+            redact_url("https://api.anthropic.com/v1/"),
+            "https://api.anthropic.com/v1/"
+        );
+        assert_eq!(redact_url("not a url secret"), "<unparsable URL>");
+    }
+
+    #[test]
+    fn invalid_base_url_error_does_not_echo_the_value() {
+        let settings = Settings {
+            llm_base_url: Some("htp//secret-token".into()),
+            ..cloud_primary(LlmProviderKind::OpenAiCompatible)
+        };
+        let error = settings.validate().unwrap_err().to_string();
+        assert!(error.contains("LLM_BASE_URL"), "{error}");
+        assert!(!error.contains("secret-token"), "{error}");
+    }
+
+    #[test]
+    #[serial]
+    fn legacy_openrouter_in_both_slots_drops_the_duplicate_fallback() {
+        // A pre-slot `.env` naming openrouter twice booted with the primary
+        // alone; it must keep booting instead of demanding fallback settings.
+        let settings = load_with(&[
+            ("LLM_PROVIDER", Some("openrouter")),
+            ("LLM_FALLBACK_PROVIDER", Some("openrouter")),
+            ("OPENROUTER_API_KEY", Some("k")),
+            ("OPENROUTER_MODEL", Some("m")),
+        ])
+        .unwrap();
+
+        assert_eq!(settings.llm_fallback_provider, None);
+        assert_eq!(settings.fallback_slot().unwrap(), None);
+        let primary = settings.primary_slot().unwrap();
+        assert_eq!(primary.model, "m");
+        assert_eq!(primary.api_key.as_deref(), Some("k"));
+    }
+
+    #[test]
+    #[serial]
+    fn same_kind_fallback_with_its_own_settings_survives_legacy_mode() {
+        let settings = load_with(&[
+            ("LLM_PROVIDER", Some("openrouter")),
+            ("LLM_FALLBACK_PROVIDER", Some("openrouter")),
+            ("LLM_FALLBACK_MODEL", Some("fallback-model")),
+            ("LLM_FALLBACK_API_KEY", Some("fallback-key")),
+            ("OPENROUTER_API_KEY", Some("k")),
+            ("OPENROUTER_MODEL", Some("m")),
+        ])
+        .unwrap();
+
+        let fallback = settings.fallback_slot().unwrap().unwrap();
+        assert_eq!(fallback.model, "fallback-model");
+        assert_eq!(fallback.api_key.as_deref(), Some("fallback-key"));
+    }
+
+    #[test]
+    #[serial]
+    fn errors_on_legacy_values_name_the_variable_the_operator_set() {
+        let error = load_with(&[
+            ("LLM_PROVIDER", Some("ollama")),
+            ("LLM_FALLBACK_PROVIDER", Some("openrouter")),
+            ("OPENROUTER_API_KEY", Some("k")),
+            ("OPENROUTER_MODEL", Some("m")),
+            ("OPENROUTER_BASE_URL", Some("http://10.0.0.1/v1")),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("OPENROUTER_BASE_URL"), "{error}");
+        assert!(!error.contains("LLM_FALLBACK_BASE_URL"), "{error}");
+
+        // A slot value keeps its own name even in legacy mode.
+        let error = load_with(&[
+            ("LLM_PROVIDER", Some("ollama")),
+            ("LLM_FALLBACK_PROVIDER", Some("openrouter")),
+            ("LLM_FALLBACK_BASE_URL", Some("http://10.0.0.1/v1")),
+            ("OPENROUTER_API_KEY", Some("k")),
+            ("OPENROUTER_MODEL", Some("m")),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("LLM_FALLBACK_BASE_URL"), "{error}");
+
+        // A missing value names both places it could come from.
+        let error = load_with(&[
+            ("LLM_PROVIDER", Some("openrouter")),
+            ("OPENROUTER_API_KEY", Some("k")),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("LLM_MODEL"), "{error}");
+        assert!(error.contains("OPENROUTER_MODEL"), "{error}");
+    }
+
+    #[test]
+    fn debug_redacts_credentials_in_base_urls() {
+        let settings = Settings {
+            llm_base_url: Some("https://user:primary-url-secret@gw.example/v1".into()),
+            llm_fallback_base_url: Some("https://gw.example/v1?key=fallback-url-secret".into()),
+            ollama_host: Some("http://user:ollama-url-secret@gpu:11434".into()),
+            ..cloud_primary(LlmProviderKind::OpenAiCompatible)
+        };
+        let debug = format!("{settings:?}");
+        for secret in [
+            "primary-url-secret",
+            "fallback-url-secret",
+            "ollama-url-secret",
+        ] {
+            assert!(!debug.contains(secret), "{secret} leaked: {debug}");
+        }
+        assert!(debug.contains("gw.example"), "{debug}");
+
+        let slot = format!("{:?}", settings.primary_slot().unwrap());
+        assert!(!slot.contains("primary-url-secret"), "{slot}");
     }
 
     #[test]
@@ -713,7 +1887,9 @@ mod tests {
     #[test]
     fn test_defaults() {
         let d = Settings::default();
-        assert_eq!(d.llm_model, "lklimek/gemma4-text:26b-a4b-it-qat");
+        assert_eq!(d.llm_model, None);
+        assert_eq!(d.primary_slot().unwrap().model, DEFAULT_OLLAMA_MODEL);
+        assert_eq!(DEFAULT_OLLAMA_MODEL, "lklimek/gemma4-text:26b-a4b-it-qat");
         assert_eq!(d.embed_model, "MultilingualE5Large");
         assert_eq!(d.embed_dims, 1024);
         assert!(d.distill_memories);

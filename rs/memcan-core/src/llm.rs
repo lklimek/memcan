@@ -1,14 +1,18 @@
 //! Multi-adapter LLM chat via the [`genai`] crate.
 //!
-//! [`GenaiLlmProvider`] selects an adapter from the model name at call time;
-//! OpenRouter is one supported configuration.
+//! [`GenaiLlmProvider`] serves the cloud backends (Anthropic's native
+//! Messages API and OpenAI-compatible APIs) and, without the `ollama-rs-llm`
+//! feature, Ollama.
 
+use crate::config::{LlmProviderKind, LlmSlot};
 use crate::error::{MemcanError, Result};
-use crate::llm_telemetry;
+use crate::llm_telemetry::{self, CacheTokens};
 use crate::traits::{LlmMessage, LlmOptions, LlmProvider, Role};
 use async_trait::async_trait;
 use genai::adapter::AdapterKind;
-use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat};
+use genai::chat::{
+    CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat, ReasoningEffort,
+};
 use genai::resolver::{AuthData, Endpoint};
 use genai::{Client, ModelIden};
 
@@ -73,21 +77,73 @@ fn status_is_unavailable(status: u16) -> bool {
     (500..600).contains(&status) || matches!(status, 401 | 402 | 408 | 429)
 }
 
+/// `max_tokens` sent to Anthropic when the caller sets none.
+///
+/// The Messages API requires the field. genai's own fallback is the model's
+/// output ceiling (64k for current models), far beyond anything our prompts
+/// produce.
+const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 4096;
+
+/// Wire protocol spoken by a cloud backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloudApi {
+    /// Native Anthropic Messages API (`/messages`, `x-api-key`).
+    Anthropic,
+    /// OpenAI Chat Completions API (`/chat/completions`, bearer key).
+    OpenAiCompatible,
+}
+
+/// Split a system prompt so its cache breakpoint survives genai 0.5.3.
+///
+/// genai's Anthropic adapter emits `cache_control` only when the marked system
+/// block is not the first one (`last_cache_idx > 0`), so a lone marked prompt
+/// is silently sent uncached. Splitting after the first line yields an unmarked
+/// head and a marked tail; the breakpoint caches the whole prefix, and
+/// `head + tail` is the original prompt byte for byte. `None` when no split
+/// leaves both halves non-blank (Anthropic rejects empty text blocks) — such a
+/// one-line prompt is far below the minimum cacheable length anyway.
+// TODO: drop the split once genai honours a breakpoint on the first block.
+fn split_for_cache_breakpoint(prompt: &str) -> Option<(&str, &str)> {
+    prompt
+        .match_indices('\n')
+        .map(|(index, _)| prompt.split_at(index + 1))
+        .find(|(head, tail)| !head.trim().is_empty() && !tail.trim().is_empty())
+}
+
 /// LLM provider backed by [`genai::Client`].
 ///
-/// The model name string (e.g. `"ollama::qwen3.5:4b"`, `"gpt-4o"`,
-/// `"claude-sonnet-4-20250514"`) determines which adapter/provider is used at
-/// call time.
-#[derive(Debug, Clone)]
+/// Clients from [`from_cloud_slot`](Self::from_cloud_slot) pin the
+/// adapter and endpoint of the configured backend. Otherwise the model name
+/// (e.g. `"ollama::qwen3.5:4b"`, `"gpt-4o"`) selects the adapter at call time.
+#[derive(Clone)]
 pub struct GenaiLlmProvider {
     client: Client,
     default_model: String,
     ollama_host: Option<String>,
     ollama_api_key: Option<String>,
-    /// Forward `LlmOptions::temperature`. Off for the cloud OpenAI-compatible
-    /// backend: Anthropic's compat endpoint and OpenAI reasoning models reject
-    /// non-default temperatures with a 400.
-    send_temperature: bool,
+    /// Protocol of the cloud backend; `None` for Ollama and model-name routing.
+    ///
+    /// Cloud backends never receive `LlmOptions::temperature`: current Claude
+    /// models (natively and through Anthropic's OpenAI-compatible endpoint) and
+    /// OpenAI reasoning models reject non-default temperatures with a 400.
+    cloud_api: Option<CloudApi>,
+}
+
+impl std::fmt::Debug for GenaiLlmProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GenaiLlmProvider")
+            .field("default_model", &self.default_model)
+            .field(
+                "ollama_host",
+                &self.ollama_host.as_deref().map(crate::config::redact_url),
+            )
+            .field(
+                "ollama_api_key",
+                &self.ollama_api_key.as_ref().map(|_| "***"),
+            )
+            .field("cloud_api", &self.cloud_api)
+            .finish_non_exhaustive()
+    }
 }
 
 impl GenaiLlmProvider {
@@ -98,22 +154,22 @@ impl GenaiLlmProvider {
             default_model,
             ollama_host: None,
             ollama_api_key: None,
-            send_temperature: true,
+            cloud_api: None,
         }
     }
 
-    /// Build from application settings.
+    /// Build an Ollama client for `slot`.
     ///
     /// Always installs a `ServiceTargetResolver` that:
     /// 1. Strips the `"ollama::"` prefix from model names (genai 0.5 compatibility)
-    /// 2. Applies `OLLAMA_HOST` endpoint override when configured
-    /// 3. Applies `OLLAMA_API_KEY` bearer auth when configured
+    /// 2. Applies the slot's base URL (`OLLAMA_HOST` by default) when set
+    /// 3. Applies the slot's API key (`OLLAMA_API_KEY` by default) as bearer auth
     ///
     /// The genai crate reads neither `OLLAMA_HOST` nor `OLLAMA_API_KEY` from
     /// the environment on its own.
-    pub fn from_settings(settings: &crate::config::Settings) -> Self {
-        let ollama_host = settings.ollama_host.clone();
-        let ollama_api_key = settings.ollama_api_key.clone();
+    pub fn from_ollama_slot(slot: &LlmSlot) -> Self {
+        let ollama_host = slot.base_url.clone();
+        let ollama_api_key = slot.api_key.clone();
 
         let endpoint = ollama_host.map(|host| {
             let mut base = host.trim_end_matches('/').to_string();
@@ -147,40 +203,78 @@ impl GenaiLlmProvider {
 
         Self {
             client,
-            default_model: settings.llm_model.clone(),
-            ollama_host: settings.ollama_host.clone(),
-            ollama_api_key: settings.ollama_api_key.clone(),
-            send_temperature: true,
+            default_model: slot.model.clone(),
+            ollama_host: slot.base_url.clone(),
+            ollama_api_key: slot.api_key.clone(),
+            cloud_api: None,
         }
     }
 
-    /// Build an OpenRouter client; context-window discovery is unsupported.
-    pub fn from_openrouter_settings(settings: &crate::config::Settings) -> Self {
-        let endpoint = Endpoint::from_owned(format!(
-            "{}/",
-            settings.openrouter_base_url.trim_end_matches('/')
-        ));
-        let auth_key = settings.openrouter_api_key.clone().unwrap_or_default();
+    /// Build a client for the cloud slot `slot`; context-window discovery is
+    /// unsupported.
+    ///
+    /// Anthropic uses genai's native Anthropic adapter; every other cloud kind
+    /// uses its OpenAI adapter against the slot's base URL. Fails for an Ollama
+    /// slot or a slot without a base URL or API key.
+    pub fn from_cloud_slot(slot: &LlmSlot) -> Result<Self> {
+        let kind = slot.provider;
+        let (adapter, cloud_api) = match kind {
+            LlmProviderKind::Anthropic => (AdapterKind::Anthropic, CloudApi::Anthropic),
+            LlmProviderKind::OpenAi
+            | LlmProviderKind::OpenRouter
+            | LlmProviderKind::OpenAiCompatible => {
+                (AdapterKind::OpenAI, CloudApi::OpenAiCompatible)
+            }
+            LlmProviderKind::Ollama => {
+                return Err(MemcanError::Config(
+                    "Ollama is not a cloud LLM backend".into(),
+                ));
+            }
+        };
+        let base_url = slot.base_url.as_deref().ok_or_else(|| {
+            MemcanError::Config(format!(
+                "the {} '{kind}' LLM slot has no base URL",
+                slot.role
+            ))
+        })?;
+        // genai appends the route (`messages`, `chat/completions`) verbatim.
+        let endpoint = Endpoint::from_owned(format!("{}/", base_url.trim_end_matches('/')));
+        // Without a key every call would 401, which the breaker counts as an
+        // outage — quietly shifting all traffic to the fallback.
+        let auth_key = slot
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                MemcanError::Config(format!(
+                    "the {} '{kind}' LLM slot has no API key",
+                    slot.role
+                ))
+            })?;
         let resolver_key = auth_key.clone();
 
         let client = Client::builder()
             // genai 0.5 resolves auth before applying the target override.
             .with_auth_resolver_fn(move |_| Ok(Some(AuthData::Key(auth_key.clone()))))
             .with_service_target_resolver_fn(move |mut st: genai::ServiceTarget| {
+                // Model ids such as `openai/gpt-4o-mini` or `claude-*` make genai
+                // infer an adapter; the configured backend must win.
                 st.endpoint = endpoint.clone();
-                st.model = ModelIden::new(AdapterKind::OpenAI, st.model.model_name.clone());
+                st.model = ModelIden::new(adapter, st.model.model_name.clone());
                 st.auth = AuthData::Key(resolver_key.clone());
                 Ok(st)
             })
             .build();
 
-        Self {
+        Ok(Self {
             client,
-            default_model: settings.openrouter_model.clone(),
+            default_model: slot.model.clone(),
             ollama_host: None,
             ollama_api_key: None,
-            send_temperature: false,
-        }
+            cloud_api: Some(cloud_api),
+        })
     }
 
     /// Return the default model name.
@@ -205,6 +299,7 @@ impl LlmProvider for GenaiLlmProvider {
         // Disable thinking for Ollama models when explicitly requested
         let disable_think = opts.think == Some(false) && model.to_lowercase().contains("ollama");
 
+        let anthropic = self.cloud_api == Some(CloudApi::Anthropic);
         for msg in messages {
             match msg.role {
                 Role::System => {
@@ -213,7 +308,17 @@ impl LlmProvider for GenaiLlmProvider {
                     } else {
                         msg.content.clone()
                     };
-                    req = req.with_system(&content);
+                    req = match anthropic
+                        .then(|| split_for_cache_breakpoint(&content))
+                        .flatten()
+                    {
+                        // System prompts are static templates; the volatile
+                        // input travels in the user message after the breakpoint.
+                        Some((head, tail)) => req.with_system(head).append_message(
+                            ChatMessage::system(tail).with_options(CacheControl::Ephemeral),
+                        ),
+                        None => req.with_system(&content),
+                    };
                 }
                 Role::User => {
                     req = req.append_message(ChatMessage::user(&msg.content));
@@ -226,17 +331,27 @@ impl LlmProvider for GenaiLlmProvider {
 
         // Build ChatOptions
         let mut chat_opts = ChatOptions::default();
-        if let Some(temp) = opts.temperature.filter(|_| self.send_temperature) {
+        if let Some(temp) = opts.temperature.filter(|_| self.cloud_api.is_none()) {
             chat_opts = chat_opts.with_temperature(temp as f64);
         }
-        if let Some(max) = opts.max_tokens {
+        let max_tokens = opts
+            .max_tokens
+            .or_else(|| anthropic.then_some(ANTHROPIC_DEFAULT_MAX_TOKENS));
+        if let Some(max) = max_tokens {
             chat_opts = chat_opts.with_max_tokens(max);
         }
-        if opts.format_json {
+        // Anthropic has no `response_format`; replies are parsed leniently.
+        if opts.format_json && !anthropic {
             chat_opts = chat_opts.with_response_format(ChatResponseFormat::JsonMode);
         }
         if opts.think == Some(false) {
             chat_opts = chat_opts.with_normalize_reasoning_content(true);
+        }
+        if anthropic {
+            // An explicit `None` stops genai inferring an effort from a model-id
+            // suffix (`-low`, `-high`, …) and sending the legacy
+            // `thinking.budget_tokens`, which current Claude models reject.
+            chat_opts = chat_opts.with_reasoning_effort(ReasoningEffort::None);
         }
 
         let response = self
@@ -255,6 +370,15 @@ impl LlmProvider for GenaiLlmProvider {
             .usage
             .completion_tokens
             .and_then(|n| u64::try_from(n).ok());
+        let cache_details = response.usage.prompt_tokens_details.as_ref();
+        let cache = CacheTokens {
+            creation: cache_details
+                .and_then(|details| details.cache_creation_tokens)
+                .and_then(|n| u64::try_from(n).ok()),
+            read: cache_details
+                .and_then(|details| details.cached_tokens)
+                .and_then(|n| u64::try_from(n).ok()),
+        };
         // Mirror the ServiceTargetResolver's "ollama::" strip so the logged
         // model name matches what was actually sent to the provider.
         llm_telemetry::emit(
@@ -262,6 +386,7 @@ impl LlmProvider for GenaiLlmProvider {
             strip_ollama_prefix(model),
             prompt_tokens,
             completion_tokens,
+            cache,
         );
 
         response
@@ -280,7 +405,7 @@ impl LlmProvider for GenaiLlmProvider {
         let host = self
             .ollama_host
             .as_deref()
-            .unwrap_or("http://localhost:11434");
+            .unwrap_or(crate::ollama::DEFAULT_OLLAMA_HOST);
         let url = format!("{}/api/show", host.trim_end_matches('/'));
 
         let model_name = strip_ollama_prefix(model);
@@ -311,6 +436,17 @@ impl LlmProvider for GenaiLlmProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::LlmRole;
+
+    fn cloud_slot(kind: LlmProviderKind, model: &str, key: &str, base_url: String) -> LlmSlot {
+        LlmSlot {
+            role: LlmRole::Primary,
+            provider: kind,
+            model: model.into(),
+            api_key: Some(key.into()),
+            base_url: Some(base_url),
+        }
+    }
 
     #[tokio::test]
     async fn tc13_openrouter_uses_openai_endpoint_auth_and_usage_response() {
@@ -344,13 +480,13 @@ mod tests {
             )
             .create_async()
             .await;
-        let settings = crate::config::Settings {
-            openrouter_api_key: Some("test-openrouter-key".into()),
-            openrouter_model: "openai/gpt-4o-mini".into(),
-            openrouter_base_url: server.url(),
-            ..crate::config::Settings::default()
-        };
-        let provider = GenaiLlmProvider::from_openrouter_settings(&settings);
+        let provider = GenaiLlmProvider::from_cloud_slot(&cloud_slot(
+            LlmProviderKind::OpenRouter,
+            "openai/gpt-4o-mini",
+            "test-openrouter-key",
+            server.url(),
+        ))
+        .unwrap();
 
         let result = provider
             .chat(
@@ -402,13 +538,13 @@ mod tests {
             )
             .create_async()
             .await;
-        let settings = crate::config::Settings {
-            openrouter_api_key: Some("test-key".into()),
-            openrouter_model: "claude-haiku-5-5".into(),
-            openrouter_base_url: server.url(),
-            ..crate::config::Settings::default()
-        };
-        let provider = GenaiLlmProvider::from_openrouter_settings(&settings);
+        let provider = GenaiLlmProvider::from_cloud_slot(&cloud_slot(
+            LlmProviderKind::OpenAiCompatible,
+            "claude-haiku-5-5",
+            "test-key",
+            server.url(),
+        ))
+        .unwrap();
 
         let result = provider
             .chat(
@@ -430,6 +566,388 @@ mod tests {
         mock.assert_async().await;
     }
 
+    /// Fixed Anthropic Messages API reply carrying prompt-cache usage.
+    fn anthropic_reply(text: &str) -> String {
+        serde_json::json!({
+            "id": "msg_test",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-haiku-5-5",
+            "content": [{"type": "text", "text": text}],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 3,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 1800
+            }
+        })
+        .to_string()
+    }
+
+    fn anthropic_provider(base_url: String) -> GenaiLlmProvider {
+        GenaiLlmProvider::from_cloud_slot(&cloud_slot(
+            LlmProviderKind::Anthropic,
+            "claude-haiku-5-5",
+            "test-anthropic-key",
+            base_url,
+        ))
+        .unwrap()
+    }
+
+    fn system_and_user(system: &str, user: &str) -> Vec<LlmMessage> {
+        vec![
+            LlmMessage {
+                role: Role::System,
+                content: system.into(),
+            },
+            LlmMessage {
+                role: Role::User,
+                content: user.into(),
+            },
+        ]
+    }
+
+    /// The request body as JSON (`Null` when it is not JSON).
+    fn request_json(req: &mockito::Request) -> serde_json::Value {
+        req.utf8_lossy_body()
+            .ok()
+            .and_then(|body| serde_json::from_str(&body).ok())
+            .unwrap_or_default()
+    }
+
+    /// `true` when the raw request body contains none of `keys`.
+    fn body_lacks(req: &mockito::Request, keys: &[&str]) -> bool {
+        req.utf8_lossy_body()
+            .map(|body| keys.iter().all(|key| !body.contains(key)))
+            .unwrap_or(false)
+    }
+
+    #[tokio::test]
+    async fn anthropic_request_is_native_cached_and_free_of_rejected_params() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/messages")
+            .match_header("x-api-key", "test-anthropic-key")
+            .match_header("authorization", mockito::Matcher::Missing)
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "model": "claude-haiku-5-5",
+                "max_tokens": ANTHROPIC_DEFAULT_MAX_TOKENS,
+                "messages": [{"role": "user", "content": "volatile input"}]
+            })))
+            .match_request(|req| {
+                let body = request_json(req);
+                let top_level_absent = [
+                    "temperature",
+                    "thinking",
+                    "output_config",
+                    "response_format",
+                ]
+                .iter()
+                .all(|key| body.get(key).is_none());
+                top_level_absent
+                    && body_lacks(req, &["budget_tokens"])
+                    && body["system"]
+                        == serde_json::json!([
+                            {"type": "text", "text": "# Role\n"},
+                            {
+                                "type": "text",
+                                "text": "Extract facts.\nReturn JSON.",
+                                "cache_control": {"type": "ephemeral"}
+                            }
+                        ])
+            })
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(anthropic_reply("{\"facts\": []}"))
+            .create_async()
+            .await;
+        let provider = anthropic_provider(server.url());
+
+        let result = provider
+            .chat(
+                provider.default_model(),
+                &system_and_user("# Role\nExtract facts.\nReturn JSON.", "volatile input"),
+                Some(LlmOptions {
+                    format_json: true,
+                    temperature: Some(0.0),
+                    think: Some(false),
+                    op: "anthropic_native",
+                    ..LlmOptions::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, "{\"facts\": []}");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn anthropic_cache_breakpoint_wire_shape_is_pinned_for_a_real_prompt() {
+        // Pins genai's wire output for the split workaround: exactly two system
+        // text blocks, the breakpoint on the last only, and their concatenation
+        // equal to the prompt. A genai upgrade that changes how it renders
+        // cached system blocks (fixing or moving the index-0 bug) fails here
+        // instead of silently double-marking or dropping the breakpoint.
+        let prompt = crate::prompts::FACT_EXTRACTION_PROMPT;
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/messages")
+            .match_request(move |req| {
+                let body = request_json(req);
+                let Some(blocks) = body["system"].as_array() else {
+                    return false;
+                };
+                let text_only = blocks.iter().all(|block| {
+                    block["type"] == "text"
+                        && block["text"].as_str().is_some_and(|t| !t.trim().is_empty())
+                });
+                let marks: Vec<bool> = blocks
+                    .iter()
+                    .map(|block| block.get("cache_control").is_some())
+                    .collect();
+                let joined: String = blocks
+                    .iter()
+                    .filter_map(|block| block["text"].as_str())
+                    .collect();
+                blocks.len() == 2
+                    && text_only
+                    && marks == [false, true]
+                    && blocks[1]["cache_control"] == serde_json::json!({"type": "ephemeral"})
+                    && joined == prompt
+                    && body.get("thinking").is_none()
+            })
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(anthropic_reply("ok"))
+            .create_async()
+            .await;
+        let provider = anthropic_provider(server.url());
+
+        provider
+            .chat(
+                provider.default_model(),
+                &system_and_user(prompt, "volatile input"),
+                Some(LlmOptions {
+                    format_json: true,
+                    think: Some(false),
+                    ..LlmOptions::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn anthropic_keeps_the_callers_max_tokens() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/messages")
+            .match_body(mockito::Matcher::PartialJson(
+                serde_json::json!({"max_tokens": 256}),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(anthropic_reply("ok"))
+            .create_async()
+            .await;
+        let provider = anthropic_provider(server.url());
+
+        provider
+            .chat(
+                provider.default_model(),
+                &system_and_user("Describe.\nBriefly.", "fn main() {}"),
+                Some(LlmOptions {
+                    max_tokens: Some(256),
+                    ..LlmOptions::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn anthropic_model_suffix_never_enables_legacy_thinking() {
+        // genai reads a `-high`/`-low` model-id suffix as a reasoning effort
+        // and would send `thinking.budget_tokens`, which current Claude models
+        // reject with a 400. The id must also reach the API unmodified.
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/messages")
+            .match_body(mockito::Matcher::PartialJson(
+                serde_json::json!({"model": "claude-haiku-5-5-high"}),
+            ))
+            .match_request(|req| {
+                let body = request_json(req);
+                body.get("thinking").is_none()
+                    && body.get("output_config").is_none()
+                    && body_lacks(req, &["budget_tokens"])
+            })
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(anthropic_reply("ok"))
+            .create_async()
+            .await;
+        let provider = anthropic_provider(server.url());
+
+        provider
+            .chat(
+                "claude-haiku-5-5-high",
+                &system_and_user("Answer.", "hello"),
+                None,
+            )
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn anthropic_single_line_system_prompt_is_sent_uncached() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/messages")
+            .match_body(mockito::Matcher::PartialJson(
+                serde_json::json!({"system": "Answer."}),
+            ))
+            .match_request(|req| body_lacks(req, &["cache_control"]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(anthropic_reply("ok"))
+            .create_async()
+            .await;
+        let provider = anthropic_provider(server.url());
+
+        provider
+            .chat(
+                provider.default_model(),
+                &system_and_user("Answer.", "hello"),
+                None,
+            )
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn openai_backend_keeps_json_mode_and_bearer_auth() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .match_header("authorization", "Bearer test-openai-key")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "model": "gpt-4o-mini",
+                "response_format": {"type": "json_object"}
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "gpt-4o-mini",
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "{}"},
+                        "finish_reason": "stop"
+                    }]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let provider = GenaiLlmProvider::from_cloud_slot(&cloud_slot(
+            LlmProviderKind::OpenAi,
+            "gpt-4o-mini",
+            "test-openai-key",
+            format!("{}/", server.url()),
+        ))
+        .unwrap();
+
+        provider
+            .chat(
+                provider.default_model(),
+                &system_and_user("Return JSON.\nOnly JSON.", "hello"),
+                Some(LlmOptions {
+                    format_json: true,
+                    ..LlmOptions::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
+    }
+
+    #[test]
+    fn cloud_construction_rejects_ollama_and_a_missing_base_url() {
+        let ollama = LlmSlot {
+            provider: LlmProviderKind::Ollama,
+            ..cloud_slot(LlmProviderKind::OpenAi, "m", "k", String::new())
+        };
+        assert!(GenaiLlmProvider::from_cloud_slot(&ollama).is_err());
+
+        let no_url = LlmSlot {
+            base_url: None,
+            ..cloud_slot(LlmProviderKind::OpenAiCompatible, "m", "k", String::new())
+        };
+        let error = GenaiLlmProvider::from_cloud_slot(&no_url)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("base URL"), "{error}");
+
+        for api_key in [None, Some(String::new()), Some("  ".to_string())] {
+            let no_key = LlmSlot {
+                api_key,
+                ..cloud_slot(
+                    LlmProviderKind::Anthropic,
+                    "m",
+                    "k",
+                    "https://a.example/".into(),
+                )
+            };
+            let error = GenaiLlmProvider::from_cloud_slot(&no_key)
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(error.contains("API key"), "{error}");
+        }
+    }
+
+    #[test]
+    fn cache_split_preserves_the_prompt_and_keeps_both_halves_non_blank() {
+        for prompt in [
+            "# Role\nExtract facts.\nReturn JSON.",
+            "\n\n# Role\nbody",
+            "head\n\n\ntail\n",
+        ] {
+            let (head, tail) = split_for_cache_breakpoint(prompt).unwrap();
+            assert_eq!(format!("{head}{tail}"), prompt);
+            assert!(!head.trim().is_empty(), "{prompt:?}");
+            assert!(!tail.trim().is_empty(), "{prompt:?}");
+        }
+        assert_eq!(
+            split_for_cache_breakpoint("# Role\nbody"),
+            Some(("# Role\n", "body"))
+        );
+
+        for unsplittable in ["", "one line", "one line\n", "\n\none line", "  \n  "] {
+            assert_eq!(
+                split_for_cache_breakpoint(unsplittable),
+                None,
+                "{unsplittable:?}"
+            );
+        }
+    }
+
     #[test]
     fn test_default_model() {
         let provider = GenaiLlmProvider::new(Client::default(), "test-model".into());
@@ -438,7 +956,7 @@ mod tests {
 
     #[test]
     fn rejected_credentials_are_an_availability_fault() {
-        // A rotated OpenRouter key must not strand requests that a healthy
+        // A rotated cloud API key must not strand requests that a healthy
         // local Ollama could serve: 401 describes the backend, not the prompt,
         // so it has to reach the fallback and the breaker.
         assert!(super::status_is_unavailable(401));
@@ -485,12 +1003,36 @@ mod tests {
     }
 
     #[test]
-    fn test_from_settings_stores_model() {
+    fn test_from_ollama_slot_stores_model() {
         let settings = crate::config::Settings {
-            llm_model: "ollama::qwen3.5:4b".into(),
+            llm_model: Some("ollama::qwen3.5:4b".into()),
             ..crate::config::Settings::default()
         };
-        let provider = GenaiLlmProvider::from_settings(&settings);
+        let provider = GenaiLlmProvider::from_ollama_slot(&settings.primary_slot().unwrap());
         assert_eq!(provider.default_model(), "ollama::qwen3.5:4b");
+    }
+
+    #[test]
+    fn debug_never_prints_an_api_key() {
+        let ollama = GenaiLlmProvider::from_ollama_slot(&cloud_slot(
+            LlmProviderKind::Ollama,
+            "qwen3.5:9b",
+            "raw-ollama-secret",
+            "http://user:host-secret@gpu:11434".into(),
+        ));
+        let debug = format!("{ollama:?}");
+        assert!(!debug.contains("raw-ollama-secret"), "{debug}");
+        assert!(!debug.contains("host-secret"), "{debug}");
+        assert!(debug.contains("***"), "{debug}");
+
+        let cloud = GenaiLlmProvider::from_cloud_slot(&cloud_slot(
+            LlmProviderKind::Anthropic,
+            "claude-haiku-5-5",
+            "raw-cloud-secret",
+            "https://api.anthropic.com/v1/".into(),
+        ))
+        .unwrap();
+        let debug = format!("{cloud:?}");
+        assert!(!debug.contains("raw-cloud-secret"), "{debug}");
     }
 }

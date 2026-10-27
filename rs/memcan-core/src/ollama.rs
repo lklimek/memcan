@@ -2,6 +2,9 @@
 
 use std::borrow::Cow;
 
+/// Endpoint the Ollama clients use when a slot sets no base URL.
+pub const DEFAULT_OLLAMA_HOST: &str = "http://localhost:11434";
+
 /// Strip the `"ollama::"` provider prefix from a model name if present.
 ///
 /// The Ollama API rejects any model name containing `"::"`.

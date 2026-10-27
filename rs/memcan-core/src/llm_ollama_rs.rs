@@ -9,7 +9,7 @@ use ollama_rs::generation::chat::request::ChatMessageRequest;
 use ollama_rs::generation::parameters::{FormatType, ThinkType};
 use ollama_rs::models::ModelOptions;
 
-use crate::config::Settings;
+use crate::config::LlmSlot;
 use crate::error::{MemcanError, Result};
 use crate::llm_telemetry;
 use crate::ollama::strip_ollama_prefix;
@@ -47,30 +47,31 @@ fn classify_chat_error(error: &OllamaError, model_name: &str) -> MemcanError {
 }
 
 impl OllamaRsLlmProvider {
-    /// Build from application settings.
+    /// Build for an Ollama `slot`.
     ///
-    /// Parses `OLLAMA_HOST` into (scheme+host, port). Strips the `ollama::`
-    /// prefix from the configured model name. When `OLLAMA_API_KEY` is set,
-    /// injects a Bearer auth header via `Ollama::new_with_request_headers`;
-    /// otherwise uses the `Ollama::builder()` API.
-    pub fn from_settings(settings: &Settings) -> Self {
-        let raw_host = settings
-            .ollama_host
+    /// Parses the slot's base URL (`OLLAMA_HOST` by default) into
+    /// (scheme+host, port). Strips the `ollama::` prefix from the model name.
+    /// When the slot has an API key (`OLLAMA_API_KEY` by default), injects a
+    /// Bearer auth header via `Ollama::new_with_request_headers`; otherwise
+    /// uses the `Ollama::builder()` API.
+    pub fn from_slot(slot: &LlmSlot) -> Self {
+        let raw_host = slot
+            .base_url
             .as_deref()
-            .unwrap_or("http://localhost:11434");
+            .unwrap_or(crate::ollama::DEFAULT_OLLAMA_HOST);
         let (host, port) = parse_host_port(raw_host);
 
-        let default_model = strip_ollama_prefix(&settings.llm_model).to_string();
+        let default_model = strip_ollama_prefix(&slot.model).to_string();
 
         tracing::trace!(
             host = %host,
             port = port,
             model = %default_model,
-            auth = settings.ollama_api_key.is_some(),
+            auth = slot.api_key.is_some(),
             "OllamaRsLlmProvider: initializing"
         );
 
-        let client = if let Some(ref api_key) = settings.ollama_api_key {
+        let client = if let Some(ref api_key) = slot.api_key {
             match reqwest::header::HeaderValue::from_str(&format!("Bearer {api_key}")) {
                 Ok(val) => {
                     let mut headers = reqwest::header::HeaderMap::new();
@@ -123,7 +124,8 @@ pub(crate) fn extract_token_counts(
 /// Parse an Ollama host string into (base_url, port).
 ///
 /// Validates that the scheme is `http` or `https`. Falls back to
-/// `http://localhost:11434` with a warning on unparseable input.
+/// `http://localhost:11434` with a warning on unparseable input; the warning
+/// never echoes the value, which may hold a credential.
 pub(crate) fn parse_host_port(host: &str) -> (String, u16) {
     let host = host.trim_end_matches('/');
 
@@ -132,7 +134,7 @@ pub(crate) fn parse_host_port(host: &str) -> (String, u16) {
         if scheme != "http" && scheme != "https" {
             tracing::warn!(
                 scheme = scheme,
-                "OLLAMA_HOST has unsupported scheme, falling back to http://localhost:11434"
+                "Ollama base URL has an unsupported scheme, falling back to http://localhost:11434"
             );
             return ("http://localhost".to_string(), 11434);
         }
@@ -141,10 +143,7 @@ pub(crate) fn parse_host_port(host: &str) -> (String, u16) {
         return (base, port);
     }
 
-    tracing::warn!(
-        host = host,
-        "OLLAMA_HOST is not a valid URL, falling back to http://localhost:11434"
-    );
+    tracing::warn!("Ollama base URL is not a valid URL, falling back to http://localhost:11434");
     ("http://localhost".to_string(), 11434)
 }
 
@@ -217,7 +216,13 @@ impl LlmProvider for OllamaRsLlmProvider {
 
         // Emit structured token telemetry before consuming the response.
         let (prompt_tokens, completion_tokens) = extract_token_counts(response.final_data.as_ref());
-        llm_telemetry::emit(opts.op, model_name, prompt_tokens, completion_tokens);
+        llm_telemetry::emit(
+            opts.op,
+            model_name,
+            prompt_tokens,
+            completion_tokens,
+            llm_telemetry::CacheTokens::default(),
+        );
 
         let text = response.message.content;
         tracing::trace!(
@@ -288,6 +293,7 @@ impl LlmProvider for OllamaRsLlmProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Settings;
     use crate::traits::{LlmMessage, LlmProvider, Role};
 
     // ── classify_chat_error unit tests ──────────────────────────────────────
@@ -510,21 +516,21 @@ mod tests {
     #[test]
     fn test_from_settings_stores_model() {
         let settings = Settings {
-            llm_model: "ollama::qwen3.5:9b".into(),
+            llm_model: Some("ollama::qwen3.5:9b".into()),
             ..Settings::default()
         };
-        let provider = OllamaRsLlmProvider::from_settings(&settings);
+        let provider = OllamaRsLlmProvider::from_slot(&settings.primary_slot().unwrap());
         assert_eq!(provider.default_model(), "qwen3.5:9b");
     }
 
     #[test]
     fn test_from_settings_with_api_key() {
         let settings = Settings {
-            llm_model: "ollama::qwen3.5:9b".into(),
+            llm_model: Some("ollama::qwen3.5:9b".into()),
             ollama_api_key: Some("test-key".into()),
             ..Settings::default()
         };
-        let provider = OllamaRsLlmProvider::from_settings(&settings);
+        let provider = OllamaRsLlmProvider::from_slot(&settings.primary_slot().unwrap());
         assert_eq!(provider.default_model(), "qwen3.5:9b");
     }
 
@@ -552,11 +558,11 @@ mod tests {
     /// Helper: create a provider pointing at the given base URL.
     fn provider_at(base_url: &str, model: &str) -> OllamaRsLlmProvider {
         let settings = Settings {
-            llm_model: model.into(),
+            llm_model: Some(model.into()),
             ollama_host: Some(base_url.to_string()),
             ..Settings::default()
         };
-        OllamaRsLlmProvider::from_settings(&settings)
+        OllamaRsLlmProvider::from_slot(&settings.primary_slot().unwrap())
     }
 
     #[tokio::test]

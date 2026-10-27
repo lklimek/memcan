@@ -22,7 +22,7 @@ use serial_test::serial;
 
 fn provider_from_env() -> OllamaRsLlmProvider {
     let settings = Settings::load().expect("Settings::load failed — check env vars");
-    OllamaRsLlmProvider::from_settings(&settings)
+    OllamaRsLlmProvider::from_slot(&settings.primary_slot().expect("an Ollama primary slot"))
 }
 
 fn extraction_messages(input: &str) -> Vec<LlmMessage> {

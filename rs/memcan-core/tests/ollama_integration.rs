@@ -22,7 +22,8 @@ use serial_test::serial;
 /// (via Settings::load). Panics on configuration error so tests fail fast.
 fn provider_from_env() -> OllamaRsLlmProvider {
     let settings = Settings::load().expect("Settings::load failed -- check env vars");
-    let provider = OllamaRsLlmProvider::from_settings(&settings);
+    let provider =
+        OllamaRsLlmProvider::from_slot(&settings.primary_slot().expect("an Ollama primary slot"));
     eprintln!(
         "[setup] model={} url={}",
         provider.default_model(),
@@ -51,7 +52,8 @@ async fn construction_default_config() {
     let settings = Settings::default();
 
     // When: provider is built
-    let provider = OllamaRsLlmProvider::from_settings(&settings);
+    let provider =
+        OllamaRsLlmProvider::from_slot(&settings.primary_slot().expect("an Ollama primary slot"));
 
     // Then: model name has ollama:: prefix stripped, URL points to localhost
     assert_eq!(
@@ -79,12 +81,13 @@ async fn construction_custom_host_and_api_key() {
     let settings = Settings {
         ollama_host: Some("http://10.0.0.1:9999".into()),
         ollama_api_key: Some("test-token-abc".into()),
-        llm_model: "some-model:7b".into(),
+        llm_model: Some("some-model:7b".into()),
         ..Settings::default()
     };
 
     // When: provider is built
-    let provider = OllamaRsLlmProvider::from_settings(&settings);
+    let provider =
+        OllamaRsLlmProvider::from_slot(&settings.primary_slot().expect("an Ollama primary slot"));
 
     // Then: model is stored, URL reflects custom host
     assert_eq!(provider.default_model(), "some-model:7b");
@@ -102,12 +105,13 @@ async fn construction_custom_host_and_api_key() {
 async fn construction_ollama_prefix_stripped() {
     // Given: model name with ollama:: prefix
     let settings = Settings {
-        llm_model: "ollama::qwen3.5:9b".into(),
+        llm_model: Some("ollama::qwen3.5:9b".into()),
         ..Settings::default()
     };
 
     // When: provider is built
-    let provider = OllamaRsLlmProvider::from_settings(&settings);
+    let provider =
+        OllamaRsLlmProvider::from_slot(&settings.primary_slot().expect("an Ollama primary slot"));
 
     // Then: prefix is stripped for the Ollama API
     assert_eq!(
@@ -124,12 +128,13 @@ async fn construction_ollama_prefix_stripped() {
 async fn construction_no_prefix_passthrough() {
     // Given: model name without prefix
     let settings = Settings {
-        llm_model: "gemma3:4b".into(),
+        llm_model: Some("gemma3:4b".into()),
         ..Settings::default()
     };
 
     // When: provider is built
-    let provider = OllamaRsLlmProvider::from_settings(&settings);
+    let provider =
+        OllamaRsLlmProvider::from_slot(&settings.primary_slot().expect("an Ollama primary slot"));
 
     // Then: model name passes through unchanged
     assert_eq!(provider.default_model(), "gemma3:4b");

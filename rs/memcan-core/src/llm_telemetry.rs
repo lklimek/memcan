@@ -15,10 +15,24 @@
 //! - `prompt_tokens`      — input tokens reported by the provider (when available)
 //! - `completion_tokens`  — output tokens reported by the provider (when available)
 //! - `total_tokens`       — sum of prompt + completion (only when both are present)
+//! - `cache_creation_tokens` — prompt tokens written to the provider's prompt
+//!   cache (only when reported, e.g. by Anthropic)
+//! - `cache_read_tokens`  — prompt tokens served from the provider's prompt
+//!   cache (only when reported, e.g. by Anthropic, OpenAI, or OpenRouter).
+//!   Both cache counts are already included in `prompt_tokens`.
 //!
 //! When the provider returns only one counter, that field is logged without the
 //! missing one (and without `total_tokens`). When neither is available, a single
 //! debug line notes that counts are unavailable.
+
+/// Prompt-cache token counts, for providers that report them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CacheTokens {
+    /// Prompt tokens written to the provider's prompt cache.
+    pub creation: Option<u64>,
+    /// Prompt tokens served from the provider's prompt cache.
+    pub read: Option<u64>,
+}
 
 /// Computed telemetry values from provider-reported token counts.
 ///
@@ -66,11 +80,13 @@ pub(crate) fn compute_telemetry(
 /// Pass `None` when the provider did not return a metric.
 /// Partial counts (one `Some`, one `None`) are logged with whatever fields are
 /// present — the missing field is omitted rather than collapsing to "unavailable".
+/// Cache counts follow the same rule: a `None` field is left out of the record.
 pub(crate) fn emit(
     op: &str,
     model: &str,
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
+    cache: CacheTokens,
 ) {
     match compute_telemetry(prompt_tokens, completion_tokens) {
         TelemetryResult::Full {
@@ -82,6 +98,8 @@ pub(crate) fn emit(
                 target: "memcan::llm::telemetry",
                 op,
                 model,
+                cache_creation_tokens = cache.creation,
+                cache_read_tokens = cache.read,
                 prompt_tokens = prompt,
                 completion_tokens = completion,
                 total_tokens = total,
@@ -93,6 +111,8 @@ pub(crate) fn emit(
                 target: "memcan::llm::telemetry",
                 op,
                 model,
+                cache_creation_tokens = cache.creation,
+                cache_read_tokens = cache.read,
                 prompt_tokens = prompt,
                 "LLM token usage (completion count unavailable)"
             );
@@ -102,6 +122,8 @@ pub(crate) fn emit(
                 target: "memcan::llm::telemetry",
                 op,
                 model,
+                cache_creation_tokens = cache.creation,
+                cache_read_tokens = cache.read,
                 completion_tokens = completion,
                 "LLM token usage (prompt count unavailable)"
             );
@@ -111,6 +133,8 @@ pub(crate) fn emit(
                 target: "memcan::llm::telemetry",
                 op,
                 model,
+                cache_creation_tokens = cache.creation,
+                cache_read_tokens = cache.read,
                 "LLM token usage unavailable (provider did not report counts)"
             );
         }
@@ -205,21 +229,59 @@ mod tests {
 
     #[test]
     fn test_emit_full_does_not_panic() {
-        emit("fact_extraction", "qwen3.5:9b", Some(100), Some(50));
+        emit(
+            "fact_extraction",
+            "qwen3.5:9b",
+            Some(100),
+            Some(50),
+            CacheTokens::default(),
+        );
     }
 
     #[test]
     fn test_emit_prompt_only_does_not_panic() {
-        emit("dedup", "qwen3.5:9b", Some(200), None);
+        emit(
+            "dedup",
+            "qwen3.5:9b",
+            Some(200),
+            None,
+            CacheTokens::default(),
+        );
     }
 
     #[test]
     fn test_emit_completion_only_does_not_panic() {
-        emit("code_description", "qwen3.5:9b", None, Some(30));
+        emit(
+            "code_description",
+            "qwen3.5:9b",
+            None,
+            Some(30),
+            CacheTokens::default(),
+        );
     }
 
     #[test]
     fn test_emit_unavailable_does_not_panic() {
-        emit("standards_metadata", "qwen3.5:9b", None, None);
+        emit(
+            "standards_metadata",
+            "qwen3.5:9b",
+            None,
+            None,
+            CacheTokens::default(),
+        );
+    }
+
+    #[test]
+    fn test_emit_with_cache_counts_does_not_panic() {
+        emit(
+            "fact_extraction",
+            "claude-haiku-5-5",
+            Some(1_900),
+            Some(40),
+            CacheTokens {
+                creation: None,
+                read: Some(1_800),
+            },
+        );
     }
 }

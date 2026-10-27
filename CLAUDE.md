@@ -36,7 +36,7 @@ Reusable library. All domain logic lives here. Must not depend on transport, CLI
 | `lancedb_store` | LanceDB implementation of `VectorStore` |
 | `embed` | fastembed implementation of `EmbeddingProvider` |
 | `llm_ollama_rs` | **Default** `LlmProvider` backed by ollama-rs 0.3.5 (feature `ollama-rs-llm`). Token counts from `ChatMessageFinalResponseData.{prompt_eval_count, eval_count}`. |
-| `llm` | `LlmProvider` backed by genai 0.5.3 (default feature `genai-llm`). Token counts from `ChatResponse.usage.{prompt_tokens, completion_tokens}`. |
+| `llm` | `LlmProvider` backed by genai 0.5.3 (default feature `genai-llm`) serving the cloud backends: native Anthropic adapter (system-prompt cache breakpoint) or OpenAI adapter with a base-URL override. Token counts from `ChatResponse.usage.{prompt_tokens, completion_tokens, prompt_tokens_details}`. |
 | `llm_telemetry` | Shared structured debug log emitter for per-call token counts; called by both LLM backends. |
 | `ollama` | Ollama model resolution helpers |
 | `pipeline` | Memory add pipeline (LLM fact extraction, dedup, store) |
@@ -44,7 +44,8 @@ Reusable library. All domain logic lives here. Must not depend on transport, CLI
 | `search` | Unified cross-collection search (memories, standards, code, todos) |
 | `text` | Shared char-safe text helpers (`truncate_with`) |
 | `todo` | Per-project TODO list CRUD operations |
-| `health` | Dependency circuit breaker (Ollama, LanceDB, Embedding) |
+| `llm_fallback` | Primary/fallback LLM dispatch with a per-slot circuit breaker; falls back only on availability faults |
+| `health` | Dependency circuit breaker (LLM primary/fallback slots, LanceDB, Embedding) |
 | `export` | Collection export to JSONL format (paginated scroll, no vectors) |
 | `import` | JSONL import with re-embedding (no LLM processing) |
 | `indexing::code` | Language-specific symbol extraction, LLM descriptions, incremental code indexing. Input guard: `description_input_budget()` queries the model context window and truncates oversized symbol text via `truncate_with()` — emits `warn!` when fired. |
@@ -219,17 +220,20 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction |
 | `COMPACT_ON_STARTUP` | `true` | Run full table compaction (`OptimizeAction::All`) on boot before serving; over-fragmented tables only (tables ≤ `COMPACT_FRAGMENT_THRESHOLD` fragments are skipped). Set `false` to avoid boot latency on very large databases. |
 | `COMPACT_FRAGMENT_THRESHOLD` | `64` | Auto-compact a table after a write once it reaches this many data fragments; also the startup-compaction skip threshold. `0` disables auto-compaction. |
-| `LLM_PROVIDER` | `ollama` | Primary backend: `ollama` \| `openrouter`. |
-| `LLM_FALLBACK_PROVIDER` | *(unset)* | Optional fallback backend; unset keeps single-provider behavior. An OpenRouter fallback sends memory, code, and standards content to a third-party cloud provider whenever the local primary is unavailable. |
-| `LLM_MODEL` | `lklimek/gemma4-text:26b-a4b-it-qat` | Ollama model name (`ollama::` prefix accepted for backward compat). **Ollama backend only — ignored when `LLM_PROVIDER=openrouter`; use `OPENROUTER_MODEL` there.** Still applies when Ollama is the primary and OpenRouter only the fallback. Setting it to a non-default value under `LLM_PROVIDER=openrouter` logs a `warn!` at startup. Needs ~16GB VRAM (projector-free build achieves 100% GPU residency on a 16GB card, vs. partial CPU offload on the stock `gemma4:26b-a4b-it-qat`); use `qwen3.5:9b` (~6.6GB) on smaller cards — see `docs/memcan-model-guide.html` |
-| `OPENROUTER_API_KEY` | *(none)* | OpenRouter bearer key. Required when OpenRouter is primary or fallback; never logged. |
-| `OPENROUTER_MODEL` | *(none)* | OpenRouter model slug, e.g. `openai/gpt-4o-mini`. Required when OpenRouter participates. The OpenRouter backend never reads `LLM_MODEL` — every OpenRouter call uses this slug. |
-| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | Endpoint override for testing, self-hosted OpenAI-compatible gateways, or other OpenAI-compatible APIs (e.g. `https://api.anthropic.com/v1`). This backend never forwards `temperature` (Anthropic's compat endpoint and OpenAI reasoning models reject non-default values); `response_format` JSON mode may be ignored by the target, so responses are parsed leniently. |
+| `LLM_PROVIDER` | `ollama` | Primary slot backend, case-insensitive: `ollama` \| `anthropic` (alias `claude`; native Messages API) \| `openai` \| `openrouter` \| `openai-compatible` (alias `openai-compat`). Unknown values fail startup listing the accepted ones. Each slot's role, backend, model, and base URL (never the key) are logged at `info` on startup. |
+| `LLM_MODEL` | *(per backend)* | Primary slot model. Ollama: defaults to `lklimek/gemma4-text:26b-a4b-it-qat` (`ollama::` prefix accepted; needs ~16GB VRAM — use `qwen3.5:9b` (~6.6GB) on smaller cards, see `docs/memcan-model-guide.html`). Cloud backends: **required**, e.g. `claude-haiku-5-5`. |
+| `LLM_API_KEY` | *(per backend)* | Primary slot key (`x-api-key` for `anthropic`, bearer otherwise). Required for cloud backends; Ollama defaults to `OLLAMA_API_KEY`. Never logged. |
+| `LLM_BASE_URL` | *(per backend)* | Primary slot endpoint. Defaults: `anthropic` → `https://api.anthropic.com/v1/`, `openai` → `https://api.openai.com/v1`, `openrouter` → `https://openrouter.ai/api/v1`, `ollama` → `OLLAMA_HOST`; required for `openai-compatible`. Cloud URLs must be HTTPS unless loopback. |
+| `LLM_FALLBACK_PROVIDER` | *(unset)* | Optional fallback slot backend, same values; unset keeps single-provider behavior. Any combination is valid, including the same kind twice (e.g. two Anthropic keys/models) and two different clouds. A cloud fallback sends memory, code, and standards content to that third party whenever the primary is unavailable. |
+| `LLM_FALLBACK_MODEL` / `LLM_FALLBACK_API_KEY` / `LLM_FALLBACK_BASE_URL` | *(per backend)* | Fallback slot model, key, and endpoint, defaulted and validated exactly like the primary's `LLM_*` counterparts. Errors name the exact missing variable. |
+| `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` / `OPENROUTER_BASE_URL` | *(none)* | **Deprecated** (legacy mode, startup `warn!`). Mapped onto the first `openrouter` / `openai-compatible` slot; a set slot variable always wins (blank counts as unset). One exception, for pre-slot `.env` files: when that slot is the primary and both `LLM_MODEL` and `OPENROUTER_MODEL` are set, `LLM_MODEL` keeps its old meaning — the Ollama model — and moves to an Ollama fallback (or is ignored when there is none), unless the file uses any per-slot setting (`LLM_PROVIDER=openai-compatible`, `LLM_API_KEY`, `LLM_BASE_URL`, any `LLM_FALLBACK_MODEL`/`_API_KEY`/`_BASE_URL`, or a fallback other than `ollama`/`openrouter`), in which case `LLM_MODEL` is the primary model and `OPENROUTER_MODEL` is ignored. A fallback of the same legacy kind with no settings of its own duplicates the primary and is dropped with a warning. Every such decision is logged naming which value went where; errors about legacy-supplied values name the `OPENROUTER_*` variable. |
 | `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings (dimensions derived automatically) |
-| `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`). Injected into the LLM client (ollama-rs default; or genai via `ServiceTargetResolver`). |
-| `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth (sent as `Authorization: Bearer $key`) |
+| `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`); default base URL of every Ollama slot (a slot's `*_BASE_URL` wins). Injected into the LLM client (ollama-rs default; or genai via `ServiceTargetResolver`). |
+| `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth (sent as `Authorization: Bearer $key`); default key of every Ollama slot (a slot's `*_API_KEY` wins). |
 
-> **Note:** MemCan injects Ollama and OpenRouter endpoint credentials into each LLM client at construction time. For Ollama-primary with OpenRouter fallback, set `LLM_PROVIDER=ollama`, `LLM_FALLBACK_PROVIDER=openrouter`, `OPENROUTER_API_KEY=…`, and `OPENROUTER_MODEL=…`. When the local primary is unavailable, memory, code, and standards content will leave the local environment and be sent to the third-party OpenRouter cloud. This confidentiality/data-egress trade-off accompanies the availability benefit. The `/health` endpoint reports `openrouter` separately.
+> **Note:** Each slot builds its own LLM client with its own credentials and has its own circuit breaker. For Ollama-primary with a Claude fallback, set e.g. `LLM_PROVIDER=ollama`, `LLM_FALLBACK_PROVIDER=anthropic`, `LLM_FALLBACK_API_KEY=…`, and `LLM_FALLBACK_MODEL=claude-haiku-5-5`. When the local primary is unavailable, memory, code, and standards content will leave the local environment and be sent to the third-party cloud. This confidentiality/data-egress trade-off accompanies the availability benefit. Cloud backends never receive `temperature` (current Claude and OpenAI reasoning models reject non-default values). The `anthropic` backend marks the system prompt as an ephemeral prompt-cache breakpoint, sends no `response_format`/`thinking` parameters, and defaults `max_tokens` to 4096. **Do not point `openai`/`openai-compatible`/`openrouter` at `api.anthropic.com`:** Anthropic's OpenAI-compatible endpoint has been observed to reject `response_format: json_object` with a 400 (vendor docs say the field is ignored; 400 is a hard error, no fallback), which breaks JSON mode — use `anthropic` instead. Startup logs a `warn!` for such a slot. Base URLs in logs, `Debug` output, and configuration errors drop userinfo, query, and fragment.
+
+> **Breaking (`/health`):** dependencies are reported per LLM slot — `llm_primary` and `llm_fallback` (the latter only when configured), each with its `backend` and `model`. The former `ollama` and `openrouter` keys are gone; monitors keyed on `dependencies.ollama` must switch to `dependencies.llm_primary`.
 
 ### Tasks web UI deployment
 
@@ -264,7 +268,7 @@ Example output:
 DEBUG memcan::llm::telemetry: LLM token usage op="fact_extraction" model="qwen3.5:9b" prompt_tokens=599 completion_tokens=78 total_tokens=677
 ```
 
-Fields: `op` (call-site label: `fact_extraction`, `dedup`, `code_description`, `standards_metadata`), `model`, `prompt_tokens`, `completion_tokens`, `total_tokens`. When the provider returns no counts, logs "LLM token usage unavailable" instead.
+Fields: `op` (call-site label: `fact_extraction`, `dedup`, `code_description`, `standards_metadata`), `model`, `prompt_tokens`, `completion_tokens`, `total_tokens`, plus `cache_creation_tokens` / `cache_read_tokens` when the provider reports prompt-cache usage (e.g. Anthropic, OpenAI, OpenRouter; already included in `prompt_tokens`). When the provider returns no counts, logs "LLM token usage unavailable" instead.
 
 ## Deprecated Features
 

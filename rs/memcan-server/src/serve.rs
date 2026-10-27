@@ -2489,7 +2489,7 @@ mod tests {
                 tech_stack: String::new(),
                 distill_memories: false,
                 log_file: String::new(),
-                llm_model: "test".into(),
+                llm_model: Some("test".into()),
                 embed_model: "test".into(),
                 embed_dims: 3,
                 ollama_host: None,
