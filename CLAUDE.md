@@ -48,7 +48,7 @@ Reusable library. All domain logic lives here. Must not depend on transport, CLI
 | `health` | Dependency circuit breaker (LLM primary/fallback slots, LanceDB, Embedding) |
 | `export` | Collection export to JSONL format (paginated scroll, no vectors) |
 | `import` | JSONL import with re-embedding (no LLM processing) |
-| `indexing::code` | Language-specific symbol extraction, LLM descriptions, incremental code indexing. Input guard: `description_input_budget()` queries the model context window and truncates oversized symbol text via `truncate_with()` — emits `warn!` when fired. |
+| `indexing::code` | Language-specific symbol extraction, LLM descriptions, incremental code indexing. Input guard: `description_input_budget()` queries the model context window (falling back to the provider's assumed window, see LLM context budget) and truncates oversized symbol text via `truncate_with()` — emits `warn!` when fired. |
 | `indexing::code_files` | Batch file-level code indexing from raw source content |
 | `indexing::standards` | Markdown chunking, LLM metadata extraction |
 | `schema` | Memcan-specific `TableSchema` implementation with filterable columns |
@@ -254,6 +254,10 @@ bundled `docker-compose.yml` enforces it on the `memcan-ui` router through the T
 middleware (`average=10` req/s, `burst=20`). Revisit those values, and the decision to keep
 throttling out of the application, before exposing the UI beyond trusted networks. Basic Auth also
 has no application logout operation: browsers retain the shared credentials for their session.
+
+## LLM Context Budget
+
+Prompt budgets derive from the model's context window: fact extraction and standards chunking use 40% of it (`resolve_context_budget`), code descriptions use it minus 520 reserved tokens (`description_input_budget`). Ollama slots discover the window via `/api/show`; when it is unknown they assume 4096 tokens (`DEFAULT_CONTEXT_WINDOW`). Cloud slots cannot report one and assume 32768 (`CLOUD_DEFAULT_CONTEXT_WINDOW`, 8x the local default). With a fallback slot, the budget is sized for the smaller known window of both slots; an unknown primary window counts as its assumed one, and with neither window known the assumption is the smaller of both slots' (a cloud primary with an undiscoverable Ollama fallback assumes 4096). There is no per-model discovery and no override variable.
 
 ## LLM Token Telemetry
 

@@ -397,6 +397,16 @@ impl LlmProvider for GenaiLlmProvider {
             })
     }
 
+    /// Cloud slots cannot report a window, and every supported cloud model
+    /// far exceeds the local default, so they assume the larger cloud window.
+    fn assumed_context_window(&self) -> usize {
+        if self.cloud_api.is_some() {
+            crate::pipeline::CLOUD_DEFAULT_CONTEXT_WINDOW
+        } else {
+            crate::pipeline::DEFAULT_CONTEXT_WINDOW
+        }
+    }
+
     async fn context_window(&self, model: &str) -> Option<usize> {
         if !model.to_lowercase().contains("ollama") {
             return None;
@@ -1010,6 +1020,33 @@ mod tests {
         };
         let provider = GenaiLlmProvider::from_ollama_slot(&settings.primary_slot().unwrap());
         assert_eq!(provider.default_model(), "ollama::qwen3.5:4b");
+    }
+
+    #[tokio::test]
+    async fn cloud_slots_assume_the_cloud_window_and_ollama_keeps_the_local_one() {
+        let cloud = GenaiLlmProvider::from_cloud_slot(&cloud_slot(
+            LlmProviderKind::Anthropic,
+            "claude-haiku-5-5",
+            "key",
+            "https://api.anthropic.com/v1/".into(),
+        ))
+        .unwrap();
+        assert_eq!(cloud.context_window("claude-haiku-5-5").await, None);
+        assert_eq!(
+            cloud.assumed_context_window(),
+            crate::pipeline::CLOUD_DEFAULT_CONTEXT_WINDOW
+        );
+
+        let ollama = GenaiLlmProvider::from_ollama_slot(&cloud_slot(
+            LlmProviderKind::Ollama,
+            "qwen3.5:9b",
+            "key",
+            "http://gpu:11434".into(),
+        ));
+        assert_eq!(
+            ollama.assumed_context_window(),
+            crate::pipeline::DEFAULT_CONTEXT_WINDOW
+        );
     }
 
     #[test]

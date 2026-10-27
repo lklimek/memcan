@@ -17,7 +17,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::error::{MemcanError, Result, ResultExt};
-use crate::pipeline::{CHARS_PER_TOKEN, CODE_TABLE, DEFAULT_CONTEXT_WINDOW};
+use crate::pipeline::{CHARS_PER_TOKEN, CODE_TABLE};
 use crate::prompts::CODE_DESCRIPTION_PROMPT;
 use crate::text::truncate_with;
 use crate::traits::{
@@ -452,8 +452,8 @@ pub(crate) const MIN_DESCRIPTION_INPUT_CHARS: usize = 256;
 /// Compute the maximum character count of symbol text that can safely be sent
 /// to the LLM in a single [`generate_description`] call.
 ///
-/// Queries the provider for the model's context window (falls back to
-/// [`DEFAULT_CONTEXT_WINDOW`]) and subtracts reserved tokens for the system
+/// Queries the provider for the model's context window (falls back to the
+/// provider's [`LlmProvider::assumed_context_window`]) and subtracts reserved tokens for the system
 /// prompt overhead (~200 t), max output (256 t), and a safety margin (64 t).
 /// The remaining token budget is converted to characters via [`CHARS_PER_TOKEN`].
 ///
@@ -475,7 +475,7 @@ pub(crate) async fn description_input_budget(llm: &dyn LlmProvider, llm_model: &
     let context_tokens = llm
         .context_window(llm_model)
         .await
-        .unwrap_or(DEFAULT_CONTEXT_WINDOW);
+        .unwrap_or_else(|| llm.assumed_context_window());
 
     let raw_budget = context_tokens
         .saturating_sub(RESERVED)
@@ -830,6 +830,7 @@ mod tests {
     struct MockDescLlm {
         response: String,
         context_window_tokens: Option<usize>,
+        assumed_context_window: Option<usize>,
     }
 
     impl MockDescLlm {
@@ -837,18 +838,28 @@ mod tests {
             Self {
                 response: r.into(),
                 context_window_tokens: None,
+                assumed_context_window: None,
             }
         }
         fn with_context(tokens: usize) -> Self {
             Self {
                 response: "description".into(),
                 context_window_tokens: Some(tokens),
+                assumed_context_window: None,
             }
         }
         fn without_context() -> Self {
             Self {
                 response: "description".into(),
                 context_window_tokens: None,
+                assumed_context_window: None,
+            }
+        }
+        /// A provider that cannot report a window but assumes `tokens`.
+        fn assuming(tokens: usize) -> Self {
+            Self {
+                assumed_context_window: Some(tokens),
+                ..Self::without_context()
             }
         }
     }
@@ -865,6 +876,10 @@ mod tests {
         }
         async fn context_window(&self, _model: &str) -> Option<usize> {
             self.context_window_tokens
+        }
+        fn assumed_context_window(&self) -> usize {
+            self.assumed_context_window
+                .unwrap_or(crate::pipeline::DEFAULT_CONTEXT_WINDOW)
         }
     }
 
@@ -926,8 +941,26 @@ mod tests {
     async fn test_budget_falls_back_to_default_when_no_context_window() {
         let llm = MockDescLlm::without_context();
         let budget = description_input_budget(&llm, "model").await;
-        let expected = (DEFAULT_CONTEXT_WINDOW - 520) * CHARS_PER_TOKEN;
+        let expected = (crate::pipeline::DEFAULT_CONTEXT_WINDOW - 520) * CHARS_PER_TOKEN;
         assert_eq!(budget, expected);
+    }
+
+    #[tokio::test]
+    async fn test_budget_uses_the_providers_assumed_window_when_none_is_reported() {
+        // Cloud slots cannot report a window; their larger assumed window
+        // must reach the description budget instead of the local default.
+        let llm = MockDescLlm::assuming(crate::pipeline::CLOUD_DEFAULT_CONTEXT_WINDOW);
+        let budget = description_input_budget(&llm, "model").await;
+        let expected = (crate::pipeline::CLOUD_DEFAULT_CONTEXT_WINDOW - 520) * CHARS_PER_TOKEN;
+        assert_eq!(budget, expected);
+
+        // A reported window still wins over the assumption.
+        let reported = MockDescLlm {
+            context_window_tokens: Some(8192),
+            ..MockDescLlm::assuming(crate::pipeline::CLOUD_DEFAULT_CONTEXT_WINDOW)
+        };
+        let budget = description_input_budget(&reported, "model").await;
+        assert_eq!(budget, (8192 - 520) * CHARS_PER_TOKEN);
     }
 
     // ── QA-002: boundary tests at degenerate context window sizes ────────────
