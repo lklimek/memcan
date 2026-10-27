@@ -166,6 +166,13 @@ pub trait LlmProvider: Send + Sync {
     /// Returns None if the provider doesn't support this query.
     async fn context_window(&self, model: &str) -> Option<usize>;
 
+    /// Context window, in tokens, to assume when [`Self::context_window`]
+    /// returns `None`. Defaults to the conservative local
+    /// [`DEFAULT_CONTEXT_WINDOW`](crate::pipeline::DEFAULT_CONTEXT_WINDOW).
+    fn assumed_context_window(&self) -> usize {
+        crate::pipeline::DEFAULT_CONTEXT_WINDOW
+    }
+
     /// Provider-specific initialization (e.g. model availability check).
     /// Default is a no-op.
     async fn init(&self) -> Result<()> {

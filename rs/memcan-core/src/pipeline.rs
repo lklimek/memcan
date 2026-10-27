@@ -52,8 +52,14 @@ const MAX_FACTS_PER_EXTRACTION: usize = 50;
 /// Fraction of context window available for prompt content (system + user).
 pub const CONTEXT_BUDGET_RATIO: f32 = 0.40;
 
-/// Fallback context window when model doesn't report one.
+/// Context window assumed when a local model doesn't report one.
 pub const DEFAULT_CONTEXT_WINDOW: usize = 4096;
+
+/// Context window assumed for a cloud slot, which cannot report one.
+///
+/// Every supported cloud model has a far larger window; 8x the local default
+/// lifts the input budget without discovering per-model limits.
+pub const CLOUD_DEFAULT_CONTEXT_WINDOW: usize = 8 * DEFAULT_CONTEXT_WINDOW;
 
 /// Approximate characters per token for budget estimation.
 pub const CHARS_PER_TOKEN: usize = 4;
@@ -61,13 +67,14 @@ pub const CHARS_PER_TOKEN: usize = 4;
 /// Query the LLM context window and compute the available budget in tokens.
 ///
 /// Multiplies the context window by [`CONTEXT_BUDGET_RATIO`] to leave room for
-/// the model's output. Falls back to [`DEFAULT_CONTEXT_WINDOW`] when the
+/// the model's output. Falls back to the provider's
+/// [`LlmProvider::assumed_context_window`] when the
 /// provider cannot report the window size.
 pub async fn resolve_context_budget(llm: &dyn LlmProvider, llm_model: &str) -> usize {
     let ctx = llm
         .context_window(llm_model)
         .await
-        .unwrap_or(DEFAULT_CONTEXT_WINDOW);
+        .unwrap_or_else(|| llm.assumed_context_window());
     let budget = (ctx as f32 * CONTEXT_BUDGET_RATIO) as usize;
     info!(
         context_window = ctx,
@@ -838,6 +845,57 @@ async fn run_dedup_llm(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Provider reporting `reported` (or nothing) while assuming `assumed`.
+    struct WindowLlm {
+        reported: Option<usize>,
+        assumed: usize,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for WindowLlm {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: &[LlmMessage],
+            _options: Option<LlmOptions>,
+        ) -> Result<String> {
+            Ok(String::new())
+        }
+        async fn context_window(&self, _model: &str) -> Option<usize> {
+            self.reported
+        }
+        fn assumed_context_window(&self) -> usize {
+            self.assumed
+        }
+    }
+
+    #[tokio::test]
+    async fn context_budget_uses_the_assumed_window_when_none_is_reported() {
+        let cloud = WindowLlm {
+            reported: None,
+            assumed: CLOUD_DEFAULT_CONTEXT_WINDOW,
+        };
+        assert_eq!(
+            resolve_context_budget(&cloud, "claude-haiku-5-5").await,
+            (CLOUD_DEFAULT_CONTEXT_WINDOW as f32 * CONTEXT_BUDGET_RATIO) as usize
+        );
+
+        let reported = WindowLlm {
+            reported: Some(8192),
+            assumed: CLOUD_DEFAULT_CONTEXT_WINDOW,
+        };
+        assert_eq!(
+            resolve_context_budget(&reported, "m").await,
+            (8192.0 * CONTEXT_BUDGET_RATIO) as usize
+        );
+    }
+
+    #[test]
+    fn cloud_default_window_is_eight_times_the_local_default() {
+        assert_eq!(DEFAULT_CONTEXT_WINDOW, 4096);
+        assert_eq!(CLOUD_DEFAULT_CONTEXT_WINDOW, 8 * DEFAULT_CONTEXT_WINDOW);
+    }
 
     #[test]
     fn test_dedup_facts_exact_removes_duplicates() {

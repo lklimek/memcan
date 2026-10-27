@@ -50,6 +50,7 @@ use memcan_core::{
     },
     prompts::FACT_EXTRACTION_HOOK_PROMPT,
     query::{resolve_user_id, sanitize_eq, sanitize_like},
+    record_id::{self, RecordKind},
     schema::MemcanTableSchema,
     search,
     todo::{self, TODOS_TABLE},
@@ -785,45 +786,77 @@ impl MemcanService {
         )]))
     }
 
-    #[tool(description = "Delete a specific memory by ID.")]
+    /// Resolve a full memory UUID or an unambiguous ≥8-char prefix, failing
+    /// with a `{tool} failed: …` error when it is ambiguous or matches nothing.
+    async fn resolve_memory_id(&self, tool: &str, memory_id: &str) -> Result<String, ErrorData> {
+        record_id::resolve_id(
+            self.state.store.as_ref(),
+            MEMORIES_TABLE,
+            RecordKind::Memory,
+            memory_id,
+        )
+        .await
+        .map_err(|e| ErrorData::internal_error(format!("{tool} failed: {e}"), None))?
+        .ok_or_else(|| {
+            ErrorData::internal_error(
+                format!("{tool} failed: memory not found: {memory_id}"),
+                None,
+            )
+        })
+    }
+
+    #[tool(
+        description = "Delete a specific memory by ID: a full UUID or an unambiguous short-ID prefix (>= 8 chars). An ambiguous prefix fails asking for the full UUID; an unknown ID fails as not found."
+    )]
     async fn delete_memory(
         &self,
         Parameters(params): Parameters<DeleteMemoryParams>,
     ) -> Result<CallToolResult, ErrorData> {
         debug!(tool = "delete_memory", memory_id = %params.memory_id, "MCP request");
 
+        let memory_id = self
+            .resolve_memory_id("delete_memory", &params.memory_id)
+            .await?;
         self.state
             .store
-            .delete(MEMORIES_TABLE, std::slice::from_ref(&params.memory_id))
+            .delete(MEMORIES_TABLE, std::slice::from_ref(&memory_id))
             .await
             .map_err(|e| ErrorData::internal_error(format!("delete failed: {e}"), None))?;
 
-        let response = serde_json::json!({ "status": "deleted", "memory_id": params.memory_id });
+        let response = serde_json::json!({ "status": "deleted", "memory_id": memory_id });
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string(&response).unwrap_or_default(),
         )]))
     }
 
-    #[tool(description = "Update an existing memory's content.")]
+    #[tool(
+        description = "Update an existing memory's content. memory_id is a full UUID or an unambiguous short-ID prefix (>= 8 chars); an ambiguous prefix fails asking for the full UUID, an unknown ID fails as not found."
+    )]
     async fn update_memory(
         &self,
         Parameters(params): Parameters<UpdateMemoryParams>,
     ) -> Result<CallToolResult, ErrorData> {
         debug!(tool = "update_memory", memory_id = %params.memory_id, "MCP request");
 
+        let memory_id = self
+            .resolve_memory_id("update_memory", &params.memory_id)
+            .await?;
         let existing = self
             .state
             .store
-            .get(MEMORIES_TABLE, std::slice::from_ref(&params.memory_id))
+            .get(MEMORIES_TABLE, std::slice::from_ref(&memory_id))
             .await
             .map_err(|e| ErrorData::internal_error(format!("get failed: {e}"), None))?;
 
+        // Deleted between resolution and this read.
         if existing.is_empty() {
-            let response =
-                serde_json::json!({ "error": "memory not found", "memory_id": params.memory_id });
-            return Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string(&response).unwrap_or_default(),
-            )]));
+            return Err(ErrorData::internal_error(
+                format!(
+                    "update_memory failed: memory not found: {}",
+                    params.memory_id
+                ),
+                None,
+            ));
         }
 
         let old_payload = existing[0].payload.clone();
@@ -874,7 +907,7 @@ impl MemcanService {
 
         let sem = Arc::clone(&self.state.llm_semaphore);
         let health = Arc::clone(&self.state.health);
-        let memory_id = params.memory_id.clone();
+        let response_id = memory_id.clone();
         let memory = params.memory;
         tokio::spawn(async move {
             let _task_guard = task_guard;
@@ -912,7 +945,7 @@ impl MemcanService {
 
         let response = serde_json::json!({
             "status": "queued",
-            "memory_id": params.memory_id,
+            "memory_id": response_id,
             "operation_id": op_id,
         });
         Ok(CallToolResult::success(vec![Content::text(
@@ -2510,6 +2543,233 @@ mod tests {
         });
 
         MemcanService::new(state)
+    }
+
+    // ── memory ID resolution (full UUID or unambiguous ≥8-char prefix) ──────
+
+    const MEMORY_ID: &str = "2e22752c-0b1c-4376-a4ff-8ea963917a1c";
+
+    fn service_with_memories(ids: &[&str]) -> MemcanService {
+        let store = MockStore::default();
+        {
+            let mut records = store.records.lock().unwrap();
+            for id in ids {
+                records.insert(
+                    (*id).to_string(),
+                    SearchResult {
+                        id: (*id).to_string(),
+                        score: 0.0,
+                        payload: serde_json::json!({
+                            "data": "a memory",
+                            "user_id": "global",
+                            "created_at": "2026-10-01T00:00:00Z",
+                        }),
+                    },
+                );
+            }
+        }
+        make_test_service_with_store(store)
+    }
+
+    async fn memory_exists(service: &MemcanService, id: &str) -> bool {
+        !service
+            .state
+            .store
+            .get(MEMORIES_TABLE, &[id.to_string()])
+            .await
+            .unwrap()
+            .is_empty()
+    }
+
+    fn response_json(result: &CallToolResult) -> serde_json::Value {
+        serde_json::from_str(
+            result.content[0]
+                .as_text()
+                .expect("text response")
+                .text
+                .as_ref(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn delete_memory_resolves_a_unique_prefix_to_the_full_id() {
+        let service = service_with_memories(&[MEMORY_ID]);
+
+        let deleted = service
+            .delete_memory(Parameters(DeleteMemoryParams {
+                memory_id: "2e22752c".into(),
+            }))
+            .await
+            .unwrap();
+
+        let response = response_json(&deleted);
+        assert_eq!(response["status"], "deleted");
+        assert_eq!(response["memory_id"], MEMORY_ID);
+        assert!(!memory_exists(&service, MEMORY_ID).await);
+    }
+
+    #[tokio::test]
+    async fn delete_memory_by_full_id_still_works() {
+        let service = service_with_memories(&[MEMORY_ID]);
+
+        let deleted = service
+            .delete_memory(Parameters(DeleteMemoryParams {
+                memory_id: MEMORY_ID.into(),
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(response_json(&deleted)["memory_id"], MEMORY_ID);
+        assert!(!memory_exists(&service, MEMORY_ID).await);
+    }
+
+    #[tokio::test]
+    async fn delete_memory_never_reports_a_false_delete() {
+        // Unknown full UUID, unknown prefix, and a prefix below the 8-char floor
+        // must all fail rather than answer "deleted".
+        let service = service_with_memories(&[MEMORY_ID]);
+        for memory_id in [
+            "ffffffff-0b1c-4376-a4ff-8ea963917a1c",
+            "ffffffff",
+            "2e22752",
+        ] {
+            let error = service
+                .delete_memory(Parameters(DeleteMemoryParams {
+                    memory_id: memory_id.into(),
+                }))
+                .await
+                .unwrap_err();
+            assert!(
+                error.message.contains("memory not found"),
+                "{memory_id}: {}",
+                error.message
+            );
+        }
+        assert!(memory_exists(&service, MEMORY_ID).await);
+    }
+
+    #[tokio::test]
+    async fn delete_memory_rejects_an_ambiguous_prefix_and_deletes_nothing() {
+        let other = "2e22752c-ffff-4376-a4ff-8ea963917a1c";
+        let service = service_with_memories(&[MEMORY_ID, other]);
+
+        let error = service
+            .delete_memory(Parameters(DeleteMemoryParams {
+                memory_id: "2e22752c".into(),
+            }))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error.message.contains("ambiguous memory id prefix"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("provide the full UUID"),
+            "{}",
+            error.message
+        );
+        assert!(memory_exists(&service, MEMORY_ID).await);
+        assert!(memory_exists(&service, other).await);
+    }
+
+    #[tokio::test]
+    async fn memory_ids_are_trimmed_and_case_insensitive() {
+        // Stored UUIDs are lowercase; a pasted or uppercased ID must still resolve.
+        let service = service_with_memories(&[MEMORY_ID]);
+        let queued = service
+            .update_memory(Parameters(UpdateMemoryParams {
+                memory_id: format!("  {}\n", MEMORY_ID.to_uppercase()),
+                memory: "updated".into(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(response_json(&queued)["memory_id"], MEMORY_ID);
+
+        let deleted = service
+            .delete_memory(Parameters(DeleteMemoryParams {
+                memory_id: " 2E22752C ".into(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(response_json(&deleted)["memory_id"], MEMORY_ID);
+        assert!(!memory_exists(&service, MEMORY_ID).await);
+    }
+
+    #[tokio::test]
+    async fn todo_ids_are_trimmed_and_case_insensitive() {
+        let service = make_test_service();
+        let added = service
+            .add_todo(Parameters(AddTodoParams {
+                title: "Delete me".into(),
+                description: None,
+                project: "memcan".into(),
+                priority: None,
+                owner: None,
+                blocked_by: None,
+            }))
+            .await
+            .unwrap();
+        let full_id = response_json(&added)["id"].as_str().unwrap().to_string();
+
+        let deleted = service
+            .delete_todo(Parameters(DeleteTodoParams {
+                todo_id: format!(" {} ", full_id[..8].to_uppercase()),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(response_json(&deleted)["todo_id"], full_id.as_str());
+    }
+
+    #[tokio::test]
+    async fn update_memory_resolves_a_unique_prefix_to_the_full_id() {
+        let service = service_with_memories(&[MEMORY_ID]);
+
+        let queued = service
+            .update_memory(Parameters(UpdateMemoryParams {
+                memory_id: "2e22752c".into(),
+                memory: "updated".into(),
+            }))
+            .await
+            .unwrap();
+
+        let response = response_json(&queued);
+        assert_eq!(response["status"], "queued");
+        assert_eq!(response["memory_id"], MEMORY_ID);
+    }
+
+    #[tokio::test]
+    async fn update_memory_rejects_unknown_and_ambiguous_ids() {
+        let other = "2e22752c-ffff-4376-a4ff-8ea963917a1c";
+        let service = service_with_memories(&[MEMORY_ID, other]);
+
+        let error = service
+            .update_memory(Parameters(UpdateMemoryParams {
+                memory_id: "ffffffff".into(),
+                memory: "updated".into(),
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            error.message.contains("memory not found"),
+            "{}",
+            error.message
+        );
+
+        let error = service
+            .update_memory(Parameters(UpdateMemoryParams {
+                memory_id: "2e22752c".into(),
+                memory: "updated".into(),
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            error.message.contains("ambiguous memory id prefix"),
+            "{}",
+            error.message
+        );
     }
 
     mod http_transport {

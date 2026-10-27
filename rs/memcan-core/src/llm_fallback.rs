@@ -225,17 +225,17 @@ impl LlmProvider for FallbackLlmProvider {
     /// rather than `None`. Some backends cannot report a window at all — the
     /// cloud API configuration this provider exists to serve is one — so
     /// `None` there would not mean "be careful once", it would permanently pin
-    /// every caller to [`DEFAULT_CONTEXT_WINDOW`](crate::pipeline), shrinking
-    /// real budgets by an order of magnitude for a fallback that normally never
-    /// engages. Callers memoize this for the process lifetime and
+    /// every caller to the primary's assumed window, shrinking real budgets by
+    /// an order of magnitude for a fallback that normally never engages. Callers memoize this for the process lifetime and
     /// content-hash-skip their way past the damage, so silent over-truncation
     /// is the worse failure: an oversized request to the fallback fails loudly
     /// and only while the primary is down.
     ///
     /// A backend whose breaker is already open is not queried at all — a
     /// degraded (hung rather than refusing) backend would otherwise block this
-    /// memoized call. An unknown *primary* window still yields `None`, leaving
-    /// callers their own conservative default.
+    /// memoized call. An unknown (or unqueried) *primary* window counts as the
+    /// primary's [`assumed_context_window`](LlmProvider::assumed_context_window),
+    /// capped by a known fallback window; with neither known this is `None`.
     async fn context_window(&self, model: &str) -> Option<usize> {
         let primary_window = match self.health.check(self.primary_dep) {
             Ok(()) => self.primary.context_window(model).await,
@@ -272,8 +272,24 @@ impl LlmProvider for FallbackLlmProvider {
             // The fallback cannot report a window: trust the primary's rather
             // than pinning every caller to the conservative default forever.
             (Some(primary_window), None) => Some(primary_window),
-            (None, _) => None,
+            // The primary cannot report a window: size for its assumed one,
+            // but never beyond a fallback window that is known to be smaller.
+            (None, Some(fallback_window)) => {
+                Some(self.primary.assumed_context_window().min(fallback_window))
+            }
+            (None, None) => None,
         }
+    }
+
+    /// The smaller of both backends' assumptions: [`Self::context_window`]
+    /// returns `None` only when neither window is known, and either backend
+    /// may serve the request — a cloud primary's large assumption must not
+    /// overfeed a local fallback whose window could not be discovered.
+    fn assumed_context_window(&self) -> usize {
+        let primary = self.primary.assumed_context_window();
+        self.fallback.as_ref().map_or(primary, |fallback| {
+            primary.min(fallback.provider.assumed_context_window())
+        })
     }
 
     async fn init(&self) -> Result<()> {
@@ -366,6 +382,7 @@ mod tests {
         init_calls: AtomicUsize,
         context_window_calls: AtomicUsize,
         context_window: Option<usize>,
+        assumed_context_window: usize,
     }
 
     impl MockLlmProvider {
@@ -377,11 +394,17 @@ mod tests {
                 init_calls: AtomicUsize::new(0),
                 context_window_calls: AtomicUsize::new(0),
                 context_window: Some(4096),
+                assumed_context_window: crate::pipeline::DEFAULT_CONTEXT_WINDOW,
             }
         }
 
         fn with_init(mut self, init_result: MockResult) -> Self {
             self.init_result = init_result;
+            self
+        }
+
+        fn with_assumed_context_window(mut self, assumed: usize) -> Self {
+            self.assumed_context_window = assumed;
             self
         }
 
@@ -424,6 +447,10 @@ mod tests {
         async fn context_window(&self, _model: &str) -> Option<usize> {
             self.context_window_calls.fetch_add(1, Ordering::SeqCst);
             self.context_window
+        }
+
+        fn assumed_context_window(&self) -> usize {
+            self.assumed_context_window
         }
 
         async fn init(&self) -> Result<()> {
@@ -498,11 +525,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_window_is_unknown_when_the_primary_cannot_report() {
-        // Without the primary's window there is no budget worth trusting: chat()
-        // prefers the primary, so callers fall back to their own default.
+    async fn context_window_caps_the_primarys_assumption_at_the_fallbacks_window() {
+        // A cloud primary cannot report its window and assumes a large one; a
+        // known smaller fallback window must still bound the budget, or every
+        // request served by the fallback would overflow it.
+        let primary = Arc::new(
+            MockLlmProvider::new([])
+                .with_context_window(None)
+                .with_assumed_context_window(crate::pipeline::CLOUD_DEFAULT_CONTEXT_WINDOW),
+        );
+        let fallback = Arc::new(MockLlmProvider::new([]).with_context_window(Some(8_192)));
+        let health = Arc::new(DependencyHealth::with_defaults());
+        let provider = wrapper(primary, Some(fallback), health);
+        assert_eq!(provider.context_window("claude").await, Some(8_192));
+
+        // A smaller assumption stays in force.
         let primary = Arc::new(MockLlmProvider::new([]).with_context_window(None));
         let fallback = Arc::new(MockLlmProvider::new([]).with_context_window(Some(8_192)));
+        let health = Arc::new(DependencyHealth::with_defaults());
+        let provider = wrapper(primary, Some(fallback), health);
+        assert_eq!(
+            provider.context_window("qwen3.5:9b").await,
+            Some(crate::pipeline::DEFAULT_CONTEXT_WINDOW)
+        );
+    }
+
+    #[tokio::test]
+    async fn context_window_is_unknown_when_neither_backend_can_report() {
+        let primary = Arc::new(MockLlmProvider::new([]).with_context_window(None));
+        let fallback = Arc::new(MockLlmProvider::new([]).with_context_window(None));
         let health = Arc::new(DependencyHealth::with_defaults());
         let provider = wrapper(primary, Some(fallback), health);
 
@@ -520,7 +571,12 @@ mod tests {
 
         health.report_failure(DependencyId::LlmPrimary, "primary is down");
 
-        assert_eq!(provider.context_window("qwen3.5:9b").await, None);
+        // The unqueried primary counts as its assumed window, capped by the
+        // fallback's, which chat() will use while the primary is down.
+        assert_eq!(
+            provider.context_window("qwen3.5:9b").await,
+            Some(crate::pipeline::DEFAULT_CONTEXT_WINDOW)
+        );
         assert_eq!(
             primary.context_window_calls(),
             0,
@@ -545,6 +601,47 @@ mod tests {
             fallback.context_window_calls(),
             0,
             "must not query a fallback the breaker already knows is down"
+        );
+    }
+
+    #[tokio::test]
+    async fn assumed_context_window_is_the_smaller_of_both_assumptions() {
+        // A cloud primary with an Ollama fallback whose window could not be
+        // discovered: neither reports, so callers size for the assumption —
+        // which must not overfeed the local fallback 8x when it takes over.
+        let cloud = || {
+            Arc::new(
+                MockLlmProvider::new([])
+                    .with_context_window(None)
+                    .with_assumed_context_window(crate::pipeline::CLOUD_DEFAULT_CONTEXT_WINDOW),
+            )
+        };
+        let local = Arc::new(MockLlmProvider::new([]).with_context_window(None));
+        let provider = wrapper(
+            cloud(),
+            Some(local),
+            Arc::new(DependencyHealth::with_defaults()),
+        );
+        assert_eq!(provider.context_window("claude").await, None);
+        assert_eq!(
+            provider.assumed_context_window(),
+            crate::pipeline::DEFAULT_CONTEXT_WINDOW
+        );
+
+        // Two cloud slots keep the cloud assumption; no fallback keeps the primary's.
+        let provider = wrapper(
+            cloud(),
+            Some(cloud()),
+            Arc::new(DependencyHealth::with_defaults()),
+        );
+        assert_eq!(
+            provider.assumed_context_window(),
+            crate::pipeline::CLOUD_DEFAULT_CONTEXT_WINDOW
+        );
+        let provider = wrapper(cloud(), None, Arc::new(DependencyHealth::with_defaults()));
+        assert_eq!(
+            provider.assumed_context_window(),
+            crate::pipeline::CLOUD_DEFAULT_CONTEXT_WINDOW
         );
     }
 

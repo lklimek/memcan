@@ -50,8 +50,8 @@ Search and retrieve knowledge from past sessions across all collections.
 | `search_code` | `query: str, file_path?: str, tech_stack?: str, limit?: int` | Search indexed code. |
 | `get_memories` | `project?: str, limit?: int` | List memories by scope. |
 | `count_memories` | `project?: str` | Count memories. |
-| `update_memory` | `memory_id: str, memory: str` | Fix a memory encountered during recall. |
-| `delete_memory` | `memory_id: str` | Remove obsolete memory. |
+| `update_memory` | `memory_id: str, memory: str` | Fix a memory encountered during recall. `memory_id`: full UUID or unambiguous prefix (>= 8 chars). |
+| `delete_memory` | `memory_id: str` | Remove obsolete memory. `memory_id`: full UUID or unambiguous prefix (>= 8 chars). |
 
 ## `search` Response Shape
 
