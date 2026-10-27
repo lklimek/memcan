@@ -84,6 +84,10 @@ pub struct GenaiLlmProvider {
     default_model: String,
     ollama_host: Option<String>,
     ollama_api_key: Option<String>,
+    /// Forward `LlmOptions::temperature`. Off for the cloud OpenAI-compatible
+    /// backend: Anthropic's compat endpoint and OpenAI reasoning models reject
+    /// non-default temperatures with a 400.
+    send_temperature: bool,
 }
 
 impl GenaiLlmProvider {
@@ -94,6 +98,7 @@ impl GenaiLlmProvider {
             default_model,
             ollama_host: None,
             ollama_api_key: None,
+            send_temperature: true,
         }
     }
 
@@ -145,6 +150,7 @@ impl GenaiLlmProvider {
             default_model: settings.llm_model.clone(),
             ollama_host: settings.ollama_host.clone(),
             ollama_api_key: settings.ollama_api_key.clone(),
+            send_temperature: true,
         }
     }
 
@@ -173,6 +179,7 @@ impl GenaiLlmProvider {
             default_model: settings.openrouter_model.clone(),
             ollama_host: None,
             ollama_api_key: None,
+            send_temperature: false,
         }
     }
 
@@ -219,7 +226,7 @@ impl LlmProvider for GenaiLlmProvider {
 
         // Build ChatOptions
         let mut chat_opts = ChatOptions::default();
-        if let Some(temp) = opts.temperature {
+        if let Some(temp) = opts.temperature.filter(|_| self.send_temperature) {
             chat_opts = chat_opts.with_temperature(temp as f64);
         }
         if let Some(max) = opts.max_tokens {
@@ -361,6 +368,65 @@ mod tests {
             .unwrap();
 
         assert_eq!(result, "from openrouter");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn openai_compat_backend_omits_temperature() {
+        // Anthropic's OpenAI-compatible endpoint and OpenAI reasoning models
+        // reject non-default temperatures with a 400, so the cloud backend
+        // must never forward the 0.0 used by the indexing call sites.
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .match_request(|req| {
+                req.utf8_lossy_body()
+                    .map(|body| !body.contains("temperature"))
+                    .unwrap_or(false)
+            })
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "claude-haiku-5-5",
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop"
+                    }]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let settings = crate::config::Settings {
+            openrouter_api_key: Some("test-key".into()),
+            openrouter_model: "claude-haiku-5-5".into(),
+            openrouter_base_url: server.url(),
+            ..crate::config::Settings::default()
+        };
+        let provider = GenaiLlmProvider::from_openrouter_settings(&settings);
+
+        let result = provider
+            .chat(
+                provider.default_model(),
+                &[LlmMessage {
+                    role: Role::User,
+                    content: "hello".into(),
+                }],
+                Some(LlmOptions {
+                    op: "omit_temperature",
+                    temperature: Some(0.0),
+                    ..LlmOptions::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, "ok");
         mock.assert_async().await;
     }
 
