@@ -71,8 +71,8 @@ account has no application logout; credentials normally persist for the browser 
 | `add_memory` | Store a memory with optional project scope and metadata (async, returns queued) |
 | `search_memories` | Semantic search across memories |
 | `get_memories` | List all memories for a scope |
-| `delete_memory` | Remove a memory by ID |
-| `update_memory` | Modify existing memory content (async, returns queued) |
+| `delete_memory` | Remove a memory by full UUID or unambiguous short-ID prefix (>= 8 chars) |
+| `update_memory` | Modify existing memory content by full UUID or unambiguous short-ID prefix (async, returns queued) |
 | `count_memories` | Count memories for a scope (without fetching content) |
 | `list_collections` | Discover available collections, point counts, and valid filter values |
 | `search_standards` | Search indexed standards (CWE, OWASP, etc.) by semantic similarity |

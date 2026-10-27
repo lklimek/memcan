@@ -25,6 +25,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project fol
 
 ### Fixed
 
+- `delete_memory` and `update_memory` accept an unambiguous short-ID prefix (>= 8 chars), like the TODO tools. `delete_memory` with a short or unknown ID used to answer `{"status":"deleted"}` without deleting anything; an unknown ID now fails as not found and an ambiguous prefix fails asking for the full UUID. **Behavior change:** `update_memory` on an unknown ID returns a tool error instead of a success response carrying `"error": "memory not found"`. Memory and TODO IDs are trimmed and matched case-insensitively.
 - Cloud LLM slots assume a 32768-token context window (8x the local 4096 default) when sizing prompt budgets, instead of truncating memory, code-description, and standards input to a ~1.6k-token budget. A known smaller fallback window still caps the budget, and with neither window known the smaller of both slots' assumptions applies.
 - Cloud (OpenAI-compatible) backends no longer receive `temperature`; code and standards indexing failed with a 400 on Anthropic's OpenAI-compatible endpoint and on OpenAI reasoning models.
 

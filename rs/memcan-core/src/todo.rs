@@ -12,7 +12,10 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::error::Result;
-use crate::query::{sanitize_eq, sanitize_like};
+use crate::query::sanitize_eq;
+#[cfg(test)]
+use crate::record_id::MAX_ID_PREFIX_MATCHES;
+use crate::record_id::{RecordKind, resolve_id, resolve_id_prefix};
 use crate::traits::{EmbeddingProvider, SearchResult, TableSchema, VectorPoint, VectorStore};
 
 pub const TODOS_TABLE: &str = "memcan_todos";
@@ -28,10 +31,6 @@ const VALID_STATUSES: &[&str] = &[
 ];
 const MAX_LIST_TODOS_SCAN: usize = 10_000;
 const MAX_LIST_ALL_TODOS_SCAN: usize = 10_000;
-/// Minimum prefix length before scanning: eight hex characters provide a 32-bit collision-resistance floor.
-const MIN_ID_PREFIX_LEN: usize = 8;
-/// Caps ambiguous candidates listed before the error falls back to "N+" wording.
-const MAX_ID_PREFIX_MATCHES: usize = 5;
 
 const TODO_WRITE_LOCK_SHARDS: usize = 64;
 
@@ -141,45 +140,11 @@ fn normalize_id_list(values: Vec<String>) -> Vec<String> {
 }
 
 async fn resolve_todo_prefix(store: &dyn VectorStore, todo_id: &str) -> Result<Option<String>> {
-    if todo_id.chars().count() < MIN_ID_PREFIX_LEN {
-        return Ok(None);
-    }
-
-    let filter = format!("id LIKE '{}%'", sanitize_like(todo_id));
-    let candidates = store
-        .scroll(TODOS_TABLE, Some(&filter), MAX_ID_PREFIX_MATCHES + 1, 0)
-        .await?;
-    let mut candidate_ids: Vec<_> = candidates
-        .into_iter()
-        .map(|candidate| candidate.id)
-        .collect();
-    candidate_ids.sort();
-    candidate_ids.dedup();
-
-    match candidate_ids.len() {
-        0 => Ok(None),
-        1 => Ok(candidate_ids.pop()),
-        count if count > MAX_ID_PREFIX_MATCHES => {
-            candidate_ids.truncate(MAX_ID_PREFIX_MATCHES);
-            Err(crate::error::MemcanError::Other(format!(
-                "ambiguous todo id prefix '{todo_id}' matches at least {MAX_ID_PREFIX_MATCHES}+ todos (showing {MAX_ID_PREFIX_MATCHES}: {}) — provide the full UUID",
-                candidate_ids.join(", ")
-            )))
-        }
-        count => Err(crate::error::MemcanError::Other(format!(
-            "ambiguous todo id prefix '{todo_id}' matches {count} todos ({}) — provide the full UUID",
-            candidate_ids.join(", ")
-        ))),
-    }
+    resolve_id_prefix(store, TODOS_TABLE, RecordKind::Todo, todo_id).await
 }
 
 async fn resolve_todo_id(store: &dyn VectorStore, todo_id: &str) -> Result<Option<String>> {
-    let exact = store.get(TODOS_TABLE, &[todo_id.to_string()]).await?;
-    if let Some(item) = exact.first() {
-        return Ok(Some(item.id.clone()));
-    }
-
-    resolve_todo_prefix(store, todo_id).await
+    resolve_id(store, TODOS_TABLE, RecordKind::Todo, todo_id).await
 }
 
 async fn resolve_blocked_by(
@@ -195,11 +160,9 @@ async fn resolve_blocked_by(
                     "blocked_by reference '{reference}' not found"
                 )));
             }
-            Err(crate::error::MemcanError::Other(message))
-                if message.starts_with("ambiguous todo id prefix") =>
-            {
+            Err(error @ crate::error::MemcanError::AmbiguousIdPrefix { .. }) => {
                 return Err(crate::error::MemcanError::Other(format!(
-                    "blocked_by reference '{reference}' could not be resolved: {message}"
+                    "blocked_by reference '{reference}' could not be resolved: {error}"
                 )));
             }
             Err(error) => return Err(error),
