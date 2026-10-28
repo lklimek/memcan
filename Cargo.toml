@@ -35,7 +35,7 @@ async-trait = "0.1"
 futures = "0.3"
 
 # Embeddings (in-process ONNX, text models only — no image-models)
-fastembed = { version = "7.1.2", default-features = false, features = ["hf-hub-native-tls", "ort-download-binaries-native-tls"] }
+fastembed = { version = "7.5.0", default-features = false, features = ["hf-hub-native-tls", "ort-download-binaries-native-tls"] }
 
 # Multi-provider LLM
 genai = "0.5"
