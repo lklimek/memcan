@@ -318,7 +318,7 @@ fn git_short_hash(project_dir: &Path) -> String {
 pub(crate) fn content_hash(text: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(text.as_bytes());
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 pub(crate) fn point_id(
@@ -1260,6 +1260,11 @@ mod tests {
     #[test]
     fn test_content_hash_deterministic() {
         let h1 = content_hash("hello world");
+        // Stored hashes drive incremental re-indexing: the encoding must not drift.
+        assert_eq!(
+            h1,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
         let h2 = content_hash("hello world");
         assert_eq!(h1, h2);
         let h3 = content_hash("different");

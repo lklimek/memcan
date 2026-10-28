@@ -148,7 +148,7 @@ pub fn chunk_content<'a>(
 pub fn md5_hex(data: &str) -> String {
     let mut hasher = Md5::new();
     hasher.update(data.as_bytes());
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 /// Strip reserved keys from user-supplied metadata.
