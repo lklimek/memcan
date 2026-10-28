@@ -32,10 +32,11 @@ impl std::fmt::Debug for FastEmbedProvider {
 impl FastEmbedProvider {
     /// Create a new provider using a built-in fastembed model.
     pub fn new(model_name: EmbeddingModel, dims: usize) -> Result<Self> {
-        let opts = TextInitOptions::new(model_name).with_show_download_progress(true);
-        let model = TextEmbedding::try_new(opts).map_err(|e| MemcanError::Embedding {
-            context: "failed to initialise fastembed model".into(),
-            detail: e.to_string(),
+        let model = TextEmbedding::try_new(init_options(model_name)).map_err(|e| {
+            MemcanError::Embedding {
+                context: "failed to initialise fastembed model".into(),
+                detail: e.to_string(),
+            }
         })?;
         info!(dims, "FastEmbed model loaded");
         Ok(Self {
@@ -51,6 +52,16 @@ impl FastEmbedProvider {
         let model_name = resolve_model(&settings.embed_model)?;
         Self::new(model_name, settings.embed_dims)
     }
+}
+
+/// ONNX session options for the embedding model.
+///
+/// Prepacking keeps a second, re-laid-out copy of the weights; disabling it
+/// roughly halves the resident footprint of large models for a small CPU cost.
+fn init_options(model_name: EmbeddingModel) -> TextInitOptions {
+    TextInitOptions::new(model_name)
+        .with_show_download_progress(true)
+        .with_session_config("session.disable_prepacking", "1")
 }
 
 #[async_trait]
@@ -167,6 +178,18 @@ pub fn model_dims(model: &EmbeddingModel) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_init_options_disable_prepacking() {
+        let opts = init_options(EmbeddingModel::AllMiniLML6V2);
+        assert!(
+            opts.session_config
+                .iter()
+                .any(|(k, v)| k == "session.disable_prepacking" && v == "1"),
+            "ONNX session must disable weight prepacking, got {:?}",
+            opts.session_config
+        );
+    }
 
     #[test]
     fn test_resolve_model_canonical() {
