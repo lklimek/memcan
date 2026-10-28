@@ -34,7 +34,7 @@ jobs:
       # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
       - uses: actions/checkout@v4
       # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99
         with:
           targets: ${{ matrix.target }}
 

@@ -33,7 +33,7 @@ jobs:
       - name: Install Ubuntu dependencies
         run: bash scripts/setup-ubuntu.sh
       # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99
       # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace
@@ -47,7 +47,7 @@ jobs:
       - name: Install Ubuntu dependencies
         run: bash scripts/setup-ubuntu.sh
       # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99
       # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
@@ -76,7 +76,7 @@ jobs:
       - name: Install Ubuntu dependencies
         run: bash scripts/setup-ubuntu.sh
       # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99
       # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
       - uses: Swatinem/rust-cache@v2
       - run: cargo build -p memcan-core ${{ matrix.flags }}
@@ -91,7 +91,7 @@ jobs:
       - name: Install Ubuntu dependencies
         run: bash scripts/setup-ubuntu.sh
       # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99
         with:
           components: clippy
       # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
@@ -105,7 +105,7 @@ jobs:
       # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
       - uses: actions/checkout@v4
       # INTENTIONAL(SEC-011): Version tags used instead of commit SHAs — accepted risk for readability
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check

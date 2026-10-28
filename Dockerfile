@@ -1,4 +1,4 @@
-FROM rust:slim-trixie AS chef
+FROM rust:1.99-slim-trixie AS chef
 RUN cargo install cargo-chef
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential libssl-dev pkg-config protobuf-compiler libprotobuf-dev && \

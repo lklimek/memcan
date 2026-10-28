@@ -2,7 +2,7 @@
 name = "memcan"
 version.workspace = true
 edition.workspace = true
-rust-version = "1.92"
+rust-version.workspace = true
 license.workspace = true
 description = "Persistent memory for Claude Code — CLI client"
 keywords = ["claude-code", "mcp", "memory", "cli"]
