@@ -101,7 +101,7 @@ fn build_backend_inner(slot: &LlmSlot) -> Result<LlmBackend> {
             }
             #[cfg(all(feature = "genai-llm", not(feature = "ollama-rs-llm")))]
             {
-                let provider = crate::llm::GenaiLlmProvider::from_ollama_slot(slot);
+                let provider = crate::llm::GenaiLlmProvider::from_ollama_slot(slot)?;
                 // genai selects its adapter from the model name; namespacing
                 // pins it to Ollama, which the operator selected explicitly.
                 let model =

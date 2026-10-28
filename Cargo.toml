@@ -39,7 +39,7 @@ futures = "0.3"
 fastembed = { version = "7.5.0", default-features = false, features = ["hf-hub-native-tls", "ort-download-binaries-native-tls"] }
 
 # Multi-provider LLM
-genai = "0.5"
+genai = "0.7"
 ollama-rs = { version = "0.3", features = ["headers"] }
 
 # HTTP (used by memcan-test-classification)
