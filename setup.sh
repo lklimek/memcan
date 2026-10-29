@@ -254,12 +254,20 @@ setup_server() {
         info "Generated new OLLAMA_API_KEY"
     fi
 
+    # LLM_MODEL names the primary slot's model for any backend, so the Ollama
+    # model is only seeded while the primary slot is (or defaults to) Ollama.
+    local llm_vars=()
+    if ! grep -qE '^LLM_PROVIDER=' "${SERVER_DIR}/.env" 2>/dev/null \
+        || grep -qiE '^LLM_PROVIDER=.?ollama.?[[:space:]]*$' "${SERVER_DIR}/.env"; then
+        llm_vars=("LLM_PROVIDER=ollama" "LLM_MODEL=qwen3.5:9b")
+    fi
+
     # Merge server .env
     merge_env "${SERVER_DIR}/.env" \
         "MEMCAN_API_KEY=${api_key}" \
         "OLLAMA_API_KEY=${ollama_key}" \
         "OLLAMA_HOST=http://ollama:11434" \
-        "LLM_MODEL=ollama::qwen3.5:9b" \
+        ${llm_vars[@]+"${llm_vars[@]}"} \
         "EMBED_MODEL=MultilingualE5Large" \
         "DISTILL_MEMORIES=true" \
         "COMPOSE_PROFILES=ollama"
