@@ -4,8 +4,11 @@
 //! Messages API and OpenAI-compatible APIs) and, without the `ollama-rs-llm`
 //! feature, Ollama.
 
-use crate::config::{LlmProviderKind, LlmSlot};
+use std::time::Duration;
+
+use crate::config::{LlmConfigError, LlmProviderKind, LlmSlot};
 use crate::error::{MemcanError, Result};
+use crate::llm_fallback::status_is_unavailable;
 use crate::llm_telemetry::{self, CacheTokens};
 use crate::traits::{LlmMessage, LlmOptions, LlmProvider, Role};
 use async_trait::async_trait;
@@ -20,14 +23,13 @@ pub use crate::ollama::strip_ollama_prefix;
 
 /// Sort a chat failure into the availability class or the content class.
 ///
-/// Transport faults and statuses that a retry elsewhere could survive (5xx,
-/// 408, 429), rejected credentials (401), and an exhausted balance (402) map to
-/// [`MemcanError::LlmUnavailable`]: they are properties of the backend, so
-/// another backend may still serve the request. Every other failure — the
-/// remaining 4xx (including 403, which providers also use for guardrail and
-/// moderation blocks), malformed requests — is deterministic for this prompt
-/// and maps to [`MemcanError::LlmChat`], because another backend would reject
-/// it too.
+/// Transport faults (including timeouts) and the statuses
+/// [`status_is_unavailable`] accepts map to [`MemcanError::LlmUnavailable`]:
+/// they are properties of the backend, so another backend may still serve the
+/// request. Every other failure — the remaining 4xx (including 403, which
+/// providers also use for guardrail and moderation blocks), malformed requests
+/// — is deterministic for this prompt and maps to [`MemcanError::LlmChat`],
+/// because another backend would reject it too.
 fn classify_chat_error(error: &genai::Error, model: &str) -> MemcanError {
     use genai::webc::Error as WebcError;
 
@@ -54,35 +56,34 @@ fn classify_chat_error(error: &genai::Error, model: &str) -> MemcanError {
     }
 }
 
-/// `true` for statuses that indicate the backend — not the prompt — is at
-/// fault, so another backend may still serve the request.
-///
-/// 401 and 402 count as unavailable: a rejected credential and an exhausted
-/// balance are both properties of the backend, not of the prompt. The other
-/// backend authenticates and bills separately (or not at all), so it can still
-/// serve the request — and a backend whose key is revoked or whose credits ran
-/// out is genuinely unusable, which is what the breaker exists to record.
-///
-/// 403 deliberately does **not**. Providers overload it: OpenRouter returns 403
-/// for guardrail blocks and moderation flags as well as for permissions, and a
-/// blocked prompt is deterministic for that prompt. Classing it as unavailable
-/// would mark a serving backend Down and re-send the blocked content to a third
-/// party — the two things [`FallbackLlmProvider::chat`](crate::llm_fallback)
-/// exists to avoid. A genuine permissions 403 is the rarer case, and it
-/// degrades to a plain error rather than a wrong failover.
-///
-/// Takes a raw code rather than a `StatusCode`: genai links its own `reqwest`,
-/// which need not be the one this crate depends on.
-fn status_is_unavailable(status: u16) -> bool {
-    (500..600).contains(&status) || matches!(status, 401 | 402 | 408 | 429)
-}
-
 /// `max_tokens` sent to Anthropic when the caller sets none.
 ///
 /// The Messages API requires the field. genai's own fallback is the model's
 /// output ceiling (64k for current models), far beyond anything our prompts
 /// produce.
 const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 4096;
+
+/// Connect timeout of the cloud HTTP client.
+const CLOUD_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Whole-request timeout of the cloud HTTP client, with room for a slow model
+/// to produce [`ANTHROPIC_DEFAULT_MAX_TOKENS`]. A hung backend then surfaces
+/// as an availability fault, which the breaker and the fallback act on.
+const CLOUD_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// HTTP client for cloud backends.
+///
+/// Redirects are never followed: reqwest strips only `Authorization` and
+/// cookies on a cross-host hop, so Anthropic's `x-api-key` (and, for 307/308,
+/// the request body) would follow the redirect, including to plain HTTP.
+fn cloud_http_client(request_timeout: Duration) -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .connect_timeout(CLOUD_CONNECT_TIMEOUT)
+        .timeout(request_timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|source| LlmConfigError::HttpClient { source }.into())
+}
 
 /// Wire protocol spoken by a cloud backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,10 +215,15 @@ impl GenaiLlmProvider {
     /// unsupported.
     ///
     /// Anthropic uses genai's native Anthropic adapter; every other cloud kind
-    /// uses its OpenAI adapter against the slot's base URL. Fails for an Ollama
-    /// slot or a slot without a base URL or API key.
+    /// uses its OpenAI adapter against the slot's base URL. Requests time out
+    /// and never follow redirects. Fails for an Ollama slot or a slot without
+    /// a base URL or API key.
     pub fn from_cloud_slot(slot: &LlmSlot) -> Result<Self> {
-        let kind = slot.provider;
+        Self::with_cloud_client(slot, cloud_http_client(CLOUD_REQUEST_TIMEOUT)?)
+    }
+
+    fn with_cloud_client(slot: &LlmSlot, http: reqwest::Client) -> Result<Self> {
+        let kind = slot.kind;
         let (adapter, cloud_api) = match kind {
             LlmProviderKind::Anthropic => (AdapterKind::Anthropic, CloudApi::Anthropic),
             LlmProviderKind::OpenAi
@@ -225,18 +231,15 @@ impl GenaiLlmProvider {
             | LlmProviderKind::OpenAiCompatible => {
                 (AdapterKind::OpenAI, CloudApi::OpenAiCompatible)
             }
-            LlmProviderKind::Ollama => {
-                return Err(MemcanError::Config(
-                    "Ollama is not a cloud LLM backend".into(),
-                ));
-            }
+            LlmProviderKind::Ollama => return Err(LlmConfigError::NotCloudBackend.into()),
         };
-        let base_url = slot.base_url.as_deref().ok_or_else(|| {
-            MemcanError::Config(format!(
-                "the {} '{kind}' LLM slot has no base URL",
-                slot.role
-            ))
-        })?;
+        let base_url = slot
+            .base_url
+            .as_deref()
+            .ok_or(LlmConfigError::SlotWithoutBaseUrl {
+                role: slot.role,
+                kind,
+            })?;
         // genai appends the route (`messages`, `chat/completions`) verbatim.
         let endpoint = Endpoint::from_owned(format!("{}/", base_url.trim_end_matches('/')));
         // Without a key every call would 401, which the breaker counts as an
@@ -247,15 +250,14 @@ impl GenaiLlmProvider {
             .map(str::trim)
             .filter(|key| !key.is_empty())
             .map(str::to_string)
-            .ok_or_else(|| {
-                MemcanError::Config(format!(
-                    "the {} '{kind}' LLM slot has no API key",
-                    slot.role
-                ))
+            .ok_or(LlmConfigError::SlotWithoutApiKey {
+                role: slot.role,
+                kind,
             })?;
         let resolver_key = auth_key.clone();
 
         let client = Client::builder()
+            .with_reqwest(http)
             // genai 0.5 resolves auth before applying the target override.
             .with_auth_resolver_fn(move |_| Ok(Some(AuthData::Key(auth_key.clone()))))
             .with_service_target_resolver_fn(move |mut st: genai::ServiceTarget| {
@@ -297,7 +299,9 @@ impl LlmProvider for GenaiLlmProvider {
         let mut req = ChatRequest::default();
 
         // Disable thinking for Ollama models when explicitly requested
-        let disable_think = opts.think == Some(false) && model.to_lowercase().contains("ollama");
+        let disable_think = opts.think == Some(false)
+            && self.cloud_api.is_none()
+            && model.to_lowercase().contains("ollama");
 
         let anthropic = self.cloud_api == Some(CloudApi::Anthropic);
         for msg in messages {
@@ -401,14 +405,14 @@ impl LlmProvider for GenaiLlmProvider {
     /// far exceeds the local default, so they assume the larger cloud window.
     fn assumed_context_window(&self) -> usize {
         if self.cloud_api.is_some() {
-            crate::pipeline::CLOUD_DEFAULT_CONTEXT_WINDOW
+            crate::traits::CLOUD_DEFAULT_CONTEXT_WINDOW
         } else {
-            crate::pipeline::DEFAULT_CONTEXT_WINDOW
+            crate::traits::DEFAULT_CONTEXT_WINDOW
         }
     }
 
     async fn context_window(&self, model: &str) -> Option<usize> {
-        if !model.to_lowercase().contains("ollama") {
+        if self.cloud_api.is_some() || !model.to_lowercase().contains("ollama") {
             return None;
         }
 
@@ -451,7 +455,7 @@ mod tests {
     fn cloud_slot(kind: LlmProviderKind, model: &str, key: &str, base_url: String) -> LlmSlot {
         LlmSlot {
             role: LlmRole::Primary,
-            provider: kind,
+            kind,
             model: model.into(),
             api_key: Some(key.into()),
             base_url: Some(base_url),
@@ -896,23 +900,116 @@ mod tests {
         mock.assert_async().await;
     }
 
+    #[tokio::test]
+    async fn cloud_client_never_follows_a_redirect() {
+        // A redirect would carry the x-api-key header (which reqwest does not
+        // strip across hosts) and, for 307/308, the request body elsewhere.
+        let mut target = mockito::Server::new_async().await;
+        let stolen = target
+            .mock("POST", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let mut server = mockito::Server::new_async().await;
+        let redirect = server
+            .mock("POST", "/messages")
+            .with_status(307)
+            .with_header("location", &format!("{}/messages", target.url()))
+            .create_async()
+            .await;
+        let provider = anthropic_provider(server.url());
+
+        let error = provider
+            .chat(
+                provider.default_model(),
+                &system_and_user("Answer.", "secret content"),
+                None,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.is_llm_unavailable(), "{error:?}");
+        redirect.assert_async().await;
+        stolen.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn cloud_slot_never_probes_ollama_for_a_model_named_like_it() {
+        let mut ollama = mockito::Server::new_async().await;
+        let probe = ollama
+            .mock("POST", "/api/show")
+            .expect(0)
+            .create_async()
+            .await;
+        let mut chat_server = mockito::Server::new_async().await;
+        let chat = chat_server
+            .mock("POST", "/chat/completions")
+            .match_request(|req| body_lacks(req, &["/no_think"]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "acme/ollama-tuned",
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop"
+                    }]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let mut provider = GenaiLlmProvider::from_cloud_slot(&cloud_slot(
+            LlmProviderKind::OpenRouter,
+            "acme/ollama-tuned",
+            "cloud-key",
+            chat_server.url(),
+        ))
+        .unwrap();
+        provider.ollama_host = Some(ollama.url());
+
+        assert_eq!(provider.context_window("acme/ollama-tuned").await, None);
+        provider
+            .chat(
+                "acme/ollama-tuned",
+                &system_and_user("Answer.", "hello"),
+                Some(LlmOptions {
+                    think: Some(false),
+                    ..LlmOptions::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+        probe.assert_async().await;
+        chat.assert_async().await;
+    }
+
     #[test]
     fn cloud_construction_rejects_ollama_and_a_missing_base_url() {
         let ollama = LlmSlot {
-            provider: LlmProviderKind::Ollama,
+            kind: LlmProviderKind::Ollama,
             ..cloud_slot(LlmProviderKind::OpenAi, "m", "k", String::new())
         };
-        assert!(GenaiLlmProvider::from_cloud_slot(&ollama).is_err());
+        assert!(matches!(
+            GenaiLlmProvider::from_cloud_slot(&ollama).err(),
+            Some(MemcanError::LlmConfig(LlmConfigError::NotCloudBackend))
+        ));
 
         let no_url = LlmSlot {
             base_url: None,
             ..cloud_slot(LlmProviderKind::OpenAiCompatible, "m", "k", String::new())
         };
-        let error = GenaiLlmProvider::from_cloud_slot(&no_url)
-            .err()
-            .unwrap()
-            .to_string();
-        assert!(error.contains("base URL"), "{error}");
+        assert!(matches!(
+            GenaiLlmProvider::from_cloud_slot(&no_url).err(),
+            Some(MemcanError::LlmConfig(
+                LlmConfigError::SlotWithoutBaseUrl { .. }
+            ))
+        ));
 
         for api_key in [None, Some(String::new()), Some("  ".to_string())] {
             let no_key = LlmSlot {
@@ -924,11 +1021,12 @@ mod tests {
                     "https://a.example/".into(),
                 )
             };
-            let error = GenaiLlmProvider::from_cloud_slot(&no_key)
-                .err()
-                .unwrap()
-                .to_string();
-            assert!(error.contains("API key"), "{error}");
+            assert!(matches!(
+                GenaiLlmProvider::from_cloud_slot(&no_key).err(),
+                Some(MemcanError::LlmConfig(
+                    LlmConfigError::SlotWithoutApiKey { .. }
+                ))
+            ));
         }
     }
 
@@ -964,58 +1062,45 @@ mod tests {
         assert_eq!(provider.default_model(), "test-model");
     }
 
-    #[test]
-    fn rejected_credentials_are_an_availability_fault() {
-        // A rotated cloud API key must not strand requests that a healthy
-        // local Ollama could serve: 401 describes the backend, not the prompt,
-        // so it has to reach the fallback and the breaker.
-        assert!(super::status_is_unavailable(401));
-    }
+    #[tokio::test]
+    async fn hung_cloud_backend_times_out_as_an_availability_fault() {
+        // Accepts the connection and never answers, like a stalled gateway.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let provider = GenaiLlmProvider::with_cloud_client(
+            &cloud_slot(
+                LlmProviderKind::Anthropic,
+                "claude-haiku-5-5",
+                "k",
+                base_url,
+            ),
+            cloud_http_client(Duration::from_millis(200)).unwrap(),
+        )
+        .unwrap();
 
-    #[test]
-    fn an_exhausted_balance_is_an_availability_fault() {
-        // OpenRouter returns 402 when the account is out of credits. The
-        // fallback bills separately, so it can still serve the request — and a
-        // backend that cannot be paid for is as unusable as one with a revoked
-        // key.
-        assert!(super::status_is_unavailable(402));
-    }
+        let error = tokio::time::timeout(
+            Duration::from_secs(10),
+            provider.chat(
+                provider.default_model(),
+                &system_and_user("Answer.", "hello"),
+                None,
+            ),
+        )
+        .await
+        .expect("the client timeout must fire first")
+        .unwrap_err();
 
-    #[test]
-    fn forbidden_stays_a_content_fault() {
-        // Providers overload 403: OpenRouter returns it for guardrail and
-        // moderation blocks, which are deterministic for the prompt. Classing
-        // it as unavailable would mark a serving backend Down and ship the
-        // blocked content to a third party.
-        assert!(!super::status_is_unavailable(403));
-    }
-
-    #[test]
-    fn backend_faults_are_availability_faults() {
-        for status in [500, 502, 503, 599, 408, 429] {
-            assert!(
-                super::status_is_unavailable(status),
-                "{status} should be an availability fault"
-            );
-        }
-    }
-
-    #[test]
-    fn request_faults_stay_content_faults() {
-        // These are deterministic for the prompt: another backend rejects them
-        // too, so they must not egress or trip the breaker.
-        for status in [400, 404, 413, 422] {
-            assert!(
-                !super::status_is_unavailable(status),
-                "{status} should be a content fault"
-            );
-        }
+        assert!(error.is_llm_unavailable(), "{error:?}");
+        drop(listener);
     }
 
     #[test]
     fn test_from_ollama_slot_stores_model() {
         let settings = crate::config::Settings {
-            llm_model: Some("ollama::qwen3.5:4b".into()),
+            llm_primary: crate::config::SlotSettings {
+                model: Some("ollama::qwen3.5:4b".into()),
+                ..Default::default()
+            },
             ..crate::config::Settings::default()
         };
         let provider = GenaiLlmProvider::from_ollama_slot(&settings.primary_slot().unwrap());

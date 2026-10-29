@@ -58,11 +58,8 @@ Binaries are placed in `target/release/`:
 Start the server (requires local Ollama):
 
 ```bash
-# Pull the recommended (projector-free) model. It is NOT yet memcan-server's
-# compiled-in default (config.rs still defaults to gemma4:26b-a4b-it-qat), so
-# also set LLM_MODEL to actually use it:
+# Pull the default (projector-free) model; set LLM_MODEL only to use another one.
 ollama pull lklimek/gemma4-text:26b-a4b-it-qat
-export LLM_MODEL=lklimek/gemma4-text:26b-a4b-it-qat
 
 ./target/release/memcan-server serve
 ```
@@ -81,7 +78,7 @@ The `.env` file configures both the server and CLI. Search order:
 | 2 | `~/.config/memcan/.env` (Linux) / `~/Library/Application Support/memcan/.env` (macOS) | Production — survives plugin updates |
 | 3 | Defaults | Fallback (localhost, default LanceDB path) |
 
-Environment variables always override `.env` values. Run `/setup-memcan` to create the config file, or copy `.env.example` manually:
+Environment variables always override `.env` values. A `./.env` in the working directory may not set an LLM endpoint (`*_BASE_URL`, `OPENROUTER_BASE_URL`, `OLLAMA_HOST`) for a key that comes from the environment or the config-dir file; startup fails naming both variables. Run `/setup-memcan` to create the config file, or copy `.env.example` manually:
 
 ```bash
 mkdir -p ~/.config/memcan
@@ -105,7 +102,7 @@ cp .env.example ~/.config/memcan/.env
 | `LLM_FALLBACK_PROVIDER` / `LLM_FALLBACK_MODEL` / `LLM_FALLBACK_API_KEY` / `LLM_FALLBACK_BASE_URL` | *(unset)* | Optional fallback slot, configured like the primary. See `.env.example` and `CLAUDE.md` for defaults and the deprecated `OPENROUTER_*` variables. |
 | `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings (dimensions derived automatically) |
 | `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`); default endpoint of every Ollama slot. |
-| `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth; default key of every Ollama slot, sent with every request. |
+| `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth; default key of every Ollama slot aimed at `OLLAMA_HOST` (or the default host). A slot on another host needs its own `*_API_KEY`. |
 
 ## Remote Ollama
 

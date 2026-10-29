@@ -6,7 +6,7 @@
 //   OLLAMA_HOST=... OLLAMA_API_KEY=... cargo test -p memcan-core \
 //     --test ollama_integration -- --ignored --nocapture
 
-use memcan_core::config::Settings;
+use memcan_core::config::{Settings, SlotSettings};
 use memcan_core::llm_ollama_rs::OllamaRsLlmProvider;
 use memcan_core::text::strip_code_fence;
 use memcan_core::traits::{LlmMessage, LlmOptions, LlmProvider, Role};
@@ -81,7 +81,10 @@ async fn construction_custom_host_and_api_key() {
     let settings = Settings {
         ollama_host: Some("http://10.0.0.1:9999".into()),
         ollama_api_key: Some("test-token-abc".into()),
-        llm_model: Some("some-model:7b".into()),
+        llm_primary: SlotSettings {
+            model: Some("some-model:7b".into()),
+            ..SlotSettings::default()
+        },
         ..Settings::default()
     };
 
@@ -105,7 +108,10 @@ async fn construction_custom_host_and_api_key() {
 async fn construction_ollama_prefix_stripped() {
     // Given: model name with ollama:: prefix
     let settings = Settings {
-        llm_model: Some("ollama::qwen3.5:9b".into()),
+        llm_primary: SlotSettings {
+            model: Some("ollama::qwen3.5:9b".into()),
+            ..SlotSettings::default()
+        },
         ..Settings::default()
     };
 
@@ -128,7 +134,10 @@ async fn construction_ollama_prefix_stripped() {
 async fn construction_no_prefix_passthrough() {
     // Given: model name without prefix
     let settings = Settings {
-        llm_model: Some("gemma3:4b".into()),
+        llm_primary: SlotSettings {
+            model: Some("gemma3:4b".into()),
+            ..SlotSettings::default()
+        },
         ..Settings::default()
     };
 

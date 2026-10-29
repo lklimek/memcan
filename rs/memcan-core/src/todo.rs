@@ -13,8 +13,6 @@ use uuid::Uuid;
 
 use crate::error::Result;
 use crate::query::sanitize_eq;
-#[cfg(test)]
-use crate::record_id::MAX_ID_PREFIX_MATCHES;
 use crate::record_id::{RecordKind, resolve_id, resolve_id_prefix};
 use crate::traits::{EmbeddingProvider, SearchResult, TableSchema, VectorPoint, VectorStore};
 
@@ -140,11 +138,11 @@ fn normalize_id_list(values: Vec<String>) -> Vec<String> {
 }
 
 async fn resolve_todo_prefix(store: &dyn VectorStore, todo_id: &str) -> Result<Option<String>> {
-    resolve_id_prefix(store, TODOS_TABLE, RecordKind::Todo, todo_id).await
+    resolve_id_prefix(store, TODOS_TABLE, RecordKind::Todo, todo_id, None).await
 }
 
 async fn resolve_todo_id(store: &dyn VectorStore, todo_id: &str) -> Result<Option<String>> {
-    resolve_id(store, TODOS_TABLE, RecordKind::Todo, todo_id).await
+    resolve_id(store, TODOS_TABLE, RecordKind::Todo, todo_id, None).await
 }
 
 async fn resolve_blocked_by(
@@ -562,6 +560,7 @@ pub async fn delete_todo(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::record_id::MAX_ID_PREFIX_MATCHES;
     use async_trait::async_trait;
     use std::collections::BTreeMap;
     use std::sync::Mutex;
@@ -1643,8 +1642,8 @@ mod tests {
         assert_eq!(
             error.to_string(),
             format!(
-                "ambiguous todo id prefix '69964ce6' matches at least \
-                 {MAX_ID_PREFIX_MATCHES}+ todos (showing {MAX_ID_PREFIX_MATCHES}: {}) — provide \
+                "ambiguous todo id prefix '69964ce6' matches more than \
+                 {MAX_ID_PREFIX_MATCHES} todos (showing {MAX_ID_PREFIX_MATCHES}: {}) — provide \
                  the full UUID",
                 ids[..MAX_ID_PREFIX_MATCHES].join(", ")
             )

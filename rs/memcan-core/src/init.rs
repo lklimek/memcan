@@ -73,7 +73,7 @@ fn build_backend(slot: &LlmSlot) -> Result<LlmBackend> {
     let backend = build_backend_inner(slot)?;
     tracing::info!(
         role = %slot.role,
-        backend = %slot.provider,
+        backend = %slot.kind,
         model = %backend.model,
         base_url = %crate::config::redact_url(
             slot.base_url
@@ -86,7 +86,7 @@ fn build_backend(slot: &LlmSlot) -> Result<LlmBackend> {
 }
 
 fn build_backend_inner(slot: &LlmSlot) -> Result<LlmBackend> {
-    let kind = slot.provider;
+    let kind = slot.kind;
     match kind {
         LlmProviderKind::Ollama => {
             #[cfg(feature = "ollama-rs-llm")]
@@ -114,9 +114,11 @@ fn build_backend_inner(slot: &LlmSlot) -> Result<LlmBackend> {
             }
             #[cfg(not(any(feature = "ollama-rs-llm", feature = "genai-llm")))]
             {
-                Err(crate::error::MemcanError::Config(
-                    "Ollama requires an LLM provider feature".into(),
-                ))
+                Err(crate::config::LlmConfigError::FeatureDisabled {
+                    kind,
+                    feature: "ollama-rs-llm or genai-llm",
+                }
+                .into())
             }
         }
         LlmProviderKind::Anthropic
@@ -135,9 +137,11 @@ fn build_backend_inner(slot: &LlmSlot) -> Result<LlmBackend> {
             }
             #[cfg(not(feature = "genai-llm"))]
             {
-                Err(crate::error::MemcanError::Config(format!(
-                    "the '{kind}' LLM backend requires the genai-llm feature"
-                )))
+                Err(crate::config::LlmConfigError::FeatureDisabled {
+                    kind,
+                    feature: "genai-llm",
+                }
+                .into())
             }
         }
     }
@@ -146,9 +150,17 @@ fn build_backend_inner(slot: &LlmSlot) -> Result<LlmBackend> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(any(feature = "ollama-rs-llm", not(feature = "genai-llm")))]
-    use crate::config::LlmProviderKind;
+    use crate::config::SlotSettings;
     use crate::health::DependencyHealth;
+
+    fn slot(kind: LlmProviderKind, model: &str, api_key: Option<&str>) -> SlotSettings {
+        SlotSettings {
+            kind,
+            model: Some(model.into()),
+            api_key: api_key.map(str::to_string),
+            base_url: None,
+        }
+    }
 
     #[cfg(all(feature = "ollama-rs-llm", feature = "genai-llm"))]
     #[test]
@@ -160,9 +172,7 @@ mod tests {
             LlmProviderKind::OpenRouter,
         ] {
             let cloud_settings = Settings {
-                llm_provider: kind,
-                llm_model: Some("claude-haiku-5-5".into()),
-                llm_api_key: Some("test-key".into()),
+                llm_primary: slot(kind, "claude-haiku-5-5", Some("test-key")),
                 ..Settings::default()
             };
             let (_, cloud_model) =
@@ -171,8 +181,7 @@ mod tests {
         }
 
         let ollama_settings = Settings {
-            llm_provider: LlmProviderKind::Ollama,
-            llm_model: Some("ollama::qwen3.5:9b".into()),
+            llm_primary: slot(LlmProviderKind::Ollama, "ollama::qwen3.5:9b", None),
             ..Settings::default()
         };
         let (_, ollama_model) = create_llm_provider(&ollama_settings, health).unwrap();
@@ -184,12 +193,16 @@ mod tests {
     fn same_kind_slots_are_wired_and_described_separately() {
         let health = Arc::new(DependencyHealth::with_defaults());
         let settings = Settings {
-            llm_provider: LlmProviderKind::Anthropic,
-            llm_model: Some("claude-haiku-5-5".into()),
-            llm_api_key: Some("primary-key".into()),
-            llm_fallback_provider: Some(LlmProviderKind::Anthropic),
-            llm_fallback_model: Some("claude-opus-5-5".into()),
-            llm_fallback_api_key: Some("fallback-key".into()),
+            llm_primary: slot(
+                LlmProviderKind::Anthropic,
+                "claude-haiku-5-5",
+                Some("primary-key"),
+            ),
+            llm_fallback: Some(slot(
+                LlmProviderKind::Anthropic,
+                "claude-opus-5-5",
+                Some("fallback-key"),
+            )),
             ..Settings::default()
         };
 
@@ -213,31 +226,43 @@ mod tests {
     #[test]
     fn invalid_fallback_slot_fails_construction_naming_the_variable() {
         let settings = Settings {
-            llm_fallback_provider: Some(LlmProviderKind::Anthropic),
-            llm_fallback_model: Some("claude-haiku-5-5".into()),
+            llm_fallback: Some(slot(LlmProviderKind::Anthropic, "claude-haiku-5-5", None)),
             ..Settings::default()
         };
 
         let error = create_llm_provider(&settings, Arc::new(DependencyHealth::with_defaults()))
             .err()
-            .unwrap()
-            .to_string();
-        assert!(error.contains("LLM_FALLBACK_API_KEY"), "{error}");
+            .unwrap();
+        assert!(matches!(
+            error,
+            crate::error::MemcanError::LlmConfig(crate::config::LlmConfigError::MissingSlotVar {
+                var: "LLM_FALLBACK_API_KEY",
+                ..
+            })
+        ));
     }
 
     #[cfg(not(feature = "genai-llm"))]
     #[test]
     fn openrouter_requires_genai_feature_when_disabled() {
         let settings = Settings {
-            llm_provider: LlmProviderKind::OpenRouter,
-            llm_model: Some("openai/gpt-4o-mini".into()),
-            llm_api_key: Some("test-key".into()),
+            llm_primary: slot(
+                LlmProviderKind::OpenRouter,
+                "openai/gpt-4o-mini",
+                Some("test-key"),
+            ),
             ..Settings::default()
         };
         let error = create_llm_provider(&settings, Arc::new(DependencyHealth::with_defaults()))
             .err()
             .unwrap();
-        assert!(error.to_string().contains("genai-llm"));
+        assert!(matches!(
+            error,
+            crate::error::MemcanError::LlmConfig(crate::config::LlmConfigError::FeatureDisabled {
+                feature: "genai-llm",
+                ..
+            })
+        ));
     }
 
     #[cfg(not(any(feature = "ollama-rs-llm", feature = "genai-llm")))]
@@ -250,14 +275,20 @@ mod tests {
         .err()
         .unwrap();
 
-        assert!(error.to_string().contains("LLM provider feature"));
+        assert!(matches!(
+            error,
+            crate::error::MemcanError::LlmConfig(crate::config::LlmConfigError::FeatureDisabled {
+                kind: LlmProviderKind::Ollama,
+                ..
+            })
+        ));
     }
 
     #[cfg(all(feature = "genai-llm", not(feature = "ollama-rs-llm")))]
     #[test]
     fn genai_only_ollama_backend_is_available() {
         let settings = Settings {
-            llm_model: Some("ollama::qwen3.5:9b".into()),
+            llm_primary: slot(LlmProviderKind::Ollama, "ollama::qwen3.5:9b", None),
             ..Settings::default()
         };
 
@@ -279,8 +310,7 @@ mod tests {
             "glm4:9b",
         ] {
             let settings = Settings {
-                llm_provider: LlmProviderKind::Ollama,
-                llm_model: Some(raw.into()),
+                llm_primary: slot(LlmProviderKind::Ollama, raw, None),
                 ..Settings::default()
             };
 
