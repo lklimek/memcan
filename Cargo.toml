@@ -44,9 +44,9 @@ ollama-rs = { version = "0.3", features = ["headers"] }
 reqwest = { version = "0.13", features = ["json"] }
 
 # Vector DB
-lancedb = "0.26"
-arrow-array = "57"
-arrow-schema = "57"
+lancedb = "0.41"
+arrow-array = "58"
+arrow-schema = "58"
 
 # MCP
 rmcp = { version = "1.8.0", features = ["server", "transport-io", "transport-streamable-http-server"] }
