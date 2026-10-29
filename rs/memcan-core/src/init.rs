@@ -150,7 +150,7 @@ fn build_backend_inner(slot: &LlmSlot) -> Result<LlmBackend> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{LlmConfigError, SlotSettings};
+    use crate::config::SlotSettings;
     use crate::health::DependencyHealth;
 
     fn slot(kind: LlmProviderKind, model: &str, api_key: Option<&str>) -> SlotSettings {
@@ -235,7 +235,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             error,
-            crate::error::MemcanError::LlmConfig(LlmConfigError::MissingSlotVar {
+            crate::error::MemcanError::LlmConfig(crate::config::LlmConfigError::MissingSlotVar {
                 var: "LLM_FALLBACK_API_KEY",
                 ..
             })
@@ -258,7 +258,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             error,
-            crate::error::MemcanError::LlmConfig(LlmConfigError::FeatureDisabled {
+            crate::error::MemcanError::LlmConfig(crate::config::LlmConfigError::FeatureDisabled {
                 feature: "genai-llm",
                 ..
             })
@@ -277,7 +277,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            crate::error::MemcanError::LlmConfig(LlmConfigError::FeatureDisabled {
+            crate::error::MemcanError::LlmConfig(crate::config::LlmConfigError::FeatureDisabled {
                 kind: LlmProviderKind::Ollama,
                 ..
             })

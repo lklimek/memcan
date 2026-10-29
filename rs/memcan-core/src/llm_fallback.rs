@@ -33,7 +33,7 @@ use crate::traits::{LlmMessage, LlmOptions, LlmProvider};
 /// Takes a raw code rather than a `StatusCode`: the backends link different
 /// `reqwest` versions.
 #[cfg_attr(
-    not(any(feature = "genai-llm", feature = "ollama-rs-llm")),
+    not(any(test, feature = "genai-llm", feature = "ollama-rs-llm")),
     expect(dead_code, reason = "only the LLM backends classify HTTP statuses")
 )]
 pub(crate) fn status_is_unavailable(status: u16) -> bool {
