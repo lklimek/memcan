@@ -9,7 +9,7 @@ use crate::traits::VectorStore;
 
 /// Minimum prefix length before scanning: eight hex characters provide a 32-bit collision-resistance floor.
 pub const MIN_ID_PREFIX_LEN: usize = 8;
-/// Caps ambiguous candidates listed before the error falls back to "N+" wording.
+/// Caps ambiguous candidates listed before the error says "more than N".
 pub const MAX_ID_PREFIX_MATCHES: usize = 5;
 
 /// Kind of record an ID names, for error messages.
@@ -41,7 +41,7 @@ impl RecordKind {
 pub(crate) fn describe_matches(kind: RecordKind, matches: &[String], truncated: bool) -> String {
     if truncated {
         format!(
-            "at least {MAX_ID_PREFIX_MATCHES}+ {} (showing {MAX_ID_PREFIX_MATCHES}: {})",
+            "more than {MAX_ID_PREFIX_MATCHES} {} (showing {MAX_ID_PREFIX_MATCHES}: {})",
             kind.plural(),
             matches.join(", ")
         )
@@ -137,6 +137,18 @@ mod tests {
             error.to_string(),
             "ambiguous memory id prefix '2e22752c' matches 2 memories \
              (2e22752c-a, 2e22752c-b) — provide the full UUID"
+        );
+
+        let truncated = MemcanError::AmbiguousIdPrefix {
+            kind: RecordKind::Todo,
+            prefix: "2e22752c".into(),
+            matches: vec!["2e22752c-a".into(); MAX_ID_PREFIX_MATCHES],
+            truncated: true,
+        };
+        let message = truncated.to_string();
+        assert!(
+            message.contains("matches more than 5 todos (showing 5:"),
+            "{message}"
         );
     }
 }
