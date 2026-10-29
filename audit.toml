@@ -1,9 +1,0 @@
-# Cargo audit configuration
-# Transitive deps pinned by upstream (lance → lance-bitpacking/tokenizers → paste).
-# Review on each fastembed/lancedb/lance major bump — remove if resolved.
-
-[advisories]
-ignore = [
-    # paste 1.0.15 — unmaintained (fastembed/lancedb/datafusion deep transitive)
-    "RUSTSEC-2024-0436",
-]
