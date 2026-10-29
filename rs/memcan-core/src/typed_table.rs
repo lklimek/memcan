@@ -104,10 +104,8 @@ impl<S: TableSchema> TypedTable<S> {
                     detail: e.to_string(),
                 }
             })?;
-        let schema = batch.schema();
-        let batches = arrow_array::RecordBatchIterator::new(vec![Ok(batch)], schema);
         self.inner
-            .add(Box::new(batches))
+            .add(batch)
             .execute()
             .await
             .map_err(|e| self.classify_error(e))?;
