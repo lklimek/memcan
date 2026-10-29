@@ -16,18 +16,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project fol
 ### Changed
 
 - **Breaking:** `/health` reports LLM dependencies per slot as `llm_primary` / `llm_fallback` (with `backend` and `model`), replacing the `ollama` and `openrouter` keys. Each slot has its own circuit breaker.
-- `LLM_MODEL` names the primary slot's model for any backend (see Deprecated for pre-slot `.env` files); Docker Compose no longer injects a default Ollama model.
+- `LLM_MODEL` names the primary slot's model for any backend (see Deprecated for pre-slot `.env` files); Docker Compose and the installer no longer inject an Ollama model into a cloud slot, and a cloud slot with an `ollama::` model fails startup.
 - Base URLs in logs, `Debug` output, and configuration errors omit userinfo, query, and fragment.
+- Ollama 4xx replies other than 401/402/408/429 are content faults, as on the cloud backends: a rejected prompt no longer trips the breaker or reaches the fallback. A content fault closes a half-open breaker. `/health` reports a fixed note instead of upstream error text for LLM slots.
+- `delete_memory` / `update_memory` accept optional `project` / `user_id` to match a short-ID prefix within that scope; unknown and ambiguous IDs are invalid-params errors.
+- `memcan-core` API: `Settings` holds `llm_primary: SlotSettings` and `llm_fallback: Option<SlotSettings>` instead of flat `llm_*` / `openrouter_*` fields; `LlmSlot.provider` is `LlmSlot.kind`; the `from_settings` / `from_openrouter_settings` constructors and `DependencyId::{Ollama, OpenRouter}` are replaced by slot-based ones; LLM configuration errors are the typed `MemcanError::LlmConfig`. `MemcanError` gains the `LlmConfig` and `AmbiguousIdPrefix` variants on the public, non-`#[non_exhaustive]` enum, which breaks exhaustive matches.
 
 ### Deprecated
 
-- `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, and `OPENROUTER_BASE_URL` still configure the first `openrouter` / `openai-compatible` slot, with a startup warning; a set slot variable wins, and errors about their values name the `OPENROUTER_*` variable. Pre-slot `.env` files keep their meaning: on a primary `openrouter` slot with both `LLM_MODEL` and `OPENROUTER_MODEL` set and no per-slot setting in use, `OPENROUTER_MODEL` is the primary model and `LLM_MODEL` stays the Ollama model — it moves to an Ollama fallback, or is ignored without one — and an `openrouter` fallback without its own settings duplicates the primary and is dropped, as before.
+- `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, and `OPENROUTER_BASE_URL` still configure the first `openrouter` / `openai-compatible` slot, with a startup warning; a set slot variable wins, and errors about their values name the `OPENROUTER_*` variable. Pre-slot `.env` files keep their meaning (`.env.example` has the full rule).
 
 ### Fixed
 
 - `delete_memory` and `update_memory` accept an unambiguous short-ID prefix (>= 8 chars), like the TODO tools. `delete_memory` with a short or unknown ID used to answer `{"status":"deleted"}` without deleting anything; an unknown ID now fails as not found and an ambiguous prefix fails asking for the full UUID. **Behavior change:** `update_memory` on an unknown ID returns a tool error instead of a success response carrying `"error": "memory not found"`. Memory and TODO IDs are trimmed and matched case-insensitively.
 - Cloud LLM slots assume a 32768-token context window (8x the local 4096 default) when sizing prompt budgets, instead of truncating memory, code-description, and standards input to a ~1.6k-token budget. A known smaller fallback window still caps the budget, and with neither window known the smaller of both slots' assumptions applies.
 - Cloud (OpenAI-compatible) backends no longer receive `temperature`; code and standards indexing failed with a 400 on Anthropic's OpenAI-compatible endpoint and on OpenAI reasoning models.
+
+### Security
+
+- An API key is only sent to the endpoint configured with it. `OPENROUTER_API_KEY` pairs only with `OPENROUTER_BASE_URL` or the default endpoint, and the reverse; `OLLAMA_API_KEY` is only sent to `OLLAMA_HOST`'s host; a `./.env` in the working directory may not set the endpoint for a key from the environment or `~/.config/memcan/.env`. Mismatches fail startup naming both variables (the Ollama case withholds the key instead).
+- Cloud LLM clients time out (10s connect, 120s request) and never follow redirects, which could carry the `x-api-key` header and the request body to another host or to plain HTTP. A timeout is an availability fault, so the fallback engages.
+- Update rustls-webpki to 0.103.16 and webpki-roots / webpki-root-certs to 1.0.11 (RUSTSEC-2026-0381, RUSTSEC-2026-0382, RUSTSEC-2026-0383).
 
 ## [2.0.3] - 2026-10-19
 

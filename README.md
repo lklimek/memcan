@@ -145,7 +145,7 @@ OLLAMA_HOST=http://192.168.1.10:11434
 OLLAMA_API_KEY=your-token-here
 ```
 
-> **Cloud LLM:** Ollama is the default. Either slot — primary (`LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`, `LLM_BASE_URL`) or fallback (`LLM_FALLBACK_PROVIDER`, `LLM_FALLBACK_MODEL`, `LLM_FALLBACK_API_KEY`, `LLM_FALLBACK_BASE_URL`) — can run `anthropic` (alias `claude`, native Messages API with prompt caching), `openai`, `openrouter`, `openai-compatible` (alias `openai-compat`, base URL required), or `ollama`. A cloud fallback sends memory content to that third party whenever the primary is unavailable. See `.env.example`.
+> **Cloud LLM:** Ollama is the default. Either slot — primary (`LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`, `LLM_BASE_URL`) or fallback (`LLM_FALLBACK_PROVIDER`, `LLM_FALLBACK_MODEL`, `LLM_FALLBACK_API_KEY`, `LLM_FALLBACK_BASE_URL`) — can run `anthropic` (alias `claude`, native Messages API with prompt caching), `openai`, `openrouter`, `openai-compatible` (alias `openai-compat`, base URL required), or `ollama`. A cloud fallback sends memory, code, and standards content to that third party whenever the primary is unavailable. See `.env.example`.
 
 ## Deprecated Features
 
