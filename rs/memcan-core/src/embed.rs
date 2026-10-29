@@ -56,8 +56,9 @@ impl FastEmbedProvider {
 
 /// ONNX session options for the embedding model.
 ///
-/// Prepacking keeps a second, re-laid-out copy of the weights; disabling it
-/// roughly halves the resident footprint of large models for a small CPU cost.
+/// Prepacking keeps a second, re-laid-out copy of the weights in anonymous
+/// memory. Disabling it saves ~1.1 GB RSS on MultilingualE5Large at ~+30%
+/// per-query latency (29 ms -> 38 ms).
 fn init_options(model_name: EmbeddingModel) -> TextInitOptions {
     TextInitOptions::new(model_name)
         .with_show_download_progress(true)
