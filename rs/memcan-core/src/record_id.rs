@@ -4,7 +4,7 @@
 //! IDs they display, and both refuse to guess when a prefix is ambiguous.
 
 use crate::error::{MemcanError, Result};
-use crate::query::sanitize_like;
+use crate::query::{sanitize_eq, sanitize_like};
 use crate::traits::VectorStore;
 
 /// Minimum prefix length before scanning: eight hex characters provide a 32-bit collision-resistance floor.
@@ -64,6 +64,9 @@ fn normalize(id: &str) -> String {
 /// Resolve `id` as an exact ID first, then as a short-ID prefix. The prefix
 /// match ignores surrounding whitespace and case.
 ///
+/// `user_id` limits the prefix match to records of that `user_id` scope (for
+/// tables with that column); an exact ID matches in any scope.
+///
 /// Returns `Ok(None)` when nothing matches (including a prefix shorter than
 /// [`MIN_ID_PREFIX_LEN`]) and [`MemcanError::AmbiguousIdPrefix`] when a
 /// prefix matches more than one record.
@@ -72,12 +75,13 @@ pub async fn resolve_id(
     table: &str,
     kind: RecordKind,
     id: &str,
+    user_id: Option<&str>,
 ) -> Result<Option<String>> {
     let exact = store.get(table, &[id.to_string()]).await?;
     if let Some(record) = exact.first() {
         return Ok(Some(record.id.clone()));
     }
-    resolve_id_prefix(store, table, kind, id).await
+    resolve_id_prefix(store, table, kind, id, user_id).await
 }
 
 /// Resolve `prefix` to the single record ID that starts with it.
@@ -88,13 +92,17 @@ pub async fn resolve_id_prefix(
     table: &str,
     kind: RecordKind,
     prefix: &str,
+    user_id: Option<&str>,
 ) -> Result<Option<String>> {
     let prefix = normalize(prefix);
     if prefix.chars().count() < MIN_ID_PREFIX_LEN {
         return Ok(None);
     }
 
-    let filter = format!("id LIKE '{}%'", sanitize_like(&prefix));
+    let mut filter = format!("id LIKE '{}%'", sanitize_like(&prefix));
+    if let Some(user_id) = user_id {
+        filter.push_str(&format!(" AND user_id = '{}'", sanitize_eq(user_id)));
+    }
     let candidates = store
         .scroll(table, Some(&filter), MAX_ID_PREFIX_MATCHES + 1, 0)
         .await?;

@@ -138,11 +138,11 @@ fn normalize_id_list(values: Vec<String>) -> Vec<String> {
 }
 
 async fn resolve_todo_prefix(store: &dyn VectorStore, todo_id: &str) -> Result<Option<String>> {
-    resolve_id_prefix(store, TODOS_TABLE, RecordKind::Todo, todo_id).await
+    resolve_id_prefix(store, TODOS_TABLE, RecordKind::Todo, todo_id, None).await
 }
 
 async fn resolve_todo_id(store: &dyn VectorStore, todo_id: &str) -> Result<Option<String>> {
-    resolve_id(store, TODOS_TABLE, RecordKind::Todo, todo_id).await
+    resolve_id(store, TODOS_TABLE, RecordKind::Todo, todo_id, None).await
 }
 
 async fn resolve_blocked_by(
