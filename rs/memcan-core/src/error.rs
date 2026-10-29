@@ -61,6 +61,10 @@ pub enum MemcanError {
     #[error("invalid configuration: {0}")]
     Config(String),
 
+    /// An invalid LLM slot configuration, naming the variable to fix.
+    #[error("invalid configuration: {0}")]
+    LlmConfig(#[from] crate::config::LlmConfigError),
+
     // -- Dependency health ---------------------------------------------------
     #[error("dependency '{dependency}' unavailable: {message}")]
     DependencyUnavailable { dependency: String, message: String },
@@ -70,6 +74,22 @@ pub enum MemcanError {
     VectorStore {
         #[from]
         source: VectorStoreError,
+    },
+
+    // -- Record IDs -----------------------------------------------------------
+    /// A short-ID prefix matches several records; the caller must disambiguate.
+    #[error(
+        "ambiguous {} id prefix '{prefix}' matches {} — provide the full UUID",
+        .kind.singular(),
+        crate::record_id::describe_matches(*.kind, .matches, *.truncated)
+    )]
+    AmbiguousIdPrefix {
+        kind: crate::record_id::RecordKind,
+        prefix: String,
+        /// Matching IDs, sorted, at most `MAX_ID_PREFIX_MATCHES`.
+        matches: Vec<String>,
+        /// More records matched than `matches` lists.
+        truncated: bool,
     },
 
     // -- Generic (replaces bail!/anyhow!) ------------------------------------

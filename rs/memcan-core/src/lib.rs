@@ -33,6 +33,7 @@ pub mod ollama;
 pub mod pipeline;
 pub mod prompts;
 pub mod query;
+pub mod record_id;
 pub mod schema;
 pub mod search;
 pub mod text;

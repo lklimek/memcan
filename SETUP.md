@@ -58,11 +58,8 @@ Binaries are placed in `target/release/`:
 Start the server (requires local Ollama):
 
 ```bash
-# Pull the recommended (projector-free) model. It is NOT yet memcan-server's
-# compiled-in default (config.rs still defaults to gemma4:26b-a4b-it-qat), so
-# also set LLM_MODEL to actually use it:
+# Pull the default (projector-free) model; set LLM_MODEL only to use another one.
 ollama pull lklimek/gemma4-text:26b-a4b-it-qat
-export LLM_MODEL=lklimek/gemma4-text:26b-a4b-it-qat
 
 ./target/release/memcan-server serve
 ```
@@ -81,7 +78,7 @@ The `.env` file configures both the server and CLI. Search order:
 | 2 | `~/.config/memcan/.env` (Linux) / `~/Library/Application Support/memcan/.env` (macOS) | Production — survives plugin updates |
 | 3 | Defaults | Fallback (localhost, default LanceDB path) |
 
-Environment variables always override `.env` values. Run `/setup-memcan` to create the config file, or copy `.env.example` manually:
+Environment variables always override `.env` values. A `./.env` in the working directory may not set an LLM endpoint (`*_BASE_URL`, `OPENROUTER_BASE_URL`, `OLLAMA_HOST`) for a key that comes from the environment or the config-dir file; startup fails naming both variables. Run `/setup-memcan` to create the config file, or copy `.env.example` manually:
 
 ```bash
 mkdir -p ~/.config/memcan
@@ -99,10 +96,13 @@ cp .env.example ~/.config/memcan/.env
 | `LANCEDB_PATH` | `~/.local/share/memcan/lancedb` | LanceDB storage directory |
 | `DEFAULT_USER_ID` | `global` | Default memory scope |
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction |
-| `LLM_MODEL` | `lklimek/gemma4-text:26b-a4b-it-qat` | Ollama model name — bare (no prefix) by default; an `ollama::` prefix (e.g. `ollama::lklimek/gemma4-text:26b-a4b-it-qat`) is also accepted and stripped automatically. Needs ~16GB VRAM (projector-free build, full GPU residency on a 16GB card); use `qwen3.5:9b` (~6.6GB) on smaller cards. |
+| `LLM_PROVIDER` | `ollama` | Primary LLM backend: `ollama`, `anthropic` (alias `claude`), `openai`, `openrouter`, or `openai-compatible` (alias `openai-compat`). |
+| `LLM_MODEL` | *(per backend)* | Primary slot model. Ollama: defaults to `lklimek/gemma4-text:26b-a4b-it-qat` (an `ollama::` prefix is accepted and stripped; needs ~16GB VRAM — use `qwen3.5:9b` (~6.6GB) on smaller cards). Cloud backends: required, sent verbatim — no provider prefix (e.g. `claude-haiku-5-5`). |
+| `LLM_API_KEY` / `LLM_BASE_URL` | *(per backend)* | Primary slot key and endpoint; required key for cloud backends, `OLLAMA_API_KEY` / `OLLAMA_HOST` by default for Ollama. |
+| `LLM_FALLBACK_PROVIDER` / `LLM_FALLBACK_MODEL` / `LLM_FALLBACK_API_KEY` / `LLM_FALLBACK_BASE_URL` | *(unset)* | Optional fallback slot, configured like the primary. See `.env.example` and `CLAUDE.md` for defaults and the deprecated `OPENROUTER_*` variables. |
 | `EMBED_MODEL` | `MultilingualE5Large` | Fastembed model for in-process embeddings (dimensions derived automatically) |
-| `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`). Read by MemCan via `Settings` and passed to the Ollama client. |
-| `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth. Read by MemCan via `Settings` and sent with every request to Ollama. |
+| `OLLAMA_HOST` | *(none)* | Ollama server URL (e.g. `http://10.29.188.1:11434`); default endpoint of every Ollama slot. |
+| `OLLAMA_API_KEY` | *(none)* | Bearer token for Ollama endpoint auth; default key of every Ollama slot aimed at `OLLAMA_HOST` (or the default host). A slot on another host needs its own `*_API_KEY`. |
 
 ## Remote Ollama
 

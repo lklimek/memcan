@@ -64,7 +64,7 @@ Perform these steps:
 
 3. **Resolve OLLAMA_API_KEY**: Check `~/.config/memcan/.env`, then `$OLLAMA_API_KEY` env var. May be empty.
 
-4. **Write `~/.config/memcan/.env`**: Create directory if needed. If the file exists, update `MEMCAN_API_KEY`, `MEMCAN_URL`, and `OLLAMA_API_KEY` (if non-empty) in-place. If creating new, write a template with resolved values and commented defaults for `OLLAMA_HOST`, `LLM_MODEL`, `EMBED_MODEL`, `MEMCAN_LOG_FILE`.
+4. **Write `~/.config/memcan/.env`**: Create directory if needed. If the file exists, update `MEMCAN_API_KEY`, `MEMCAN_URL`, and `OLLAMA_API_KEY` (if non-empty) in-place. If creating new, write a template with resolved values and commented defaults for `OLLAMA_HOST`, `LLM_PROVIDER`, `LLM_MODEL`, `LLM_FALLBACK_PROVIDER`, `LLM_FALLBACK_MODEL`, `EMBED_MODEL`, `MEMCAN_LOG_FILE`.
 
 5. **Merge into `~/.claude/settings.json`**: Read existing file (or `{}`), set `.env.MEMCAN_API_KEY` and `.env.MEMCAN_URL`, write back. Use `jq` or `python3` for JSON manipulation.
 
@@ -75,7 +75,9 @@ After completing, report status (without revealing secret values):
 Review non-secret settings in `~/.config/memcan/.env` with the user:
 - `MEMCAN_URL` — Server URL (default: `http://localhost:8190`)
 - `OLLAMA_HOST` — Ollama endpoint (default: `http://localhost:11434`)
-- `LLM_MODEL` — LLM model with provider prefix (default: `ollama::qwen3.5:4b`)
+- `LLM_PROVIDER` — primary LLM backend (default: `ollama`; also `anthropic`, `openai`, `openrouter`, `openai-compatible`)
+- `LLM_MODEL` — primary slot model (Ollama default: `lklimek/gemma4-text:26b-a4b-it-qat`; required and unprefixed for cloud backends, e.g. `claude-haiku-5-5`)
+- `LLM_FALLBACK_PROVIDER` / `LLM_FALLBACK_MODEL` — optional fallback slot, configured like the primary (cloud slots also need `*_API_KEY`)
 - `EMBED_MODEL` — fastembed model name (default: `MultilingualE5Large`)
 - `MEMCAN_LOG_FILE` — Log file path (default: empty = stdout)
 

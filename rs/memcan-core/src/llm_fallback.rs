@@ -3,54 +3,134 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::{debug, error, warn};
 
+use crate::config::LlmProviderKind;
 use crate::error::{MemcanError, Result};
 use crate::health::{DependencyHealth, DependencyId};
 use crate::traits::{LlmMessage, LlmOptions, LlmProvider};
 
-/// LLM provider that dispatches to a circuit-breaker-aware fallback.
-pub struct FallbackLlmProvider {
-    primary: Arc<dyn LlmProvider>,
-    primary_dep: DependencyId,
-    fallback: Option<FallbackTarget>,
-    health: Arc<DependencyHealth>,
+/// `true` for HTTP statuses that indicate the backend — not the prompt — is
+/// at fault, so another backend may still serve the request. Shared by every
+/// LLM backend so each classifies a status the same way.
+///
+/// 5xx, 408, and 429 describe the backend's state. A 3xx counts too: clients
+/// never follow redirects (a hop could carry the key elsewhere), and an
+/// endpoint that redirects cannot serve the request.
+///
+/// 401 and 402 count as unavailable: a rejected credential and an exhausted
+/// balance are both properties of the backend, not of the prompt. The other
+/// backend authenticates and bills separately (or not at all), so it can still
+/// serve the request — and a backend whose key is revoked or whose credits ran
+/// out is genuinely unusable, which is what the breaker exists to record.
+///
+/// 403 deliberately does **not**. Providers overload it: OpenRouter returns 403
+/// for guardrail blocks and moderation flags as well as for permissions, and a
+/// blocked prompt is deterministic for that prompt. Classing it as unavailable
+/// would mark a serving backend Down and re-send the blocked content to a third
+/// party — the two things [`FallbackLlmProvider::chat`] exists to avoid. A
+/// genuine permissions 403 is the rarer case, and it degrades to a plain error
+/// rather than a wrong failover.
+///
+/// Takes a raw code rather than a `StatusCode`: the backends link different
+/// `reqwest` versions.
+#[cfg_attr(
+    not(any(test, feature = "genai-llm", feature = "ollama-rs-llm")),
+    expect(dead_code, reason = "only the LLM backends classify HTTP statuses")
+)]
+pub(crate) fn status_is_unavailable(status: u16) -> bool {
+    (300..400).contains(&status)
+        || (500..600).contains(&status)
+        || matches!(status, 401 | 402 | 408 | 429)
 }
 
-struct FallbackTarget {
-    provider: Arc<dyn LlmProvider>,
-    model: String,
+/// What a slot's breaker records for an availability fault. `/health` is
+/// unauthenticated, so upstream response bodies and request URLs stay in the
+/// server log rather than in the breaker.
+const UNAVAILABLE_NOTE: &str = "LLM backend unavailable; details are in the server log";
+
+/// What a slot's breaker records for a failed initialization.
+const INIT_FAILED_NOTE: &str = "LLM backend initialization failed; details are in the server log";
+
+/// One wired LLM slot: its client and what it runs.
+pub(crate) struct LlmBackend {
+    pub provider: Arc<dyn LlmProvider>,
+    pub kind: LlmProviderKind,
+    pub model: String,
+}
+
+/// A backend and the circuit breaker that tracks it.
+struct Slot {
+    backend: LlmBackend,
     dep: DependencyId,
+}
+
+impl Slot {
+    fn wire(backend: LlmBackend, dep: DependencyId, health: &DependencyHealth) -> Self {
+        health.describe_llm(dep, &backend.kind.to_string(), &backend.model);
+        Self { backend, dep }
+    }
+
+    fn kind(&self) -> LlmProviderKind {
+        self.backend.kind
+    }
+
+    fn model(&self) -> &str {
+        &self.backend.model
+    }
+
+    /// Send `messages` to this slot and record the outcome on its breaker.
+    ///
+    /// A content fault means the backend answered, so it counts as reachable:
+    /// a half-open probe that gets one closes the breaker.
+    async fn chat(
+        &self,
+        health: &DependencyHealth,
+        model: &str,
+        messages: &[LlmMessage],
+        options: Option<LlmOptions>,
+    ) -> Result<String> {
+        let result = self.backend.provider.chat(model, messages, options).await;
+        match &result {
+            Err(error) if error.is_llm_unavailable() => {
+                health.report_failure(self.dep, UNAVAILABLE_NOTE);
+            }
+            _ => health.report_success(self.dep),
+        }
+        result
+    }
+
+    /// Initialize this slot and record the outcome on its breaker.
+    async fn init(&self, health: &DependencyHealth) -> Result<()> {
+        let result = self.backend.provider.init().await;
+        match &result {
+            Ok(()) => health.report_success(self.dep),
+            Err(_) => health.report_failure(self.dep, INIT_FAILED_NOTE),
+        }
+        result
+    }
+}
+
+/// LLM provider that dispatches to a circuit-breaker-aware fallback.
+///
+/// Each slot has its own breaker ([`DependencyId::LlmPrimary`] /
+/// [`DependencyId::LlmFallback`]), so two slots running the same backend kind
+/// — say two Anthropic keys — never share a health state.
+pub struct FallbackLlmProvider {
+    primary: Slot,
+    fallback: Option<Slot>,
+    health: Arc<DependencyHealth>,
 }
 
 impl FallbackLlmProvider {
     pub(crate) fn new(
-        primary: Arc<dyn LlmProvider>,
-        primary_dep: DependencyId,
-        fallback: Option<(Arc<dyn LlmProvider>, String, DependencyId)>,
+        primary: LlmBackend,
+        fallback: Option<LlmBackend>,
         health: Arc<DependencyHealth>,
     ) -> Self {
-        let fallback = fallback.and_then(|(provider, model, dep)| {
-            if dep == primary_dep {
-                warn!(
-                    provider = %primary_dep,
-                    "Ignoring LLM fallback because it matches the primary backend"
-                );
-                None
-            } else {
-                Some(FallbackTarget {
-                    provider,
-                    model,
-                    dep,
-                })
-            }
-        });
-        health.mark_configured(primary_dep);
-        if let Some(fallback) = &fallback {
-            health.mark_configured(fallback.dep);
-        }
-
+        let primary = Slot::wire(primary, DependencyId::LlmPrimary, &health);
+        let fallback =
+            fallback.map(|backend| Slot::wire(backend, DependencyId::LlmFallback, &health));
         Self {
             primary,
-            primary_dep,
             fallback,
             health,
         }
@@ -58,14 +138,17 @@ impl FallbackLlmProvider {
 
     fn combined_error(
         &self,
-        fallback: &FallbackTarget,
+        fallback: &Slot,
         primary_error: &MemcanError,
         fallback_error: &MemcanError,
     ) -> MemcanError {
         MemcanError::LlmChat {
             context: format!(
-                "both LLM backends '{}' and '{}' failed",
-                self.primary_dep, fallback.dep
+                "both LLM slots failed: primary '{}' ({}) and fallback '{}' ({})",
+                self.primary.kind(),
+                self.primary.model(),
+                fallback.kind(),
+                fallback.model()
             ),
             detail: format!("primary: {primary_error}; fallback: {fallback_error}"),
         }
@@ -75,15 +158,10 @@ impl FallbackLlmProvider {
 impl std::fmt::Debug for FallbackLlmProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FallbackLlmProvider")
-            .field("primary_dep", &self.primary_dep)
-            .field(
-                "fallback_dep",
-                &self.fallback.as_ref().map(|fallback| fallback.dep),
-            )
-            .field(
-                "fallback_model",
-                &self.fallback.as_ref().map(|fallback| &fallback.model),
-            )
+            .field("primary_kind", &self.primary.kind())
+            .field("primary_model", &self.primary.model())
+            .field("fallback_kind", &self.fallback.as_ref().map(Slot::kind))
+            .field("fallback_model", &self.fallback.as_ref().map(Slot::model))
             .finish_non_exhaustive()
     }
 }
@@ -95,41 +173,46 @@ impl LlmProvider for FallbackLlmProvider {
     ///
     /// Only [`MemcanError::LlmUnavailable`] is an availability signal. A
     /// content fault ([`MemcanError::LlmChat`] — empty response, rejected
-    /// prompt) returns to the caller unchanged: it would fail identically on
-    /// the fallback, so re-sending would leak `messages` to a third party for
+    /// prompt, any 4xx other than those [`status_is_unavailable`] accepts)
+    /// returns to the caller unchanged: it would fail identically on the
+    /// fallback, so re-sending would leak `messages` to a third party for
     /// nothing, and reporting it to the breaker would mark a serving backend
     /// Down for a fault it did not cause.
     ///
-    /// This keeps egress scoped to genuine outages, so caller-supplied content
-    /// cannot itself trigger a cross-provider send.
+    /// This scopes egress to failures that look like outages, but cannot
+    /// prove the backend rather than the prompt caused them: a prompt that
+    /// crashes the model runner (a 5xx), outlasts the request timeout, or
+    /// arrives in a burst that draws a 429 still opens the breaker and is sent
+    /// to the fallback, as is every request until the primary recovers.
     async fn chat(
         &self,
         model: &str,
         messages: &[LlmMessage],
         options: Option<LlmOptions>,
     ) -> Result<String> {
-        let primary_error = match self.health.check(self.primary_dep) {
-            Ok(()) => match self.primary.chat(model, messages, options.clone()).await {
-                Ok(response) => {
-                    self.health.report_success(self.primary_dep);
-                    return Ok(response);
-                }
+        let primary = &self.primary;
+        let primary_error = match self.health.check(primary.dep) {
+            Ok(()) => match primary
+                .chat(&self.health, model, messages, options.clone())
+                .await
+            {
+                Ok(response) => return Ok(response),
                 Err(primary_error) if !primary_error.is_llm_unavailable() => {
                     debug!(
-                        primary = %self.primary_dep,
+                        primary = %primary.kind(),
+                        primary_model = %primary.model(),
                         error = %primary_error,
                         "Primary LLM rejected the request; keeping it local because the backend is healthy"
                     );
                     return Err(primary_error);
                 }
                 Err(primary_error) => {
-                    self.health
-                        .report_failure(self.primary_dep, &primary_error.to_string());
                     if self.fallback.is_none() {
                         return Err(primary_error);
                     }
                     warn!(
-                        primary = %self.primary_dep,
+                        primary = %primary.kind(),
+                        primary_model = %primary.model(),
                         error = %primary_error,
                         "Primary LLM backend is unavailable; attempting configured fallback"
                     );
@@ -139,12 +222,17 @@ impl LlmProvider for FallbackLlmProvider {
             Err(primary_error) => {
                 if self.fallback.is_none() {
                     return Err(MemcanError::LlmUnavailable {
-                        context: format!("LLM backend '{}' is unavailable", self.primary_dep),
+                        context: format!(
+                            "primary LLM slot '{}' ({}) is unavailable",
+                            primary.kind(),
+                            primary.model()
+                        ),
                         detail: primary_error.to_string(),
                     });
                 }
                 debug!(
-                    primary = %self.primary_dep,
+                    primary = %primary.kind(),
+                    primary_model = %primary.model(),
                     "Skipping primary LLM request because its circuit breaker is open"
                 );
                 primary_error
@@ -156,35 +244,33 @@ impl LlmProvider for FallbackLlmProvider {
         };
         if let Err(fallback_error) = self.health.check(fallback.dep) {
             error!(
-                primary = %self.primary_dep,
-                fallback = %fallback.dep,
+                primary = %primary.kind(),
+                primary_model = %primary.model(),
+                fallback = %fallback.kind(),
+                fallback_model = %fallback.model(),
                 "Both LLM circuit breakers are open"
             );
             return Err(self.combined_error(fallback, &primary_error, &fallback_error));
         }
 
         warn!(
-            primary = %self.primary_dep,
-            fallback = %fallback.dep,
+            primary = %primary.kind(),
+            primary_model = %primary.model(),
+            fallback = %fallback.kind(),
+            fallback_model = %fallback.model(),
             "LLM fallback engaged: request content is being sent to the fallback provider"
         );
         match fallback
-            .provider
-            .chat(&fallback.model, messages, options)
+            .chat(&self.health, fallback.model(), messages, options)
             .await
         {
-            Ok(response) => {
-                self.health.report_success(fallback.dep);
-                Ok(response)
-            }
+            Ok(response) => Ok(response),
             Err(fallback_error) => {
-                if fallback_error.is_llm_unavailable() {
-                    self.health
-                        .report_failure(fallback.dep, &fallback_error.to_string());
-                }
                 error!(
-                    primary = %self.primary_dep,
-                    fallback = %fallback.dep,
+                    primary = %primary.kind(),
+                    primary_model = %primary.model(),
+                    fallback = %fallback.kind(),
+                    fallback_model = %fallback.model(),
                     "Primary and fallback LLM requests both failed"
                 );
                 Err(self.combined_error(fallback, &primary_error, &fallback_error))
@@ -201,25 +287,26 @@ impl LlmProvider for FallbackLlmProvider {
     ///
     /// When only the *fallback's* window is unknown, this reports the primary's
     /// rather than `None`. Some backends cannot report a window at all — the
-    /// OpenRouter configuration this provider exists to serve is one — so
+    /// cloud API configuration this provider exists to serve is one — so
     /// `None` there would not mean "be careful once", it would permanently pin
-    /// every caller to [`DEFAULT_CONTEXT_WINDOW`](crate::pipeline), shrinking
-    /// real budgets by an order of magnitude for a fallback that normally never
-    /// engages. Callers memoize this for the process lifetime and
+    /// every caller to the primary's assumed window, shrinking real budgets by
+    /// an order of magnitude for a fallback that normally never engages. Callers memoize this for the process lifetime and
     /// content-hash-skip their way past the damage, so silent over-truncation
     /// is the worse failure: an oversized request to the fallback fails loudly
     /// and only while the primary is down.
     ///
     /// A backend whose breaker is already open is not queried at all — a
     /// degraded (hung rather than refusing) backend would otherwise block this
-    /// memoized call. An unknown *primary* window still yields `None`, leaving
-    /// callers their own conservative default.
+    /// memoized call. An unknown (or unqueried) *primary* window counts as the
+    /// primary's [`assumed_context_window`](LlmProvider::assumed_context_window),
+    /// capped by a known fallback window; with neither known this is `None`.
     async fn context_window(&self, model: &str) -> Option<usize> {
-        let primary_window = match self.health.check(self.primary_dep) {
-            Ok(()) => self.primary.context_window(model).await,
+        let primary_window = match self.health.check(self.primary.dep) {
+            Ok(()) => self.primary.backend.provider.context_window(model).await,
             Err(_) => {
                 debug!(
-                    primary = %self.primary_dep,
+                    primary = %self.primary.kind(),
+                    primary_model = %self.primary.model(),
                     "Not querying primary context window because its circuit breaker is open"
                 );
                 None
@@ -231,10 +318,17 @@ impl LlmProvider for FallbackLlmProvider {
         };
 
         let fallback_window = match self.health.check(fallback.dep) {
-            Ok(()) => fallback.provider.context_window(&fallback.model).await,
+            Ok(()) => {
+                fallback
+                    .backend
+                    .provider
+                    .context_window(fallback.model())
+                    .await
+            }
             Err(_) => {
                 debug!(
-                    fallback = %fallback.dep,
+                    fallback = %fallback.kind(),
+                    fallback_model = %fallback.model(),
                     "Not querying fallback context window because its circuit breaker is open"
                 );
                 None
@@ -248,45 +342,55 @@ impl LlmProvider for FallbackLlmProvider {
             // The fallback cannot report a window: trust the primary's rather
             // than pinning every caller to the conservative default forever.
             (Some(primary_window), None) => Some(primary_window),
-            (None, _) => None,
+            // The primary cannot report a window: size for its assumed one,
+            // but never beyond a fallback window that is known to be smaller.
+            (None, Some(fallback_window)) => Some(
+                self.primary
+                    .backend
+                    .provider
+                    .assumed_context_window()
+                    .min(fallback_window),
+            ),
+            (None, None) => None,
         }
     }
 
+    /// The smaller of both backends' assumptions: [`Self::context_window`]
+    /// returns `None` only when neither window is known, and either backend
+    /// may serve the request — a cloud primary's large assumption must not
+    /// overfeed a local fallback whose window could not be discovered.
+    fn assumed_context_window(&self) -> usize {
+        let primary = self.primary.backend.provider.assumed_context_window();
+        self.fallback.as_ref().map_or(primary, |fallback| {
+            primary.min(fallback.backend.provider.assumed_context_window())
+        })
+    }
+
     async fn init(&self) -> Result<()> {
-        match self.primary.init().await {
-            Ok(()) => {
-                self.health.report_success(self.primary_dep);
-                Ok(())
-            }
-            Err(primary_error) => {
-                self.health
-                    .report_failure(self.primary_dep, &primary_error.to_string());
-                let Some(fallback) = &self.fallback else {
-                    return Err(primary_error);
-                };
-                warn!(
-                    primary = %self.primary_dep,
-                    fallback = %fallback.dep,
-                    "Primary LLM initialization failed; trying configured fallback"
-                );
-                match fallback.provider.init().await {
-                    Ok(()) => {
-                        self.health.report_success(fallback.dep);
-                        Ok(())
-                    }
-                    Err(fallback_error) => {
-                        self.health
-                            .report_failure(fallback.dep, &fallback_error.to_string());
-                        error!(
-                            primary = %self.primary_dep,
-                            fallback = %fallback.dep,
-                            "Primary and fallback LLM initialization both failed"
-                        );
-                        Err(self.combined_error(fallback, &primary_error, &fallback_error))
-                    }
-                }
-            }
-        }
+        let primary = &self.primary;
+        let Err(primary_error) = primary.init(&self.health).await else {
+            return Ok(());
+        };
+        let Some(fallback) = &self.fallback else {
+            return Err(primary_error);
+        };
+        warn!(
+            primary = %primary.kind(),
+            primary_model = %primary.model(),
+            fallback = %fallback.kind(),
+            fallback_model = %fallback.model(),
+            "Primary LLM initialization failed; trying configured fallback"
+        );
+        fallback.init(&self.health).await.map_err(|fallback_error| {
+            error!(
+                primary = %primary.kind(),
+                primary_model = %primary.model(),
+                fallback = %fallback.kind(),
+                fallback_model = %fallback.model(),
+                "Primary and fallback LLM initialization both failed"
+            );
+            self.combined_error(fallback, &primary_error, &fallback_error)
+        })
     }
 }
 
@@ -299,7 +403,8 @@ mod tests {
 
     use async_trait::async_trait;
 
-    use super::FallbackLlmProvider;
+    use super::{FallbackLlmProvider, LlmBackend};
+    use crate::config::LlmProviderKind;
     use crate::error::{MemcanError, Result};
     use crate::health::{DependencyHealth, DependencyId, DependencyStatus};
     use crate::traits::{LlmMessage, LlmOptions, LlmProvider};
@@ -337,6 +442,7 @@ mod tests {
         init_calls: AtomicUsize,
         context_window_calls: AtomicUsize,
         context_window: Option<usize>,
+        assumed_context_window: usize,
     }
 
     impl MockLlmProvider {
@@ -348,11 +454,17 @@ mod tests {
                 init_calls: AtomicUsize::new(0),
                 context_window_calls: AtomicUsize::new(0),
                 context_window: Some(4096),
+                assumed_context_window: crate::pipeline::DEFAULT_CONTEXT_WINDOW,
             }
         }
 
         fn with_init(mut self, init_result: MockResult) -> Self {
             self.init_result = init_result;
+            self
+        }
+
+        fn with_assumed_context_window(mut self, assumed: usize) -> Self {
+            self.assumed_context_window = assumed;
             self
         }
 
@@ -397,6 +509,10 @@ mod tests {
             self.context_window
         }
 
+        fn assumed_context_window(&self) -> usize {
+            self.assumed_context_window
+        }
+
         async fn init(&self) -> Result<()> {
             self.init_calls.fetch_add(1, Ordering::SeqCst);
             self.init_result.into_result("mock init").map(|_| ())
@@ -408,20 +524,69 @@ mod tests {
         fallback: Option<Arc<MockLlmProvider>>,
         health: Arc<DependencyHealth>,
     ) -> FallbackLlmProvider {
-        let primary_provider: Arc<dyn LlmProvider> = primary;
-        let fallback = fallback.map(|provider| {
-            let provider: Arc<dyn LlmProvider> = provider;
-            (
-                provider,
-                "openai/gpt-4o-mini".into(),
-                DependencyId::OpenRouter,
-            )
+        let primary = LlmBackend {
+            provider: primary,
+            kind: LlmProviderKind::Ollama,
+            model: "qwen3.5:9b".into(),
+        };
+        let fallback = fallback.map(|provider| LlmBackend {
+            provider,
+            kind: LlmProviderKind::Anthropic,
+            model: "claude-haiku-5-5".into(),
         });
-        FallbackLlmProvider::new(primary_provider, DependencyId::Ollama, fallback, health)
+        FallbackLlmProvider::new(primary, fallback, health)
     }
 
     async fn chat(provider: &FallbackLlmProvider) -> Result<String> {
         provider.chat("qwen3.5:9b", &[], None).await
+    }
+
+    #[test]
+    fn rejected_credentials_are_an_availability_fault() {
+        // A rotated cloud API key must not strand requests that a healthy
+        // local Ollama could serve: 401 describes the backend, not the prompt,
+        // so it has to reach the fallback and the breaker.
+        assert!(super::status_is_unavailable(401));
+    }
+
+    #[test]
+    fn an_exhausted_balance_is_an_availability_fault() {
+        // OpenRouter returns 402 when the account is out of credits. The
+        // fallback bills separately, so it can still serve the request — and a
+        // backend that cannot be paid for is as unusable as one with a revoked
+        // key.
+        assert!(super::status_is_unavailable(402));
+    }
+
+    #[test]
+    fn forbidden_stays_a_content_fault() {
+        // Providers overload 403: OpenRouter returns it for guardrail and
+        // moderation blocks, which are deterministic for the prompt. Classing
+        // it as unavailable would mark a serving backend Down and ship the
+        // blocked content to a third party.
+        assert!(!super::status_is_unavailable(403));
+    }
+
+    #[test]
+    fn backend_faults_are_availability_faults() {
+        for status in [500, 502, 503, 599, 408, 429, 301, 307, 308] {
+            assert!(
+                super::status_is_unavailable(status),
+                "{status} should be an availability fault"
+            );
+        }
+    }
+
+    #[test]
+    fn request_faults_stay_content_faults() {
+        // These are deterministic for the prompt: another backend rejects them
+        // too, so they must not egress or trip the breaker.
+        for status in [400, 404, 413, 422] {
+            assert!(
+                !super::status_is_unavailable(status),
+                "{status} should be a content fault"
+            );
+        }
     }
 
     #[tokio::test]
@@ -434,7 +599,10 @@ mod tests {
         assert_eq!(chat(&provider).await.unwrap(), "primary");
         assert_eq!(primary.chat_calls(), 1);
         assert_eq!(fallback.chat_calls(), 0);
-        assert_eq!(health.status()["ollama"].status, DependencyStatus::Healthy);
+        assert_eq!(
+            health.status()["llm_primary"].status,
+            DependencyStatus::Healthy
+        );
     }
 
     #[tokio::test]
@@ -453,7 +621,7 @@ mod tests {
 
     #[tokio::test]
     async fn context_window_trusts_the_primary_when_the_fallback_cannot_report() {
-        // The OpenRouter fallback can never report a window, so treating that as
+        // A cloud API fallback can never report a window, so treating that as
         // "unknown" would pin every caller to the conservative default for the
         // whole process — the configuration this provider exists to serve.
         let primary = Arc::new(MockLlmProvider::new([]).with_context_window(Some(32_768)));
@@ -465,11 +633,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_window_is_unknown_when_the_primary_cannot_report() {
-        // Without the primary's window there is no budget worth trusting: chat()
-        // prefers the primary, so callers fall back to their own default.
+    async fn context_window_caps_the_primarys_assumption_at_the_fallbacks_window() {
+        // A cloud primary cannot report its window and assumes a large one; a
+        // known smaller fallback window must still bound the budget, or every
+        // request served by the fallback would overflow it.
+        let primary = Arc::new(
+            MockLlmProvider::new([])
+                .with_context_window(None)
+                .with_assumed_context_window(crate::pipeline::CLOUD_DEFAULT_CONTEXT_WINDOW),
+        );
+        let fallback = Arc::new(MockLlmProvider::new([]).with_context_window(Some(8_192)));
+        let health = Arc::new(DependencyHealth::with_defaults());
+        let provider = wrapper(primary, Some(fallback), health);
+        assert_eq!(provider.context_window("claude").await, Some(8_192));
+
+        // A smaller assumption stays in force.
         let primary = Arc::new(MockLlmProvider::new([]).with_context_window(None));
         let fallback = Arc::new(MockLlmProvider::new([]).with_context_window(Some(8_192)));
+        let health = Arc::new(DependencyHealth::with_defaults());
+        let provider = wrapper(primary, Some(fallback), health);
+        assert_eq!(
+            provider.context_window("qwen3.5:9b").await,
+            Some(crate::pipeline::DEFAULT_CONTEXT_WINDOW)
+        );
+    }
+
+    #[tokio::test]
+    async fn context_window_is_unknown_when_neither_backend_can_report() {
+        let primary = Arc::new(MockLlmProvider::new([]).with_context_window(None));
+        let fallback = Arc::new(MockLlmProvider::new([]).with_context_window(None));
         let health = Arc::new(DependencyHealth::with_defaults());
         let provider = wrapper(primary, Some(fallback), health);
 
@@ -485,9 +677,14 @@ mod tests {
         let health = Arc::new(DependencyHealth::with_defaults());
         let provider = wrapper(primary.clone(), Some(fallback.clone()), health.clone());
 
-        health.report_failure(DependencyId::Ollama, "primary is down");
+        health.report_failure(DependencyId::LlmPrimary, "primary is down");
 
-        assert_eq!(provider.context_window("qwen3.5:9b").await, None);
+        // The unqueried primary counts as its assumed window, capped by the
+        // fallback's, which chat() will use while the primary is down.
+        assert_eq!(
+            provider.context_window("qwen3.5:9b").await,
+            Some(crate::pipeline::DEFAULT_CONTEXT_WINDOW)
+        );
         assert_eq!(
             primary.context_window_calls(),
             0,
@@ -505,13 +702,54 @@ mod tests {
         let health = Arc::new(DependencyHealth::with_defaults());
         let provider = wrapper(primary, Some(fallback.clone()), health.clone());
 
-        health.report_failure(DependencyId::OpenRouter, "fallback is down");
+        health.report_failure(DependencyId::LlmFallback, "fallback is down");
 
         assert_eq!(provider.context_window("qwen3.5:9b").await, Some(32_768));
         assert_eq!(
             fallback.context_window_calls(),
             0,
             "must not query a fallback the breaker already knows is down"
+        );
+    }
+
+    #[tokio::test]
+    async fn assumed_context_window_is_the_smaller_of_both_assumptions() {
+        // A cloud primary with an Ollama fallback whose window could not be
+        // discovered: neither reports, so callers size for the assumption —
+        // which must not overfeed the local fallback 8x when it takes over.
+        let cloud = || {
+            Arc::new(
+                MockLlmProvider::new([])
+                    .with_context_window(None)
+                    .with_assumed_context_window(crate::pipeline::CLOUD_DEFAULT_CONTEXT_WINDOW),
+            )
+        };
+        let local = Arc::new(MockLlmProvider::new([]).with_context_window(None));
+        let provider = wrapper(
+            cloud(),
+            Some(local),
+            Arc::new(DependencyHealth::with_defaults()),
+        );
+        assert_eq!(provider.context_window("claude").await, None);
+        assert_eq!(
+            provider.assumed_context_window(),
+            crate::pipeline::DEFAULT_CONTEXT_WINDOW
+        );
+
+        // Two cloud slots keep the cloud assumption; no fallback keeps the primary's.
+        let provider = wrapper(
+            cloud(),
+            Some(cloud()),
+            Arc::new(DependencyHealth::with_defaults()),
+        );
+        assert_eq!(
+            provider.assumed_context_window(),
+            crate::pipeline::CLOUD_DEFAULT_CONTEXT_WINDOW
+        );
+        let provider = wrapper(cloud(), None, Arc::new(DependencyHealth::with_defaults()));
+        assert_eq!(
+            provider.assumed_context_window(),
+            crate::pipeline::CLOUD_DEFAULT_CONTEXT_WINDOW
         );
     }
 
@@ -526,14 +764,20 @@ mod tests {
     }
 
     #[test]
-    fn configured_openrouter_is_included_in_health_status() {
+    fn configured_fallback_is_included_in_health_status() {
         let primary = Arc::new(MockLlmProvider::new([]));
         let fallback = Arc::new(MockLlmProvider::new([]));
         let health = Arc::new(DependencyHealth::with_defaults());
 
         let _provider = wrapper(primary, Some(fallback), health.clone());
 
-        assert!(health.status().contains_key("openrouter"));
+        let status = health.status();
+        assert_eq!(status["llm_primary"].backend.as_deref(), Some("ollama"));
+        assert_eq!(status["llm_fallback"].backend.as_deref(), Some("anthropic"));
+        assert_eq!(
+            status["llm_fallback"].model.as_deref(),
+            Some("claude-haiku-5-5")
+        );
     }
 
     #[tokio::test]
@@ -576,7 +820,7 @@ mod tests {
 
         assert!(chat(&provider).await.is_err());
         assert_eq!(
-            health.status()["ollama"].status,
+            health.status()["llm_primary"].status,
             DependencyStatus::Healthy,
             "a content fault must leave the primary breaker closed"
         );
@@ -584,6 +828,55 @@ mod tests {
         // The breaker stayed closed, so the next request still reaches the primary.
         assert_eq!(chat(&provider).await.unwrap(), "primary still serving");
         assert_eq!(fallback.chat_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn content_fault_from_a_half_open_primary_closes_its_breaker() {
+        // The probe reached the backend and got an answer: it is serving, so
+        // /health must stop reporting it degraded.
+        let primary = Arc::new(MockLlmProvider::new([MockResult::Failure(
+            "empty response from LLM",
+        )]));
+        let fallback = Arc::new(MockLlmProvider::new([MockResult::Success("fallback")]));
+        let health = Arc::new(DependencyHealth::new(Duration::from_millis(5)));
+        health.report_failure(DependencyId::LlmPrimary, "down");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let provider = wrapper(primary, Some(fallback.clone()), health.clone());
+
+        assert!(chat(&provider).await.is_err());
+        assert_eq!(
+            health.status()["llm_primary"].status,
+            DependencyStatus::Healthy
+        );
+        assert_eq!(fallback.chat_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn health_never_reports_upstream_error_text() {
+        // /health is unauthenticated; upstream bodies and request URLs stay in
+        // the server log.
+        let primary = Arc::new(
+            MockLlmProvider::new([MockResult::Unavailable(
+                "Response body: org-secret-123 for url (https://gw.internal/v1)",
+            )])
+            .with_init(MockResult::Failure("init body org-secret-456")),
+        );
+        let fallback = Arc::new(
+            MockLlmProvider::new([MockResult::Unavailable("org-secret-789")])
+                .with_init(MockResult::Failure("init body org-secret-012")),
+        );
+        let health = Arc::new(DependencyHealth::with_defaults());
+        let provider = wrapper(primary, Some(fallback), health.clone());
+        let _ = chat(&provider).await;
+        assert!(health.status()["llm_fallback"].error.is_some());
+        let _ = provider.init().await;
+
+        for (dependency, info) in health.status() {
+            let error = info.error.unwrap_or_default();
+            assert!(!error.contains("org-secret"), "{dependency}: {error}");
+            assert!(!error.contains("gw.internal"), "{dependency}: {error}");
+        }
+        assert!(health.status()["llm_primary"].error.is_some());
     }
 
     #[tokio::test]
@@ -598,9 +891,12 @@ mod tests {
         let provider = wrapper(primary, Some(fallback), health.clone());
 
         assert!(chat(&provider).await.is_err());
-        assert_eq!(health.status()["ollama"].status, DependencyStatus::Down);
         assert_eq!(
-            health.status()["openrouter"].status,
+            health.status()["llm_primary"].status,
+            DependencyStatus::Down
+        );
+        assert_eq!(
+            health.status()["llm_fallback"].status,
             DependencyStatus::Healthy,
             "the fallback answered; only the prompt failed"
         );
@@ -618,9 +914,12 @@ mod tests {
         assert_eq!(chat(&provider).await.unwrap(), "fallback");
         assert_eq!(primary.chat_calls(), 1);
         assert_eq!(fallback.chat_calls(), 1);
-        assert_eq!(health.status()["ollama"].status, DependencyStatus::Down);
         assert_eq!(
-            health.status()["openrouter"].status,
+            health.status()["llm_primary"].status,
+            DependencyStatus::Down
+        );
+        assert_eq!(
+            health.status()["llm_fallback"].status,
             DependencyStatus::Healthy
         );
     }
@@ -637,10 +936,16 @@ mod tests {
         let provider = wrapper(primary, Some(fallback), health.clone());
 
         let error = chat(&provider).await.unwrap_err().to_string();
-        assert!(error.contains("ollama"));
-        assert!(error.contains("openrouter"));
-        assert_eq!(health.status()["ollama"].status, DependencyStatus::Down);
-        assert_eq!(health.status()["openrouter"].status, DependencyStatus::Down);
+        assert!(error.contains("ollama"), "{error}");
+        assert!(error.contains("anthropic"), "{error}");
+        assert_eq!(
+            health.status()["llm_primary"].status,
+            DependencyStatus::Down
+        );
+        assert_eq!(
+            health.status()["llm_fallback"].status,
+            DependencyStatus::Down
+        );
     }
 
     #[tokio::test]
@@ -648,7 +953,7 @@ mod tests {
         let primary = Arc::new(MockLlmProvider::new([MockResult::Success("primary")]));
         let fallback = Arc::new(MockLlmProvider::new([MockResult::Success("fallback")]));
         let health = Arc::new(DependencyHealth::new(Duration::from_secs(60)));
-        health.report_failure(DependencyId::Ollama, "known down");
+        health.report_failure(DependencyId::LlmPrimary, "known down");
         let provider = wrapper(primary.clone(), Some(fallback.clone()), health);
 
         assert_eq!(chat(&provider).await.unwrap(), "fallback");
@@ -661,14 +966,17 @@ mod tests {
         let primary = Arc::new(MockLlmProvider::new([MockResult::Success("recovered")]));
         let fallback = Arc::new(MockLlmProvider::new([MockResult::Success("fallback")]));
         let health = Arc::new(DependencyHealth::new(Duration::from_millis(5)));
-        health.report_failure(DependencyId::Ollama, "down");
+        health.report_failure(DependencyId::LlmPrimary, "down");
         tokio::time::sleep(Duration::from_millis(10)).await;
         let provider = wrapper(primary.clone(), Some(fallback.clone()), health.clone());
 
         assert_eq!(chat(&provider).await.unwrap(), "recovered");
         assert_eq!(primary.chat_calls(), 1);
         assert_eq!(fallback.chat_calls(), 0);
-        assert_eq!(health.status()["ollama"].status, DependencyStatus::Healthy);
+        assert_eq!(
+            health.status()["llm_primary"].status,
+            DependencyStatus::Healthy
+        );
     }
 
     #[tokio::test]
@@ -678,12 +986,15 @@ mod tests {
         )]));
         let fallback = Arc::new(MockLlmProvider::new([MockResult::Success("fallback")]));
         let health = Arc::new(DependencyHealth::new(Duration::from_millis(5)));
-        health.report_failure(DependencyId::Ollama, "down");
+        health.report_failure(DependencyId::LlmPrimary, "down");
         tokio::time::sleep(Duration::from_millis(10)).await;
         let provider = wrapper(primary, Some(fallback), health.clone());
 
         assert_eq!(chat(&provider).await.unwrap(), "fallback");
-        assert_eq!(health.status()["ollama"].status, DependencyStatus::Down);
+        assert_eq!(
+            health.status()["llm_primary"].status,
+            DependencyStatus::Down
+        );
     }
 
     #[tokio::test]
@@ -709,7 +1020,10 @@ mod tests {
             error,
             MemcanError::LlmUnavailable { ref detail, .. } if detail == "exact failure"
         ));
-        assert_eq!(health.status()["ollama"].status, DependencyStatus::Down);
+        assert_eq!(
+            health.status()["llm_primary"].status,
+            DependencyStatus::Down
+        );
     }
 
     #[tokio::test]
@@ -723,14 +1037,17 @@ mod tests {
             error,
             MemcanError::LlmChat { ref detail, .. } if detail == "exact failure"
         ));
-        assert_eq!(health.status()["ollama"].status, DependencyStatus::Healthy);
+        assert_eq!(
+            health.status()["llm_primary"].status,
+            DependencyStatus::Healthy
+        );
     }
 
     #[tokio::test]
     async fn tc8_no_fallback_open_breaker_fails_without_primary_call() {
         let primary = Arc::new(MockLlmProvider::new([MockResult::Success("unused")]));
         let health = Arc::new(DependencyHealth::new(Duration::from_secs(60)));
-        health.report_failure(DependencyId::Ollama, "known down");
+        health.report_failure(DependencyId::LlmPrimary, "known down");
         let provider = wrapper(primary.clone(), None, health);
 
         let error = chat(&provider).await.unwrap_err();
@@ -744,8 +1061,8 @@ mod tests {
         let primary = Arc::new(MockLlmProvider::new([MockResult::Success("unused")]));
         let fallback = Arc::new(MockLlmProvider::new([MockResult::Success("unused")]));
         let health = Arc::new(DependencyHealth::new(Duration::from_secs(60)));
-        health.report_failure(DependencyId::Ollama, "primary known down");
-        health.report_failure(DependencyId::OpenRouter, "fallback known down");
+        health.report_failure(DependencyId::LlmPrimary, "primary known down");
+        health.report_failure(DependencyId::LlmFallback, "fallback known down");
         let provider = wrapper(primary.clone(), Some(fallback.clone()), health);
 
         let error = chat(&provider).await.unwrap_err();
@@ -755,7 +1072,7 @@ mod tests {
                 ref context,
                 ref detail
             } if context.contains("ollama")
-                && context.contains("openrouter")
+                && context.contains("anthropic")
                 && detail.contains("primary known down")
                 && detail.contains("fallback known down")
         ));
@@ -773,31 +1090,57 @@ mod tests {
         let provider = wrapper(primary, None, health.clone());
 
         assert!(chat(&provider).await.is_err());
-        assert_eq!(health.status()["ollama"].status, DependencyStatus::Down);
+        assert_eq!(
+            health.status()["llm_primary"].status,
+            DependencyStatus::Down
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
         assert_eq!(chat(&provider).await.unwrap(), "recovered");
-        assert_eq!(health.status()["ollama"].status, DependencyStatus::Healthy);
+        assert_eq!(
+            health.status()["llm_primary"].status,
+            DependencyStatus::Healthy
+        );
     }
 
     #[tokio::test]
-    async fn tc12_equal_fallback_dependency_is_neutralized() {
-        let primary = Arc::new(MockLlmProvider::new([MockResult::Success("primary")]));
-        let duplicate = Arc::new(MockLlmProvider::new([MockResult::Success("duplicate")]));
-        let primary_provider: Arc<dyn LlmProvider> = primary;
-        let duplicate_provider: Arc<dyn LlmProvider> = duplicate.clone();
+    async fn tc12_same_kind_fallback_has_its_own_breaker() {
+        // Two Anthropic slots (different keys/models) are distinct backends:
+        // an outage of the primary must leave the fallback serving.
+        let primary = Arc::new(MockLlmProvider::new([MockResult::Unavailable(
+            "primary key rate limited",
+        )]));
+        let fallback = Arc::new(MockLlmProvider::new([
+            MockResult::Success("second key"),
+            MockResult::Success("default success"),
+            MockResult::Unavailable("second key rate limited"),
+        ]));
+        let health = Arc::new(DependencyHealth::new(Duration::from_secs(60)));
         let provider = FallbackLlmProvider::new(
-            primary_provider,
-            DependencyId::Ollama,
-            Some((
-                duplicate_provider,
-                "other-ollama-model".into(),
-                DependencyId::Ollama,
-            )),
-            Arc::new(DependencyHealth::with_defaults()),
+            LlmBackend {
+                provider: primary,
+                kind: LlmProviderKind::Anthropic,
+                model: "claude-haiku-5-5".into(),
+            },
+            Some(LlmBackend {
+                provider: fallback.clone(),
+                kind: LlmProviderKind::Anthropic,
+                model: "claude-opus-5-5".into(),
+            }),
+            health.clone(),
         );
 
-        assert_eq!(chat(&provider).await.unwrap(), "primary");
-        assert_eq!(duplicate.chat_calls(), 0);
+        assert_eq!(chat(&provider).await.unwrap(), "second key");
+        assert_eq!(fallback.chat_calls(), 1);
+        let status = health.status();
+        assert_eq!(status["llm_primary"].status, DependencyStatus::Down);
+        assert_eq!(status["llm_fallback"].status, DependencyStatus::Healthy);
+        assert_eq!(chat(&provider).await.unwrap(), "default success");
+        assert_eq!(fallback.chat_calls(), 2);
+
+        // With both slots failing, the error tells the same-kind slots apart.
+        let error = chat(&provider).await.unwrap_err().to_string();
+        assert!(error.contains("claude-haiku-5-5"), "{error}");
+        assert!(error.contains("claude-opus-5-5"), "{error}");
     }
 
     #[tokio::test]
@@ -812,8 +1155,11 @@ mod tests {
         assert!(provider.init().await.is_ok());
         assert_eq!(primary.init_calls(), 1);
         assert_eq!(fallback.init_calls(), 1);
-        assert_eq!(health.status()["ollama"].status, DependencyStatus::Down);
-        assert!(health.check(DependencyId::Ollama).is_err());
+        assert_eq!(
+            health.status()["llm_primary"].status,
+            DependencyStatus::Down
+        );
+        assert!(health.check(DependencyId::LlmPrimary).is_err());
 
         assert_eq!(chat(&provider).await.unwrap(), "fallback");
         assert_eq!(primary.chat_calls(), 0);
@@ -832,8 +1178,14 @@ mod tests {
         let provider = wrapper(primary, Some(fallback), health.clone());
 
         assert!(provider.init().await.is_err());
-        assert_eq!(health.status()["ollama"].status, DependencyStatus::Down);
-        assert_eq!(health.status()["openrouter"].status, DependencyStatus::Down);
+        assert_eq!(
+            health.status()["llm_primary"].status,
+            DependencyStatus::Down
+        );
+        assert_eq!(
+            health.status()["llm_fallback"].status,
+            DependencyStatus::Down
+        );
     }
 
     #[tokio::test]

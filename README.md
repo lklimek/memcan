@@ -71,8 +71,8 @@ account has no application logout; credentials normally persist for the browser 
 | `add_memory` | Store a memory with optional project scope and metadata (async, returns queued) |
 | `search_memories` | Semantic search across memories |
 | `get_memories` | List all memories for a scope |
-| `delete_memory` | Remove a memory by ID |
-| `update_memory` | Modify existing memory content (async, returns queued) |
+| `delete_memory` | Remove a memory by full UUID or unambiguous short-ID prefix (>= 8 chars) |
+| `update_memory` | Modify existing memory content by full UUID or unambiguous short-ID prefix (async, returns queued) |
 | `count_memories` | Count memories for a scope (without fetching content) |
 | `list_collections` | Discover available collections, point counts, and valid filter values |
 | `search_standards` | Search indexed standards (CWE, OWASP, etc.) by semantic similarity |
@@ -145,7 +145,7 @@ OLLAMA_HOST=http://192.168.1.10:11434
 OLLAMA_API_KEY=your-token-here
 ```
 
-> **Cloud LLM:** Only Ollama is currently supported. If you need a different LLM provider, [open an issue](https://github.com/lklimek/memcan/issues).
+> **Cloud LLM:** Ollama is the default. Either slot — primary (`LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`, `LLM_BASE_URL`) or fallback (`LLM_FALLBACK_PROVIDER`, `LLM_FALLBACK_MODEL`, `LLM_FALLBACK_API_KEY`, `LLM_FALLBACK_BASE_URL`) — can run `anthropic` (alias `claude`, native Messages API with prompt caching), `openai`, `openrouter`, `openai-compatible` (alias `openai-compat`, base URL required), or `ollama`. A cloud fallback sends memory, code, and standards content to that third party whenever the primary is unavailable. See `.env.example`.
 
 ## Deprecated Features
 

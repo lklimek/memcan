@@ -13,8 +13,10 @@ use serde::Serialize;
 /// Dependencies tracked by the circuit breaker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DependencyId {
-    Ollama,
-    OpenRouter,
+    /// The primary LLM slot, whatever backend it runs.
+    LlmPrimary,
+    /// The fallback LLM slot; tracked only once configured.
+    LlmFallback,
     LanceDb,
     Embedding,
 }
@@ -22,16 +24,16 @@ pub enum DependencyId {
 impl DependencyId {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Ollama => "ollama",
-            Self::OpenRouter => "openrouter",
+            Self::LlmPrimary => "llm_primary",
+            Self::LlmFallback => "llm_fallback",
             Self::LanceDb => "lancedb",
             Self::Embedding => "embedding",
         }
     }
 
     const ALL: [DependencyId; 4] = [
-        Self::Ollama,
-        Self::OpenRouter,
+        Self::LlmPrimary,
+        Self::LlmFallback,
         Self::LanceDb,
         Self::Embedding,
     ];
@@ -74,6 +76,19 @@ pub struct DependencyInfo {
     pub last_checked_secs_ago: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Backend kind of an LLM slot, e.g. `"anthropic"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    /// Model of an LLM slot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// What an LLM slot runs, as reported by `/health`.
+#[derive(Debug, Clone)]
+struct LlmDescriptor {
+    backend: String,
+    model: String,
 }
 
 /// Per-dependency atomic state.
@@ -83,6 +98,8 @@ struct DepState {
     last_checked_nanos: AtomicU64,
     /// Last error message (written rarely, read on status).
     last_error: RwLock<Option<String>>,
+    /// Backend and model of an LLM slot (written once at wiring time).
+    descriptor: RwLock<Option<LlmDescriptor>>,
 }
 
 impl DepState {
@@ -91,6 +108,7 @@ impl DepState {
             state: AtomicU8::new(DependencyStatus::HEALTHY),
             last_checked_nanos: AtomicU64::new(0),
             last_error: RwLock::new(None),
+            descriptor: RwLock::new(None),
         }
     }
 }
@@ -98,7 +116,7 @@ impl DepState {
 /// Lock-free circuit breaker for dependency health.
 pub struct DependencyHealth {
     deps: HashMap<DependencyId, DepState>,
-    openrouter_configured: AtomicBool,
+    fallback_configured: AtomicBool,
     recovery_timeout: Duration,
     epoch: Instant,
 }
@@ -112,7 +130,7 @@ impl DependencyHealth {
         }
         Self {
             deps,
-            openrouter_configured: AtomicBool::new(false),
+            fallback_configured: AtomicBool::new(false),
             recovery_timeout,
             epoch: Instant::now(),
         }
@@ -146,13 +164,26 @@ impl DependencyHealth {
     }
 
     fn is_tracked(&self, id: DependencyId) -> bool {
-        id != DependencyId::OpenRouter || self.openrouter_configured.load(Ordering::Acquire)
+        id != DependencyId::LlmFallback || self.fallback_configured.load(Ordering::Acquire)
     }
 
     pub(crate) fn mark_configured(&self, id: DependencyId) {
-        if id == DependencyId::OpenRouter {
-            self.openrouter_configured.store(true, Ordering::Release);
+        if id == DependencyId::LlmFallback {
+            self.fallback_configured.store(true, Ordering::Release);
         }
+    }
+
+    /// Record which backend and model an LLM slot runs, for `/health`.
+    pub(crate) fn describe_llm(&self, id: DependencyId, backend: &str, model: &str) {
+        self.mark_configured(id);
+        *self
+            .dep(id)
+            .descriptor
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(LlmDescriptor {
+            backend: backend.to_string(),
+            model: model.to_string(),
+        });
     }
 
     /// Check whether a dependency is available. Returns `Ok(())` if healthy
@@ -242,12 +273,23 @@ impl DependencyHealth {
                 .unwrap_or_else(|e| e.into_inner())
                 .clone();
 
+            let descriptor = dep
+                .descriptor
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let (backend, model) = descriptor
+                .map(|descriptor| (Some(descriptor.backend), Some(descriptor.model)))
+                .unwrap_or_default();
+
             result.insert(
                 id.as_str().to_string(),
                 DependencyInfo {
                     status: state,
                     last_checked_secs_ago,
                     error,
+                    backend,
+                    model,
                 },
             );
         }
@@ -273,7 +315,7 @@ mod tests {
     fn initially_all_healthy() {
         let health = DependencyHealth::with_defaults();
         assert!(health.all_healthy());
-        assert!(health.check(DependencyId::Ollama).is_ok());
+        assert!(health.check(DependencyId::LlmPrimary).is_ok());
         assert!(health.check(DependencyId::LanceDb).is_ok());
         assert!(health.check(DependencyId::Embedding).is_ok());
     }
@@ -281,10 +323,10 @@ mod tests {
     #[test]
     fn failure_marks_dependency_down() {
         let health = DependencyHealth::with_defaults();
-        health.report_failure(DependencyId::Ollama, "connection refused");
+        health.report_failure(DependencyId::LlmPrimary, "connection refused");
 
         assert!(!health.all_healthy());
-        let result = health.check(DependencyId::Ollama);
+        let result = health.check(DependencyId::LlmPrimary);
         assert!(result.is_err());
 
         let err = result.unwrap_err();
@@ -295,27 +337,27 @@ mod tests {
     #[test]
     fn without_circuit_breaking_never_suppresses_a_call() {
         let health = DependencyHealth::without_circuit_breaking();
-        health.report_failure(DependencyId::Ollama, "transient blip");
+        health.report_failure(DependencyId::LlmPrimary, "transient blip");
 
         // The contrast that gives this test teeth: the default tracker refuses
         // the next call, attributing one blip to callers that never ran.
         let default = DependencyHealth::with_defaults();
-        default.report_failure(DependencyId::Ollama, "transient blip");
-        assert!(default.check(DependencyId::Ollama).is_err());
+        default.report_failure(DependencyId::LlmPrimary, "transient blip");
+        assert!(default.check(DependencyId::LlmPrimary).is_err());
 
-        assert!(health.check(DependencyId::Ollama).is_ok());
-        assert!(health.check(DependencyId::Ollama).is_ok());
+        assert!(health.check(DependencyId::LlmPrimary).is_ok());
+        assert!(health.check(DependencyId::LlmPrimary).is_ok());
     }
 
     #[test]
     fn without_circuit_breaking_still_reports_the_failure() {
         let health = DependencyHealth::without_circuit_breaking();
-        health.report_failure(DependencyId::Ollama, "connection refused");
+        health.report_failure(DependencyId::LlmPrimary, "connection refused");
 
         // Not suppressing calls must not mean losing the signal.
         let status = health.status();
         assert_eq!(
-            status["ollama"].error.as_deref(),
+            status["llm_primary"].error.as_deref(),
             Some("connection refused")
         );
         assert!(!health.all_healthy());
@@ -324,7 +366,7 @@ mod tests {
     #[test]
     fn failure_on_one_does_not_affect_others() {
         let health = DependencyHealth::with_defaults();
-        health.report_failure(DependencyId::Ollama, "down");
+        health.report_failure(DependencyId::LlmPrimary, "down");
 
         assert!(health.check(DependencyId::LanceDb).is_ok());
         assert!(health.check(DependencyId::Embedding).is_ok());
@@ -363,38 +405,38 @@ mod tests {
     #[test]
     fn half_open_success_returns_to_healthy() {
         let health = DependencyHealth::new(Duration::from_millis(10));
-        health.report_failure(DependencyId::Ollama, "timeout");
+        health.report_failure(DependencyId::LlmPrimary, "timeout");
 
         std::thread::sleep(Duration::from_millis(15));
-        assert!(health.check(DependencyId::Ollama).is_ok()); // half-open
+        assert!(health.check(DependencyId::LlmPrimary).is_ok()); // half-open
 
-        health.report_success(DependencyId::Ollama);
+        health.report_success(DependencyId::LlmPrimary);
         let status = health.status();
-        assert_eq!(status["ollama"].status, DependencyStatus::Healthy);
-        assert!(status["ollama"].error.is_none());
+        assert_eq!(status["llm_primary"].status, DependencyStatus::Healthy);
+        assert!(status["llm_primary"].error.is_none());
     }
 
     #[test]
     fn half_open_failure_returns_to_down() {
         let health = DependencyHealth::new(Duration::from_millis(10));
-        health.report_failure(DependencyId::Ollama, "timeout");
+        health.report_failure(DependencyId::LlmPrimary, "timeout");
 
         std::thread::sleep(Duration::from_millis(15));
-        assert!(health.check(DependencyId::Ollama).is_ok()); // half-open
+        assert!(health.check(DependencyId::LlmPrimary).is_ok()); // half-open
 
-        health.report_failure(DependencyId::Ollama, "still broken");
+        health.report_failure(DependencyId::LlmPrimary, "still broken");
 
         // Should be down again, immediate check fails
-        assert!(health.check(DependencyId::Ollama).is_err());
+        assert!(health.check(DependencyId::LlmPrimary).is_err());
     }
 
     #[test]
-    fn status_snapshot_omits_unconfigured_openrouter() {
+    fn status_snapshot_omits_unconfigured_llm_fallback() {
         let health = DependencyHealth::with_defaults();
         let status = health.status();
 
-        assert!(status.contains_key("ollama"));
-        assert!(!status.contains_key("openrouter"));
+        assert!(status.contains_key("llm_primary"));
+        assert!(!status.contains_key("llm_fallback"));
         assert!(status.contains_key("lancedb"));
         assert!(status.contains_key("embedding"));
 
@@ -406,14 +448,36 @@ mod tests {
     }
 
     #[test]
-    fn all_healthy_ignores_unconfigured_openrouter() {
+    fn all_healthy_ignores_unconfigured_llm_fallback() {
         let health = DependencyHealth::with_defaults();
         health
-            .dep(DependencyId::OpenRouter)
+            .dep(DependencyId::LlmFallback)
             .state
             .store(DependencyStatus::DOWN, Ordering::Release);
 
         assert!(health.all_healthy());
+    }
+
+    #[test]
+    fn described_llm_slots_report_backend_and_model() {
+        let health = DependencyHealth::with_defaults();
+        health.describe_llm(DependencyId::LlmPrimary, "anthropic", "claude-haiku-5-5");
+        health.describe_llm(DependencyId::LlmFallback, "anthropic", "claude-opus-5-5");
+        health.report_failure(DependencyId::LlmFallback, "rate limited");
+
+        let status = health.status();
+        let primary = &status["llm_primary"];
+        assert_eq!(primary.status, DependencyStatus::Healthy);
+        assert_eq!(primary.backend.as_deref(), Some("anthropic"));
+        assert_eq!(primary.model.as_deref(), Some("claude-haiku-5-5"));
+        let fallback = &status["llm_fallback"];
+        assert_eq!(fallback.status, DependencyStatus::Down);
+        assert_eq!(fallback.model.as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(fallback.error.as_deref(), Some("rate limited"));
+        assert!(status["lancedb"].backend.is_none());
+
+        let json = serde_json::to_value(&status["lancedb"]).unwrap();
+        assert!(json.get("backend").is_none(), "{json}");
     }
 
     #[test]
@@ -431,10 +495,10 @@ mod tests {
     #[test]
     fn status_last_checked_updates_on_success() {
         let health = DependencyHealth::with_defaults();
-        health.report_success(DependencyId::Ollama);
+        health.report_success(DependencyId::LlmPrimary);
 
         let status = health.status();
-        assert!(status["ollama"].last_checked_secs_ago.is_some());
+        assert!(status["llm_primary"].last_checked_secs_ago.is_some());
     }
 
     #[test]
@@ -448,9 +512,9 @@ mod tests {
             let h = Arc::clone(&health);
             handles.push(std::thread::spawn(move || {
                 for _ in 0..100 {
-                    h.report_failure(DependencyId::Ollama, "err");
-                    let _ = h.check(DependencyId::Ollama);
-                    h.report_success(DependencyId::Ollama);
+                    h.report_failure(DependencyId::LlmPrimary, "err");
+                    let _ = h.check(DependencyId::LlmPrimary);
+                    h.report_success(DependencyId::LlmPrimary);
                     let _ = h.status();
                 }
             }));
@@ -463,15 +527,15 @@ mod tests {
         // Should not panic or deadlock; final state is valid
         let status = health.status();
         assert!(
-            status["ollama"].status == DependencyStatus::Healthy
-                || status["ollama"].status == DependencyStatus::Down
+            status["llm_primary"].status == DependencyStatus::Healthy
+                || status["llm_primary"].status == DependencyStatus::Down
         );
     }
 
     #[test]
     fn dependency_id_display() {
-        assert_eq!(DependencyId::Ollama.to_string(), "ollama");
-        assert_eq!(DependencyId::OpenRouter.to_string(), "openrouter");
+        assert_eq!(DependencyId::LlmPrimary.to_string(), "llm_primary");
+        assert_eq!(DependencyId::LlmFallback.to_string(), "llm_fallback");
         assert_eq!(DependencyId::LanceDb.to_string(), "lancedb");
         assert_eq!(DependencyId::Embedding.to_string(), "embedding");
     }

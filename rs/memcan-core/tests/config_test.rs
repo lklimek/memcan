@@ -17,7 +17,11 @@ fn test_default_config() {
     assert!(settings.tech_stack.is_empty());
     assert!(settings.distill_memories);
     assert_eq!(settings.log_file, "~/.claude/logs/memcan-mcp.log");
-    assert_eq!(settings.llm_model, "lklimek/gemma4-text:26b-a4b-it-qat");
+    assert_eq!(settings.llm_primary.model, None);
+    assert_eq!(
+        settings.primary_slot().unwrap().model,
+        "lklimek/gemma4-text:26b-a4b-it-qat"
+    );
     assert_eq!(settings.embed_model, "MultilingualE5Large");
     assert_eq!(settings.embed_dims, 1024);
 }
@@ -54,7 +58,10 @@ fn test_env_override() {
         "dims should be derived from NomicEmbedTextV15"
     );
     assert!(!settings.distill_memories);
-    assert_eq!(settings.llm_model, "openai::gpt-4o");
+    assert_eq!(
+        settings.llm_primary.model.as_deref(),
+        Some("openai::gpt-4o")
+    );
 
     // Restore original env.
     unsafe {
