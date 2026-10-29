@@ -142,6 +142,12 @@ pub enum LlmConfigError {
     #[error("Ollama is not a cloud LLM backend")]
     NotCloudBackend,
 
+    #[error("could not build the HTTP client for cloud LLM slots: {source}")]
+    HttpClient {
+        #[source]
+        source: reqwest::Error,
+    },
+
     #[error("the '{kind}' LLM backend requires the {feature} feature")]
     FeatureDisabled {
         kind: LlmProviderKind,

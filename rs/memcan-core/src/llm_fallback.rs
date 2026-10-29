@@ -8,6 +8,48 @@ use crate::error::{MemcanError, Result};
 use crate::health::{DependencyHealth, DependencyId};
 use crate::traits::{LlmMessage, LlmOptions, LlmProvider};
 
+/// `true` for HTTP statuses that indicate the backend — not the prompt — is
+/// at fault, so another backend may still serve the request. Shared by every
+/// LLM backend so each classifies a status the same way.
+///
+/// 5xx, 408, and 429 describe the backend's state. A 3xx counts too: clients
+/// never follow redirects (a hop could carry the key elsewhere), and an
+/// endpoint that redirects cannot serve the request.
+///
+/// 401 and 402 count as unavailable: a rejected credential and an exhausted
+/// balance are both properties of the backend, not of the prompt. The other
+/// backend authenticates and bills separately (or not at all), so it can still
+/// serve the request — and a backend whose key is revoked or whose credits ran
+/// out is genuinely unusable, which is what the breaker exists to record.
+///
+/// 403 deliberately does **not**. Providers overload it: OpenRouter returns 403
+/// for guardrail blocks and moderation flags as well as for permissions, and a
+/// blocked prompt is deterministic for that prompt. Classing it as unavailable
+/// would mark a serving backend Down and re-send the blocked content to a third
+/// party — the two things [`FallbackLlmProvider::chat`] exists to avoid. A
+/// genuine permissions 403 is the rarer case, and it degrades to a plain error
+/// rather than a wrong failover.
+///
+/// Takes a raw code rather than a `StatusCode`: the backends link different
+/// `reqwest` versions.
+#[cfg_attr(
+    not(any(feature = "genai-llm", feature = "ollama-rs-llm")),
+    expect(dead_code, reason = "only the LLM backends classify HTTP statuses")
+)]
+pub(crate) fn status_is_unavailable(status: u16) -> bool {
+    (300..400).contains(&status)
+        || (500..600).contains(&status)
+        || matches!(status, 401 | 402 | 408 | 429)
+}
+
+/// What a slot's breaker records for an availability fault. `/health` is
+/// unauthenticated, so upstream response bodies and request URLs stay in the
+/// server log rather than in the breaker.
+const UNAVAILABLE_NOTE: &str = "LLM backend unavailable; details are in the server log";
+
+/// What a slot's breaker records for a failed initialization.
+const INIT_FAILED_NOTE: &str = "LLM backend initialization failed; details are in the server log";
+
 /// One wired LLM slot: its client and what it runs.
 pub(crate) struct LlmBackend {
     pub provider: Arc<dyn LlmProvider>,
@@ -36,6 +78,9 @@ impl Slot {
     }
 
     /// Send `messages` to this slot and record the outcome on its breaker.
+    ///
+    /// A content fault means the backend answered, so it counts as reachable:
+    /// a half-open probe that gets one closes the breaker.
     async fn chat(
         &self,
         health: &DependencyHealth,
@@ -45,11 +90,10 @@ impl Slot {
     ) -> Result<String> {
         let result = self.backend.provider.chat(model, messages, options).await;
         match &result {
-            Ok(_) => health.report_success(self.dep),
             Err(error) if error.is_llm_unavailable() => {
-                health.report_failure(self.dep, &error.to_string());
+                health.report_failure(self.dep, UNAVAILABLE_NOTE);
             }
-            Err(_) => {}
+            _ => health.report_success(self.dep),
         }
         result
     }
@@ -59,7 +103,7 @@ impl Slot {
         let result = self.backend.provider.init().await;
         match &result {
             Ok(()) => health.report_success(self.dep),
-            Err(error) => health.report_failure(self.dep, &error.to_string()),
+            Err(_) => health.report_failure(self.dep, INIT_FAILED_NOTE),
         }
         result
     }
@@ -129,13 +173,17 @@ impl LlmProvider for FallbackLlmProvider {
     ///
     /// Only [`MemcanError::LlmUnavailable`] is an availability signal. A
     /// content fault ([`MemcanError::LlmChat`] — empty response, rejected
-    /// prompt) returns to the caller unchanged: it would fail identically on
-    /// the fallback, so re-sending would leak `messages` to a third party for
+    /// prompt, any 4xx other than those [`status_is_unavailable`] accepts)
+    /// returns to the caller unchanged: it would fail identically on the
+    /// fallback, so re-sending would leak `messages` to a third party for
     /// nothing, and reporting it to the breaker would mark a serving backend
     /// Down for a fault it did not cause.
     ///
-    /// This keeps egress scoped to genuine outages, so caller-supplied content
-    /// cannot itself trigger a cross-provider send.
+    /// This scopes egress to failures that look like outages, but cannot
+    /// prove the backend rather than the prompt caused them: a prompt that
+    /// crashes the model runner (a 5xx), outlasts the request timeout, or
+    /// arrives in a burst that draws a 429 still opens the breaker and is sent
+    /// to the fallback, as is every request until the primary recovers.
     async fn chat(
         &self,
         model: &str,
@@ -493,6 +541,54 @@ mod tests {
         provider.chat("qwen3.5:9b", &[], None).await
     }
 
+    #[test]
+    fn rejected_credentials_are_an_availability_fault() {
+        // A rotated cloud API key must not strand requests that a healthy
+        // local Ollama could serve: 401 describes the backend, not the prompt,
+        // so it has to reach the fallback and the breaker.
+        assert!(super::status_is_unavailable(401));
+    }
+
+    #[test]
+    fn an_exhausted_balance_is_an_availability_fault() {
+        // OpenRouter returns 402 when the account is out of credits. The
+        // fallback bills separately, so it can still serve the request — and a
+        // backend that cannot be paid for is as unusable as one with a revoked
+        // key.
+        assert!(super::status_is_unavailable(402));
+    }
+
+    #[test]
+    fn forbidden_stays_a_content_fault() {
+        // Providers overload 403: OpenRouter returns it for guardrail and
+        // moderation blocks, which are deterministic for the prompt. Classing
+        // it as unavailable would mark a serving backend Down and ship the
+        // blocked content to a third party.
+        assert!(!super::status_is_unavailable(403));
+    }
+
+    #[test]
+    fn backend_faults_are_availability_faults() {
+        for status in [500, 502, 503, 599, 408, 429, 301, 307, 308] {
+            assert!(
+                super::status_is_unavailable(status),
+                "{status} should be an availability fault"
+            );
+        }
+    }
+
+    #[test]
+    fn request_faults_stay_content_faults() {
+        // These are deterministic for the prompt: another backend rejects them
+        // too, so they must not egress or trip the breaker.
+        for status in [400, 404, 413, 422] {
+            assert!(
+                !super::status_is_unavailable(status),
+                "{status} should be a content fault"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn tc1_primary_success_does_not_call_fallback() {
         let primary = Arc::new(MockLlmProvider::new([MockResult::Success("primary")]));
@@ -732,6 +828,55 @@ mod tests {
         // The breaker stayed closed, so the next request still reaches the primary.
         assert_eq!(chat(&provider).await.unwrap(), "primary still serving");
         assert_eq!(fallback.chat_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn content_fault_from_a_half_open_primary_closes_its_breaker() {
+        // The probe reached the backend and got an answer: it is serving, so
+        // /health must stop reporting it degraded.
+        let primary = Arc::new(MockLlmProvider::new([MockResult::Failure(
+            "empty response from LLM",
+        )]));
+        let fallback = Arc::new(MockLlmProvider::new([MockResult::Success("fallback")]));
+        let health = Arc::new(DependencyHealth::new(Duration::from_millis(5)));
+        health.report_failure(DependencyId::LlmPrimary, "down");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let provider = wrapper(primary, Some(fallback.clone()), health.clone());
+
+        assert!(chat(&provider).await.is_err());
+        assert_eq!(
+            health.status()["llm_primary"].status,
+            DependencyStatus::Healthy
+        );
+        assert_eq!(fallback.chat_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn health_never_reports_upstream_error_text() {
+        // /health is unauthenticated; upstream bodies and request URLs stay in
+        // the server log.
+        let primary = Arc::new(
+            MockLlmProvider::new([MockResult::Unavailable(
+                "Response body: org-secret-123 for url (https://gw.internal/v1)",
+            )])
+            .with_init(MockResult::Failure("init body org-secret-456")),
+        );
+        let fallback = Arc::new(
+            MockLlmProvider::new([MockResult::Unavailable("org-secret-789")])
+                .with_init(MockResult::Failure("init body org-secret-012")),
+        );
+        let health = Arc::new(DependencyHealth::with_defaults());
+        let provider = wrapper(primary, Some(fallback), health.clone());
+        let _ = chat(&provider).await;
+        assert!(health.status()["llm_fallback"].error.is_some());
+        let _ = provider.init().await;
+
+        for (dependency, info) in health.status() {
+            let error = info.error.unwrap_or_default();
+            assert!(!error.contains("org-secret"), "{dependency}: {error}");
+            assert!(!error.contains("gw.internal"), "{dependency}: {error}");
+        }
+        assert!(health.status()["llm_primary"].error.is_some());
     }
 
     #[tokio::test]
