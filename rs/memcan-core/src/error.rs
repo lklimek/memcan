@@ -61,6 +61,10 @@ pub enum MemcanError {
     #[error("invalid configuration: {0}")]
     Config(String),
 
+    /// An invalid LLM slot configuration, naming the variable to fix.
+    #[error("invalid configuration: {0}")]
+    LlmConfig(#[from] crate::config::LlmConfigError),
+
     // -- Dependency health ---------------------------------------------------
     #[error("dependency '{dependency}' unavailable: {message}")]
     DependencyUnavailable { dependency: String, message: String },

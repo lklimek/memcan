@@ -4,7 +4,7 @@
 //! Messages API and OpenAI-compatible APIs) and, without the `ollama-rs-llm`
 //! feature, Ollama.
 
-use crate::config::{LlmProviderKind, LlmSlot};
+use crate::config::{LlmConfigError, LlmProviderKind, LlmSlot};
 use crate::error::{MemcanError, Result};
 use crate::llm_telemetry::{self, CacheTokens};
 use crate::traits::{LlmMessage, LlmOptions, LlmProvider, Role};
@@ -217,7 +217,7 @@ impl GenaiLlmProvider {
     /// uses its OpenAI adapter against the slot's base URL. Fails for an Ollama
     /// slot or a slot without a base URL or API key.
     pub fn from_cloud_slot(slot: &LlmSlot) -> Result<Self> {
-        let kind = slot.provider;
+        let kind = slot.kind;
         let (adapter, cloud_api) = match kind {
             LlmProviderKind::Anthropic => (AdapterKind::Anthropic, CloudApi::Anthropic),
             LlmProviderKind::OpenAi
@@ -225,18 +225,15 @@ impl GenaiLlmProvider {
             | LlmProviderKind::OpenAiCompatible => {
                 (AdapterKind::OpenAI, CloudApi::OpenAiCompatible)
             }
-            LlmProviderKind::Ollama => {
-                return Err(MemcanError::Config(
-                    "Ollama is not a cloud LLM backend".into(),
-                ));
-            }
+            LlmProviderKind::Ollama => return Err(LlmConfigError::NotCloudBackend.into()),
         };
-        let base_url = slot.base_url.as_deref().ok_or_else(|| {
-            MemcanError::Config(format!(
-                "the {} '{kind}' LLM slot has no base URL",
-                slot.role
-            ))
-        })?;
+        let base_url = slot
+            .base_url
+            .as_deref()
+            .ok_or(LlmConfigError::SlotWithoutBaseUrl {
+                role: slot.role,
+                kind,
+            })?;
         // genai appends the route (`messages`, `chat/completions`) verbatim.
         let endpoint = Endpoint::from_owned(format!("{}/", base_url.trim_end_matches('/')));
         // Without a key every call would 401, which the breaker counts as an
@@ -247,11 +244,9 @@ impl GenaiLlmProvider {
             .map(str::trim)
             .filter(|key| !key.is_empty())
             .map(str::to_string)
-            .ok_or_else(|| {
-                MemcanError::Config(format!(
-                    "the {} '{kind}' LLM slot has no API key",
-                    slot.role
-                ))
+            .ok_or(LlmConfigError::SlotWithoutApiKey {
+                role: slot.role,
+                kind,
             })?;
         let resolver_key = auth_key.clone();
 
@@ -401,9 +396,9 @@ impl LlmProvider for GenaiLlmProvider {
     /// far exceeds the local default, so they assume the larger cloud window.
     fn assumed_context_window(&self) -> usize {
         if self.cloud_api.is_some() {
-            crate::pipeline::CLOUD_DEFAULT_CONTEXT_WINDOW
+            crate::traits::CLOUD_DEFAULT_CONTEXT_WINDOW
         } else {
-            crate::pipeline::DEFAULT_CONTEXT_WINDOW
+            crate::traits::DEFAULT_CONTEXT_WINDOW
         }
     }
 
@@ -451,7 +446,7 @@ mod tests {
     fn cloud_slot(kind: LlmProviderKind, model: &str, key: &str, base_url: String) -> LlmSlot {
         LlmSlot {
             role: LlmRole::Primary,
-            provider: kind,
+            kind,
             model: model.into(),
             api_key: Some(key.into()),
             base_url: Some(base_url),
@@ -899,20 +894,24 @@ mod tests {
     #[test]
     fn cloud_construction_rejects_ollama_and_a_missing_base_url() {
         let ollama = LlmSlot {
-            provider: LlmProviderKind::Ollama,
+            kind: LlmProviderKind::Ollama,
             ..cloud_slot(LlmProviderKind::OpenAi, "m", "k", String::new())
         };
-        assert!(GenaiLlmProvider::from_cloud_slot(&ollama).is_err());
+        assert!(matches!(
+            GenaiLlmProvider::from_cloud_slot(&ollama).err(),
+            Some(MemcanError::LlmConfig(LlmConfigError::NotCloudBackend))
+        ));
 
         let no_url = LlmSlot {
             base_url: None,
             ..cloud_slot(LlmProviderKind::OpenAiCompatible, "m", "k", String::new())
         };
-        let error = GenaiLlmProvider::from_cloud_slot(&no_url)
-            .err()
-            .unwrap()
-            .to_string();
-        assert!(error.contains("base URL"), "{error}");
+        assert!(matches!(
+            GenaiLlmProvider::from_cloud_slot(&no_url).err(),
+            Some(MemcanError::LlmConfig(
+                LlmConfigError::SlotWithoutBaseUrl { .. }
+            ))
+        ));
 
         for api_key in [None, Some(String::new()), Some("  ".to_string())] {
             let no_key = LlmSlot {
@@ -924,11 +923,12 @@ mod tests {
                     "https://a.example/".into(),
                 )
             };
-            let error = GenaiLlmProvider::from_cloud_slot(&no_key)
-                .err()
-                .unwrap()
-                .to_string();
-            assert!(error.contains("API key"), "{error}");
+            assert!(matches!(
+                GenaiLlmProvider::from_cloud_slot(&no_key).err(),
+                Some(MemcanError::LlmConfig(
+                    LlmConfigError::SlotWithoutApiKey { .. }
+                ))
+            ));
         }
     }
 
@@ -1015,7 +1015,10 @@ mod tests {
     #[test]
     fn test_from_ollama_slot_stores_model() {
         let settings = crate::config::Settings {
-            llm_model: Some("ollama::qwen3.5:4b".into()),
+            llm_primary: crate::config::SlotSettings {
+                model: Some("ollama::qwen3.5:4b".into()),
+                ..Default::default()
+            },
             ..crate::config::Settings::default()
         };
         let provider = GenaiLlmProvider::from_ollama_slot(&settings.primary_slot().unwrap());

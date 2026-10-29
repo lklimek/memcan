@@ -2522,7 +2522,10 @@ mod tests {
                 tech_stack: String::new(),
                 distill_memories: false,
                 log_file: String::new(),
-                llm_model: Some("test".into()),
+                llm_primary: memcan_core::config::SlotSettings {
+                    model: Some("test".into()),
+                    ..Default::default()
+                },
                 embed_model: "test".into(),
                 embed_dims: 3,
                 ollama_host: None,

@@ -96,9 +96,9 @@ async fn call_llm(
 /// silently measures one model and blames another. A benchmark wants a hard
 /// failure, not a rescue.
 fn single_model_settings(mut settings: Settings) -> Settings {
-    if let Some(fallback) = settings.llm_fallback_provider.take() {
+    if let Some(fallback) = settings.llm_fallback.take() {
         warn!(
-            %fallback,
+            fallback = %fallback.kind,
             "Ignoring configured LLM fallback: test-classification measures only the requested model"
         );
     }
@@ -254,31 +254,36 @@ pub async fn run(args: &TestClassificationArgs) -> MemcanResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use memcan_core::config::{LlmProviderKind, Settings};
+    use memcan_core::config::{LlmProviderKind, Settings, SlotSettings};
 
     use super::single_model_settings;
 
     #[test]
     fn configured_fallback_is_dropped_so_only_the_named_model_answers() {
         let settings = single_model_settings(Settings {
-            llm_provider: LlmProviderKind::Ollama,
-            llm_fallback_provider: Some(LlmProviderKind::OpenRouter),
+            llm_fallback: Some(SlotSettings {
+                kind: LlmProviderKind::OpenRouter,
+                ..SlotSettings::default()
+            }),
             ..Settings::default()
         });
 
-        assert_eq!(settings.llm_fallback_provider, None);
+        assert_eq!(settings.llm_fallback, None);
     }
 
     #[test]
     fn primary_backend_selection_is_untouched() {
         let settings = single_model_settings(Settings {
-            llm_provider: LlmProviderKind::OpenRouter,
-            llm_fallback_provider: Some(LlmProviderKind::Ollama),
+            llm_primary: SlotSettings {
+                kind: LlmProviderKind::OpenRouter,
+                ..SlotSettings::default()
+            },
+            llm_fallback: Some(SlotSettings::default()),
             ..Settings::default()
         });
 
         // Only substitution is refused; the operator's chosen backend stands.
-        assert_eq!(settings.llm_provider, LlmProviderKind::OpenRouter);
-        assert_eq!(settings.llm_fallback_provider, None);
+        assert_eq!(settings.llm_primary.kind, LlmProviderKind::OpenRouter);
+        assert_eq!(settings.llm_fallback, None);
     }
 }

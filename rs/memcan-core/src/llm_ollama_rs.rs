@@ -293,7 +293,7 @@ impl LlmProvider for OllamaRsLlmProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Settings;
+    use crate::config::{Settings, SlotSettings};
     use crate::traits::{LlmMessage, LlmProvider, Role};
 
     // ── classify_chat_error unit tests ──────────────────────────────────────
@@ -516,7 +516,10 @@ mod tests {
     #[test]
     fn test_from_settings_stores_model() {
         let settings = Settings {
-            llm_model: Some("ollama::qwen3.5:9b".into()),
+            llm_primary: SlotSettings {
+                model: Some("ollama::qwen3.5:9b".into()),
+                ..SlotSettings::default()
+            },
             ..Settings::default()
         };
         let provider = OllamaRsLlmProvider::from_slot(&settings.primary_slot().unwrap());
@@ -526,7 +529,10 @@ mod tests {
     #[test]
     fn test_from_settings_with_api_key() {
         let settings = Settings {
-            llm_model: Some("ollama::qwen3.5:9b".into()),
+            llm_primary: SlotSettings {
+                model: Some("ollama::qwen3.5:9b".into()),
+                ..SlotSettings::default()
+            },
             ollama_api_key: Some("test-key".into()),
             ..Settings::default()
         };
@@ -558,7 +564,10 @@ mod tests {
     /// Helper: create a provider pointing at the given base URL.
     fn provider_at(base_url: &str, model: &str) -> OllamaRsLlmProvider {
         let settings = Settings {
-            llm_model: Some(model.into()),
+            llm_primary: SlotSettings {
+                model: Some(model.into()),
+                ..SlotSettings::default()
+            },
             ollama_host: Some(base_url.to_string()),
             ..Settings::default()
         };

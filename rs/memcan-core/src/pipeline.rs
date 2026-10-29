@@ -52,14 +52,7 @@ const MAX_FACTS_PER_EXTRACTION: usize = 50;
 /// Fraction of context window available for prompt content (system + user).
 pub const CONTEXT_BUDGET_RATIO: f32 = 0.40;
 
-/// Context window assumed when a local model doesn't report one.
-pub const DEFAULT_CONTEXT_WINDOW: usize = 4096;
-
-/// Context window assumed for a cloud slot, which cannot report one.
-///
-/// Every supported cloud model has a far larger window; 8x the local default
-/// lifts the input budget without discovering per-model limits.
-pub const CLOUD_DEFAULT_CONTEXT_WINDOW: usize = 8 * DEFAULT_CONTEXT_WINDOW;
+pub use crate::traits::{CLOUD_DEFAULT_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOW};
 
 /// Approximate characters per token for budget estimation.
 pub const CHARS_PER_TOKEN: usize = 4;
