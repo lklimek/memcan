@@ -58,7 +58,10 @@ fn test_env_override() {
         "dims should be derived from NomicEmbedTextV15"
     );
     assert!(!settings.distill_memories);
-    assert_eq!(settings.llm_primary.model.as_deref(), Some("openai::gpt-4o"));
+    assert_eq!(
+        settings.llm_primary.model.as_deref(),
+        Some("openai::gpt-4o")
+    );
 
     // Restore original env.
     unsafe {

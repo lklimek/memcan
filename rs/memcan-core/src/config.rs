@@ -1,7 +1,9 @@
+use std::collections::HashSet;
+use std::ffi::OsString;
 use std::path::Path;
 use std::str::FromStr;
 
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::embed::{model_dims, resolve_model};
 use crate::error::{MemcanError, Result};
@@ -89,6 +91,41 @@ pub enum LlmConfigError {
 
     #[error("{var} must use HTTPS when configured with a non-loopback host")]
     InsecureUrl { var: &'static str },
+
+    /// A cloud slot names an `ollama::`-namespaced model.
+    #[error(
+        "{var} names an Ollama model ('ollama::' prefix) but {provider_var}={kind}; set {var} \
+         to a model id of that backend"
+    )]
+    OllamaModelOnCloudSlot {
+        var: &'static str,
+        provider_var: &'static str,
+        kind: LlmProviderKind,
+    },
+
+    /// A deprecated `OPENROUTER_*` credential paired with a per-slot
+    /// endpoint, or the reverse.
+    #[error(
+        "{key_var} is not sent to the base URL set by {url_var}: deprecated OPENROUTER_* \
+         credentials and endpoints are only used together; set the key and the base URL with \
+         the same family of variables"
+    )]
+    MixedLegacyCredential {
+        key_var: &'static str,
+        url_var: &'static str,
+    },
+
+    /// `./.env` in the working directory sets the endpoint for a key that
+    /// came from the environment or the MemCan config file.
+    #[error(
+        "{url_var} comes from ./.env in the current directory but {key_var} does not; refusing \
+         to send a key from the environment or the MemCan config file to an endpoint chosen by a \
+         project-local file. Set {url_var} where {key_var} is set, or set both in ./.env"
+    )]
+    UntrustedEndpoint {
+        url_var: &'static str,
+        key_var: &'static str,
+    },
 
     #[error("the {role} '{kind}' LLM slot has no base URL")]
     SlotWithoutBaseUrl {
@@ -425,9 +462,15 @@ impl Settings {
     fn load_from(cwd_env: &Path, config_env: Option<&Path>) -> Result<Self> {
         // dotenvy::from_path sets vars only if not already present, so load
         // order determines priority: CWD > config dir; explicit env vars win over both.
+        let preexisting: HashSet<OsString> = std::env::vars_os().map(|(key, _)| key).collect();
         if cwd_env.exists() && dotenvy::from_path(cwd_env).is_ok() {
             debug!("Loaded .env from CWD");
         }
+        // A project-local file may not redirect credentials configured elsewhere.
+        let cwd_vars: HashSet<String> = std::env::vars_os()
+            .filter(|(key, _)| !preexisting.contains(key))
+            .filter_map(|(key, _)| key.into_string().ok())
+            .collect();
         if let Some(config_env) = config_env
             && config_env.exists()
             && dotenvy::from_path(config_env).is_ok()
@@ -540,18 +583,19 @@ impl Settings {
             compact_fragment_threshold,
             mcp_body_read_timeout_secs,
         };
-        settings.validate_with(&origins)?;
+        settings.validate_with(&origins, &cwd_vars)?;
         Ok(settings)
     }
 
     /// Check invariants on hand-built settings.
     #[cfg(test)]
     fn validate(&self) -> Result<()> {
-        self.validate_with(&LegacyVarOrigins::default())
+        self.validate_with(&LegacyVarOrigins::default(), &HashSet::new())
     }
 
-    /// Check invariants, naming deprecated variables per `origins` in errors.
-    fn validate_with(&self, origins: &LegacyVarOrigins) -> Result<()> {
+    /// Check invariants, naming deprecated variables per `origins` in errors
+    /// and refusing endpoints redirected by `cwd_vars` (those `./.env` set).
+    fn validate_with(&self, origins: &LegacyVarOrigins, cwd_vars: &HashSet<String>) -> Result<()> {
         if self.lancedb_path.is_empty() {
             return Err(MemcanError::Config("LANCEDB_PATH must not be empty".into()));
         }
@@ -562,7 +606,28 @@ impl Settings {
             .as_ref()
             .map(|slot| self.resolve_slot(LlmRole::Fallback, slot, origins))
             .transpose()?;
-        for slot in std::iter::once(&primary).chain(fallback.as_ref()) {
+        for resolved in std::iter::once(&primary).chain(fallback.as_ref()) {
+            resolved.require_trusted_endpoint(cwd_vars)?;
+            let slot = &resolved.slot;
+            if resolved.withheld_ollama_key {
+                info!(
+                    role = %slot.role,
+                    "OLLAMA_API_KEY is not sent to the {} Ollama slot because its base URL names \
+                     another host than OLLAMA_HOST; set {} if that host needs a key",
+                    slot.role,
+                    slot.role.var(SlotVar::ApiKey)
+                );
+            }
+            if anthropic_base_url_lacks_version(slot) {
+                warn!(
+                    role = %slot.role,
+                    "The {} anthropic LLM slot's base URL has no /v1 path segment, so requests \
+                     go to <base>/messages and will likely fail with 404; set {} to e.g. \
+                     https://api.anthropic.com/v1/",
+                    slot.role,
+                    slot.role.var(SlotVar::BaseUrl)
+                );
+            }
             if breaks_json_mode(slot) {
                 warn!(
                     role = %slot.role,
@@ -576,12 +641,16 @@ impl Settings {
                 );
             }
         }
-        if fallback.is_some_and(|fallback| {
-            fallback.kind == primary.kind
-                && fallback.model == primary.model
-                && fallback.base_url == primary.base_url
-                && fallback.api_key == primary.api_key
-        }) {
+        let primary = &primary.slot;
+        if fallback
+            .map(|resolved| resolved.slot)
+            .is_some_and(|fallback| {
+                fallback.kind == primary.kind
+                    && fallback.model == primary.model
+                    && fallback.base_url == primary.base_url
+                    && fallback.api_key == primary.api_key
+            })
+        {
             warn!(
                 backend = %primary.kind,
                 model = %primary.model,
@@ -609,35 +678,59 @@ impl Settings {
     /// Fails with an error naming the exact missing or invalid variable when
     /// a cloud backend lacks its model, API key, or base URL.
     pub fn primary_slot(&self) -> Result<LlmSlot> {
-        Ok(self.resolve_slot(
-            LlmRole::Primary,
-            &self.llm_primary,
-            &LegacyVarOrigins::default(),
-        )?)
+        let origins = LegacyVarOrigins::default();
+        Ok(self
+            .resolve_slot(LlmRole::Primary, &self.llm_primary, &origins)?
+            .slot)
     }
 
     /// The resolved fallback LLM slot, if one is configured.
     pub fn fallback_slot(&self) -> Result<Option<LlmSlot>> {
+        let origins = LegacyVarOrigins::default();
         Ok(self
             .llm_fallback
             .as_ref()
-            .map(|slot| self.resolve_slot(LlmRole::Fallback, slot, &LegacyVarOrigins::default()))
-            .transpose()?)
+            .map(|slot| self.resolve_slot(LlmRole::Fallback, slot, &origins))
+            .transpose()?
+            .map(|resolved| resolved.slot))
     }
 
-    fn resolve_ollama_slot(&self, role: LlmRole, slot: &SlotSettings) -> LlmSlot {
-        LlmSlot {
-            role,
-            kind: LlmProviderKind::Ollama,
-            model: non_blank(&slot.model)
-                .unwrap_or(DEFAULT_OLLAMA_MODEL)
-                .to_string(),
-            api_key: non_blank(&slot.api_key)
-                .or(non_blank(&self.ollama_api_key))
-                .map(str::to_string),
-            base_url: non_blank(&slot.base_url)
-                .or(non_blank(&self.ollama_host))
-                .map(str::to_string),
+    /// Resolve an Ollama slot. `OLLAMA_API_KEY` was issued for `OLLAMA_HOST`
+    /// (or the default host), so it is inherited only by a slot aimed at
+    /// that origin; a slot on another host needs its own `*_API_KEY`.
+    fn resolve_ollama_slot(&self, role: LlmRole, slot: &SlotSettings) -> ResolvedSlot {
+        let ollama_host = non_blank(&self.ollama_host);
+        let (base_url, url_var) = match non_blank(&slot.base_url) {
+            Some(url) => (Some(url), Some(role.var(SlotVar::BaseUrl))),
+            None => (ollama_host, ollama_host.map(|_| "OLLAMA_HOST")),
+        };
+        let key_home = ollama_host.unwrap_or(crate::ollama::DEFAULT_OLLAMA_HOST);
+        let key_target = base_url.unwrap_or(crate::ollama::DEFAULT_OLLAMA_HOST);
+        let mut withheld_ollama_key = false;
+        let (api_key, key_var) = match (non_blank(&slot.api_key), non_blank(&self.ollama_api_key)) {
+            (Some(key), _) => (Some(key), Some(role.var(SlotVar::ApiKey))),
+            (None, Some(key)) if same_origin(key_target, key_home) => {
+                (Some(key), Some("OLLAMA_API_KEY"))
+            }
+            (None, Some(_)) => {
+                withheld_ollama_key = true;
+                (None, None)
+            }
+            (None, None) => (None, None),
+        };
+        ResolvedSlot {
+            slot: LlmSlot {
+                role,
+                kind: LlmProviderKind::Ollama,
+                model: non_blank(&slot.model)
+                    .unwrap_or(DEFAULT_OLLAMA_MODEL)
+                    .to_string(),
+                api_key: api_key.map(str::to_string),
+                base_url: base_url.map(str::to_string),
+            },
+            key_var,
+            url_var,
+            withheld_ollama_key,
         }
     }
 
@@ -646,7 +739,7 @@ impl Settings {
         role: LlmRole,
         slot: &SlotSettings,
         origins: &LegacyVarOrigins,
-    ) -> std::result::Result<LlmSlot, LlmConfigError> {
+    ) -> std::result::Result<ResolvedSlot, LlmConfigError> {
         let kind = slot.kind;
         if kind == LlmProviderKind::Ollama {
             return Ok(self.resolve_ollama_slot(role, slot));
@@ -662,16 +755,38 @@ impl Settings {
         };
         let api_key = non_blank(&slot.api_key).ok_or_else(|| missing(SlotVar::ApiKey))?;
         let model = non_blank(&slot.model).ok_or_else(|| missing(SlotVar::Model))?;
-        let base_url = non_blank(&slot.base_url)
-            .or(kind.default_base_url())
-            .ok_or_else(|| missing(SlotVar::BaseUrl))?;
-        require_https_or_loopback(origins.supplied_by(role, SlotVar::BaseUrl), base_url)?;
-        Ok(LlmSlot {
-            role,
-            kind,
-            model: model.to_string(),
-            api_key: Some(api_key.to_string()),
-            base_url: Some(base_url.to_string()),
+        if crate::ollama::strip_ollama_prefix(model) != model {
+            return Err(LlmConfigError::OllamaModelOnCloudSlot {
+                var: origins.supplied_by(role, SlotVar::Model),
+                provider_var: role.var(SlotVar::Provider),
+                kind,
+            });
+        }
+        let (base_url, url_var) = match non_blank(&slot.base_url) {
+            Some(url) => {
+                let var = origins.supplied_by(role, SlotVar::BaseUrl);
+                require_https_or_loopback(var, url)?;
+                (url, Some(var))
+            }
+            None => (
+                kind.default_base_url()
+                    .ok_or_else(|| missing(SlotVar::BaseUrl))?,
+                None,
+            ),
+        };
+        let key_var = origins.supplied_by(role, SlotVar::ApiKey);
+        require_paired_legacy_credential(key_var, url_var)?;
+        Ok(ResolvedSlot {
+            slot: LlmSlot {
+                role,
+                kind,
+                model: model.to_string(),
+                api_key: Some(api_key.to_string()),
+                base_url: Some(base_url.to_string()),
+            },
+            key_var: Some(key_var),
+            url_var,
+            withheld_ollama_key: false,
         })
     }
 
@@ -770,6 +885,74 @@ fn breaks_json_mode(slot: &LlmSlot) -> bool {
                 url.host_str()
                     .is_some_and(|host| host.eq_ignore_ascii_case("api.anthropic.com"))
             })
+}
+
+/// `true` when an Anthropic slot's base URL has no `v1` path segment: the
+/// Messages API lives under `/v1`, and the resulting 404 is a content fault
+/// that neither fails over nor trips the breaker.
+fn anthropic_base_url_lacks_version(slot: &LlmSlot) -> bool {
+    slot.kind == LlmProviderKind::Anthropic
+        && slot
+            .base_url
+            .as_deref()
+            .and_then(|url| reqwest::Url::parse(url).ok())
+            .is_some_and(|url| {
+                !url.path_segments()
+                    .is_some_and(|mut segments| segments.any(|segment| segment == "v1"))
+            })
+}
+
+/// `true` when both URLs parse and share scheme, host, and port.
+fn same_origin(left: &str, right: &str) -> bool {
+    match (reqwest::Url::parse(left), reqwest::Url::parse(right)) {
+        (Ok(left), Ok(right)) => left.origin() == right.origin(),
+        _ => false,
+    }
+}
+
+/// A resolved slot plus the variables that supplied its credential and
+/// endpoint, for the pairing checks.
+struct ResolvedSlot {
+    slot: LlmSlot,
+    /// Variable that supplied `slot.api_key`.
+    key_var: Option<&'static str>,
+    /// Variable that supplied `slot.base_url`; `None` for a backend default.
+    url_var: Option<&'static str>,
+    /// `OLLAMA_API_KEY` was not inherited because the slot targets another host.
+    withheld_ollama_key: bool,
+}
+
+impl ResolvedSlot {
+    /// Refuse an endpoint set by `./.env` for a key that came from elsewhere.
+    fn require_trusted_endpoint(
+        &self,
+        cwd_vars: &HashSet<String>,
+    ) -> std::result::Result<(), LlmConfigError> {
+        match (self.url_var, self.key_var) {
+            (Some(url_var), Some(key_var))
+                if cwd_vars.contains(url_var) && !cwd_vars.contains(key_var) =>
+            {
+                Err(LlmConfigError::UntrustedEndpoint { url_var, key_var })
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Refuse to pair a deprecated `OPENROUTER_*` key with a per-slot base URL,
+/// or a per-slot key with `OPENROUTER_BASE_URL`: a key only goes to the
+/// endpoint configured alongside it (or to the backend default).
+fn require_paired_legacy_credential(
+    key_var: &'static str,
+    url_var: Option<&'static str>,
+) -> std::result::Result<(), LlmConfigError> {
+    let legacy_key = Some(key_var) == SlotVar::ApiKey.legacy_name();
+    match url_var {
+        Some(url_var) if legacy_key != (Some(url_var) == SlotVar::BaseUrl.legacy_name()) => {
+            Err(LlmConfigError::MixedLegacyCredential { key_var, url_var })
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Reject a cloud base URL that is unparsable, or plain HTTP to a remote host.
@@ -1871,6 +2054,266 @@ mod tests {
         assert!(report.supplied.is_empty());
         assert_eq!(fallback.model.as_deref(), Some("new-model"));
         assert_eq!(fallback.base_url.as_deref(), Some("https://new.example/v1"));
+    }
+
+    /// The typed error of a load that must fail.
+    fn load_error(
+        overrides: &[(&'static str, Option<&str>)],
+        cwd_env: Option<&str>,
+        config_env: Option<&str>,
+    ) -> LlmConfigError {
+        llm_config_error(load_with_files(overrides, cwd_env, config_env).unwrap_err())
+    }
+
+    #[test]
+    #[serial]
+    fn a_legacy_api_key_is_never_sent_to_a_slot_base_url() {
+        // A stale OPENROUTER_API_KEY must not reach a gateway configured for
+        // another credential.
+        let error = load_error(
+            &[
+                ("LLM_PROVIDER", Some("openai-compatible")),
+                ("LLM_MODEL", Some("m")),
+                ("LLM_BASE_URL", Some("https://gw.example/v1")),
+                ("OPENROUTER_API_KEY", Some("legacy-key")),
+            ],
+            None,
+            None,
+        );
+        assert!(
+            matches!(
+                error,
+                LlmConfigError::MixedLegacyCredential {
+                    key_var: "OPENROUTER_API_KEY",
+                    url_var: "LLM_BASE_URL"
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_slot_api_key_is_never_sent_to_a_legacy_base_url() {
+        let error = load_error(
+            &[
+                ("LLM_PROVIDER", Some("openrouter")),
+                ("LLM_MODEL", Some("m")),
+                ("LLM_API_KEY", Some("new-key")),
+                (
+                    "OPENROUTER_BASE_URL",
+                    Some("https://old-gateway.example/v1"),
+                ),
+            ],
+            None,
+            None,
+        );
+        assert!(
+            matches!(
+                error,
+                LlmConfigError::MixedLegacyCredential {
+                    key_var: "LLM_API_KEY",
+                    url_var: "OPENROUTER_BASE_URL"
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn ollama_api_key_only_goes_to_the_ollama_host_origin() {
+        let base = Settings {
+            ollama_host: Some("http://gpu:11434".into()),
+            ollama_api_key: Some("ollama-key".into()),
+            ..Settings::default()
+        };
+        let fallback_at = |url: &str| Settings {
+            llm_fallback: Some(SlotSettings {
+                base_url: Some(url.into()),
+                ..SlotSettings::default()
+            }),
+            ..base.clone()
+        };
+
+        let other_host = fallback_at("http://second-gpu:11434");
+        assert_eq!(
+            other_host.primary_slot().unwrap().api_key.as_deref(),
+            Some("ollama-key")
+        );
+        let fallback = other_host.fallback_slot().unwrap().unwrap();
+        assert_eq!(fallback.api_key, None, "key leaked to another host");
+        assert!(other_host.validate().is_ok());
+
+        let same_origin = fallback_at("http://gpu:11434/");
+        assert_eq!(
+            same_origin
+                .fallback_slot()
+                .unwrap()
+                .unwrap()
+                .api_key
+                .as_deref(),
+            Some("ollama-key")
+        );
+
+        // Without OLLAMA_HOST the key belongs to the default endpoint.
+        let default_host = Settings {
+            ollama_host: None,
+            llm_primary: SlotSettings {
+                base_url: Some("http://localhost:11434".into()),
+                ..SlotSettings::default()
+            },
+            ..base.clone()
+        };
+        assert_eq!(
+            default_host.primary_slot().unwrap().api_key.as_deref(),
+            Some("ollama-key")
+        );
+
+        // The slot's own key always goes to the slot's own host.
+        let own_key = edited(fallback_at("http://second-gpu:11434"), |s| {
+            fallback_of(s).api_key = Some("second-key".into());
+        });
+        assert_eq!(
+            own_key.fallback_slot().unwrap().unwrap().api_key.as_deref(),
+            Some("second-key")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_cwd_dot_env_cannot_redirect_a_key_set_elsewhere() {
+        let operator_config =
+            "LLM_PROVIDER=anthropic\nLLM_MODEL=claude-haiku-5-5\nLLM_API_KEY=operator-key\n";
+        let error = load_error(
+            &[],
+            Some("LLM_BASE_URL=https://attacker.example/v1\n"),
+            Some(operator_config),
+        );
+        assert!(
+            matches!(
+                error,
+                LlmConfigError::UntrustedEndpoint {
+                    url_var: "LLM_BASE_URL",
+                    key_var: "LLM_API_KEY"
+                }
+            ),
+            "{error:?}"
+        );
+
+        // A key exported in the process env is just as off-limits.
+        let error = load_error(
+            &[
+                ("LLM_FALLBACK_PROVIDER", Some("openai-compatible")),
+                ("LLM_FALLBACK_MODEL", Some("m")),
+                ("LLM_FALLBACK_API_KEY", Some("operator-key")),
+            ],
+            Some("LLM_FALLBACK_BASE_URL=https://attacker.example/v1\n"),
+            None,
+        );
+        assert!(
+            matches!(
+                error,
+                LlmConfigError::UntrustedEndpoint {
+                    url_var: "LLM_FALLBACK_BASE_URL",
+                    key_var: "LLM_FALLBACK_API_KEY"
+                }
+            ),
+            "{error:?}"
+        );
+
+        // So is the Ollama bearer.
+        let error = load_error(
+            &[],
+            Some("OLLAMA_HOST=http://attacker.example:11434\n"),
+            Some("OLLAMA_API_KEY=operator-key\n"),
+        );
+        assert!(
+            matches!(
+                error,
+                LlmConfigError::UntrustedEndpoint {
+                    url_var: "OLLAMA_HOST",
+                    key_var: "OLLAMA_API_KEY"
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_cwd_dot_env_may_configure_its_own_key_and_endpoint() {
+        // Both from ./.env: the file only redirects its own credential.
+        let settings = load_with_files(
+            &[],
+            Some("LLM_BASE_URL=https://gw.example/v1\nLLM_API_KEY=project-key\n"),
+            Some("LLM_PROVIDER=openai-compatible\nLLM_MODEL=m\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            settings.primary_slot().unwrap().api_key.as_deref(),
+            Some("project-key")
+        );
+
+        // An operator endpoint with a ./.env key sends nothing of the operator's.
+        let settings = load_with_files(
+            &[],
+            Some("LLM_API_KEY=project-key\n"),
+            Some(
+                "LLM_PROVIDER=openai-compatible\nLLM_MODEL=m\nLLM_BASE_URL=https://gw.example/v1\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            settings.primary_slot().unwrap().base_url.as_deref(),
+            Some("https://gw.example/v1")
+        );
+    }
+
+    #[test]
+    fn a_cloud_slot_rejects_an_ollama_model() {
+        // A stale `ollama::` model left by an installer must fail at startup,
+        // not as a model-not-found 4xx on every call.
+        let settings = edited(cloud_primary(LlmProviderKind::Anthropic), |s| {
+            s.llm_primary.model = Some("ollama::qwen3.5:9b".into());
+        });
+        assert!(matches!(
+            llm_config_error(settings.validate().unwrap_err()),
+            LlmConfigError::OllamaModelOnCloudSlot {
+                var: "LLM_MODEL",
+                kind: LlmProviderKind::Anthropic,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn anthropic_base_url_without_a_version_segment_is_detected() {
+        let anthropic = |base_url: &str| LlmSlot {
+            role: LlmRole::Primary,
+            kind: LlmProviderKind::Anthropic,
+            model: "claude-haiku-5-5".into(),
+            api_key: Some("key".into()),
+            base_url: Some(base_url.into()),
+        };
+        assert!(anthropic_base_url_lacks_version(&anthropic(
+            "https://api.anthropic.com"
+        )));
+        assert!(anthropic_base_url_lacks_version(&anthropic(
+            "https://gw.example/anthropic/"
+        )));
+        for ok in [
+            "https://api.anthropic.com/v1/",
+            "https://api.anthropic.com/v1",
+            "https://gw.example/anthropic/v1",
+        ] {
+            assert!(!anthropic_base_url_lacks_version(&anthropic(ok)), "{ok}");
+        }
+        // Only the native backend appends /messages to the base URL.
+        let openai = LlmSlot {
+            kind: LlmProviderKind::OpenAi,
+            ..anthropic("https://gw.example")
+        };
+        assert!(!anthropic_base_url_lacks_version(&openai));
     }
 
     #[test]
