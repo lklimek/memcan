@@ -4,8 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use arrow_array::{
-    Array, ArrayRef, FixedSizeListArray, Float32Array, LargeStringArray, RecordBatch,
-    RecordBatchIterator, StringArray,
+    Array, ArrayRef, FixedSizeListArray, Float32Array, LargeStringArray, RecordBatch, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
@@ -566,7 +565,9 @@ impl VectorStore for LanceDbStore {
                     columns = ?col_names,
                     "migrating table: adding missing columns"
                 );
-                tbl.add_columns(NewColumnTransform::SqlExpressions(missing), None)
+                tbl.add_columns()
+                    .transform(NewColumnTransform::SqlExpressions(missing))
+                    .execute()
                     .await
                     .with_context(|| format!("failed to add missing columns to table {name}"))?;
             }
@@ -577,10 +578,9 @@ impl VectorStore for LanceDbStore {
         debug!(name, dims, "creating table");
         let schema = Self::build_arrow_schema(dims, table_schema)
             .map_err(|e| MemcanError::Config(e.to_string()))?;
-        let batches = RecordBatchIterator::new(vec![], schema.clone());
         let tbl = self
             .conn
-            .create_table(name, Box::new(batches))
+            .create_empty_table(name, schema)
             .execute()
             .await
             .with_context(|| format!("failed to create table {name}"))?;
@@ -605,9 +605,7 @@ impl VectorStore for LanceDbStore {
         let _ = tbl.delete(&filter).await; // ignore error if no rows match
 
         let batch = Self::points_to_batch(points, dims, table_schema)?;
-        let schema = batch.schema();
-        let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
-        tbl.add(Box::new(batches)).execute().await?;
+        tbl.add(batch).execute().await?;
         maybe_auto_compact(&tbl, table, self.auto_compact_fragments, &self.compacting).await;
         Ok(())
     }
@@ -909,16 +907,14 @@ mod tests {
             Field::new("payload", DataType::LargeUtf8, false),
         ]));
         let conn = connect(path).execute().await.expect("connect");
-        let empty = RecordBatchIterator::new(vec![], schema.clone());
         let tbl = conn
-            .create_table("recover", Box::new(empty))
+            .create_empty_table("recover", schema.clone())
             .execute()
             .await
             .expect("create table");
         for id in ["r1", "r2", "r3"] {
             let batch = single_row_batch(&schema, id);
-            let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
-            tbl.add(Box::new(iter)).execute().await.expect("add row");
+            tbl.add(batch).execute().await.expect("add row");
         }
         drop(tbl);
         drop(conn);
@@ -1164,8 +1160,7 @@ mod tests {
         ]));
 
         let conn = connect(path).execute().await.expect("connect");
-        let batches = RecordBatchIterator::new(vec![], old_schema.clone());
-        conn.create_table("migrate_test", Box::new(batches))
+        conn.create_empty_table("migrate_test", old_schema.clone())
             .execute()
             .await
             .expect("create old-schema table");
