@@ -1,0 +1,22 @@
+# Cargo audit configuration
+# Transitive deps pinned by upstream (lance → lance-bitpacking/tokenizers → paste;
+# lancedb 0.41 → arrow-ipc 58 → zstd 0.13).
+# Review on each fastembed/lancedb/lance major bump — remove if resolved.
+
+[advisories]
+ignore = [
+    # paste 1.0.15 — unmaintained (fastembed/lancedb/datafusion deep transitive)
+    "RUSTSEC-2024-0436",
+    # zstd 0.13.3 / zstd-safe 7.3.0 — arrow-ipc 58 (required by lancedb 0.41) pins
+    # zstd ^0.13 and no patched 0.13.x exists; lance-encoding uses zstd 0.14.3.
+    # memcan does not use Arrow IPC directly; lance's ZSTD-compressed deletion files
+    # reach arrow-ipc's zstd only through the one-shot bulk API, which none of these
+    # advisories affect.
+    # TODO: remove these three once lancedb depends on arrow >= 60.
+    # zstd stream::raw::{Encoder,Decoder}::with_context reuse leak — bulk API not affected
+    "RUSTSEC-2026-0391",
+    # zstd-safe DCtx::decompress_stream legacy-frame uninit memory — bulk API not affected
+    "RUSTSEC-2026-0403",
+    # zstd-safe seekable::Seekable::decompress — `seekable` feature not enabled
+    "RUSTSEC-2026-0398",
+]
