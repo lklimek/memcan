@@ -2,47 +2,52 @@
 
 use async_trait::async_trait;
 use ollama_rs::Ollama;
-use ollama_rs::error::OllamaError;
-use ollama_rs::generation::chat::ChatMessage;
-use ollama_rs::generation::chat::ChatMessageFinalResponseData;
 use ollama_rs::generation::chat::request::ChatMessageRequest;
+use ollama_rs::generation::chat::{ChatMessage, ChatMessageFinalResponseData, ChatMessageResponse};
 use ollama_rs::generation::parameters::{FormatType, ThinkType};
 use ollama_rs::models::ModelOptions;
 
 use crate::config::LlmSlot;
 use crate::error::{MemcanError, Result};
+use crate::llm_fallback::status_is_unavailable;
 use crate::llm_telemetry;
+use crate::ollama::DEFAULT_OLLAMA_HOST;
 use crate::ollama::strip_ollama_prefix;
 use crate::traits::{LlmMessage, LlmOptions, LlmProvider, Role};
 
 /// LLM provider backed by [`ollama_rs::Ollama`].
+///
+/// Chat requests are ollama-rs [`ChatMessageRequest`]s, but this provider
+/// posts them itself: ollama-rs folds every non-2xx reply into one error
+/// without its status, which would make a rejected prompt indistinguishable
+/// from an outage.
 pub struct OllamaRsLlmProvider {
     client: Ollama,
+    /// Client for `/api/chat`, configured like ollama-rs's default one.
+    chat_http: reqwest::Client,
+    /// `Authorization` header sent with every chat request.
+    auth: Option<reqwest::header::HeaderValue>,
     default_model: String,
 }
 
-/// Sort a chat failure into the availability class or the content class.
-///
-/// [`OllamaError::ReqwestError`] proves the daemon was unreachable, so it maps
-/// to [`MemcanError::LlmUnavailable`]. `Other` and `JsonError` join it, because
-/// ollama-rs cannot tell us enough to do better:
-///
-/// `send_chat_messages` collapses **every** non-2xx response into
-/// `OllamaError::Other`, discarding the status code, so a 400
-/// (context-length-exceeded) is indistinguishable from a 503 (model failed to
-/// load) without parsing the body text. Both therefore stay in the
-/// availability class: guessing from prose would be worse than the status quo,
-/// and treating a real 5xx as a content fault would silently disable failover.
-/// The known cost of that trade is that an Ollama-primary
-/// context-length-exceeded still reaches the fallback.
-fn classify_chat_error(error: &OllamaError, model_name: &str) -> MemcanError {
+/// An availability fault from a chat call that never got an HTTP answer, or
+/// got an unusable one.
+fn chat_unavailable(model_name: &str, detail: impl std::fmt::Display) -> MemcanError {
+    MemcanError::LlmUnavailable {
+        context: format!("ollama-rs chat call to model '{model_name}' failed"),
+        detail: detail.to_string(),
+    }
+}
+
+/// Sort a non-2xx `/api/chat` reply by status, exactly as the genai backend
+/// does: see [`status_is_unavailable`].
+fn classify_chat_status(status: u16, body: &str, model_name: &str) -> MemcanError {
     let context = format!("ollama-rs chat call to model '{model_name}' failed");
-    let detail = error.to_string();
-    match error {
-        OllamaError::ReqwestError(_) | OllamaError::Other(_) | OllamaError::JsonError(_) => {
-            MemcanError::LlmUnavailable { context, detail }
-        }
-        _ => MemcanError::LlmChat { context, detail },
+    let detail = format!("HTTP {status}: {body}");
+    if status_is_unavailable(status) {
+        MemcanError::LlmUnavailable { context, detail }
+    } else {
+        MemcanError::LlmChat { context, detail }
     }
 }
 
@@ -71,27 +76,29 @@ impl OllamaRsLlmProvider {
             "OllamaRsLlmProvider: initializing"
         );
 
-        let client = if let Some(ref api_key) = slot.api_key {
-            match reqwest::header::HeaderValue::from_str(&format!("Bearer {api_key}")) {
-                Ok(val) => {
-                    let mut headers = reqwest::header::HeaderMap::new();
-                    headers.insert(reqwest::header::AUTHORIZATION, val);
-                    Ollama::new_with_request_headers(host, port, headers)
-                }
-                Err(e) => {
+        let auth = slot.api_key.as_ref().and_then(|api_key| {
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {api_key}"))
+                .inspect_err(|e| {
                     tracing::warn!(
                         error = %e,
                         "OLLAMA_API_KEY contains invalid characters, connecting without auth"
                     );
-                    Ollama::builder().host(host.clone()).port(port).build()
-                }
+                })
+                .ok()
+        });
+        let client = match &auth {
+            Some(auth) => {
+                let mut headers = reqwest::header::HeaderMap::new();
+                headers.insert(reqwest::header::AUTHORIZATION, auth.clone());
+                Ollama::new_with_request_headers(host, port, headers)
             }
-        } else {
-            Ollama::builder().host(host).port(port).build()
+            None => Ollama::builder().host(host).port(port).build(),
         };
 
         Self {
             client,
+            chat_http: reqwest::Client::new(),
+            auth,
             default_model,
         }
     }
@@ -104,6 +111,36 @@ impl OllamaRsLlmProvider {
     /// Return the Ollama base URL (for diagnostics).
     pub fn url(&self) -> &str {
         self.client.url_str()
+    }
+
+    /// POST `request` to `/api/chat` as ollama-rs's `send_chat_messages`
+    /// does, keeping the reply status for fault classification.
+    async fn send_chat(
+        &self,
+        request: &ChatMessageRequest,
+        model_name: &str,
+    ) -> Result<ChatMessageResponse> {
+        let mut builder = self
+            .chat_http
+            .post(format!("{}api/chat", self.client.url_str()))
+            .json(request);
+        if let Some(auth) = &self.auth {
+            builder = builder.header(reqwest::header::AUTHORIZATION, auth.clone());
+        }
+        let response = builder
+            .send()
+            .await
+            .map_err(|e| chat_unavailable(model_name, e))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_else(|e| e.to_string());
+            return Err(classify_chat_status(status.as_u16(), &body, model_name));
+        }
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| chat_unavailable(model_name, e))?;
+        serde_json::from_slice(&bytes).map_err(|e| chat_unavailable(model_name, e))
     }
 }
 
@@ -124,7 +161,7 @@ pub(crate) fn extract_token_counts(
 /// Parse an Ollama host string into (base_url, port).
 ///
 /// Validates that the scheme is `http` or `https`. Falls back to
-/// `http://localhost:11434` with a warning on unparseable input; the warning
+/// [`DEFAULT_OLLAMA_HOST`] with a warning on unparseable input; the warning
 /// never echoes the value, which may hold a credential.
 pub(crate) fn parse_host_port(host: &str) -> (String, u16) {
     let host = host.trim_end_matches('/');
@@ -134,7 +171,7 @@ pub(crate) fn parse_host_port(host: &str) -> (String, u16) {
         if scheme != "http" && scheme != "https" {
             tracing::warn!(
                 scheme = scheme,
-                "Ollama base URL has an unsupported scheme, falling back to http://localhost:11434"
+                "Ollama base URL has an unsupported scheme, falling back to {DEFAULT_OLLAMA_HOST}"
             );
             return ("http://localhost".to_string(), 11434);
         }
@@ -143,7 +180,7 @@ pub(crate) fn parse_host_port(host: &str) -> (String, u16) {
         return (base, port);
     }
 
-    tracing::warn!("Ollama base URL is not a valid URL, falling back to http://localhost:11434");
+    tracing::warn!("Ollama base URL is not a valid URL, falling back to {DEFAULT_OLLAMA_HOST}");
     ("http://localhost".to_string(), 11434)
 }
 
@@ -208,11 +245,7 @@ impl LlmProvider for OllamaRsLlmProvider {
             None => {}
         }
 
-        let response = self
-            .client
-            .send_chat_messages(request)
-            .await
-            .map_err(|e| classify_chat_error(&e, model_name))?;
+        let response = self.send_chat(&request, model_name).await?;
 
         // Emit structured token telemetry before consuming the response.
         let (prompt_tokens, completion_tokens) = extract_token_counts(response.final_data.as_ref());
@@ -293,33 +326,151 @@ impl LlmProvider for OllamaRsLlmProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Settings;
+    use crate::config::{Settings, SlotSettings};
+    use crate::error::MemcanError;
     use crate::traits::{LlmMessage, LlmProvider, Role};
 
-    // ── classify_chat_error unit tests ──────────────────────────────────────
+    // ── chat fault classification ───────────────────────────────────────────
 
-    #[test]
-    fn non_2xx_response_is_classified_unavailable() {
-        // send_chat_messages funnels every non-2xx into Other(body) without the
-        // status, so this bucket cannot be narrowed without parsing prose.
-        let error = OllamaError::Other("model is loading".into());
-        assert!(classify_chat_error(&error, "qwen3.5:9b").is_llm_unavailable());
+    fn user_message() -> Vec<LlmMessage> {
+        vec![LlmMessage {
+            role: Role::User,
+            content: "Describe this function.".into(),
+        }]
+    }
+
+    /// The error of a chat call that `/api/chat` answers with `status` and `body`.
+    async fn chat_error_for(status: usize, body: &str) -> MemcanError {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .with_status(status)
+            .with_body(body)
+            .create_async()
+            .await;
+        let provider = provider_at(&server.url(), "test-model");
+        let error = provider
+            .chat("test-model", &user_message(), None)
+            .await
+            .unwrap_err();
+        mock.assert_async().await;
+        error
+    }
+
+    /// A rejected request is deterministic for the prompt: it must neither
+    /// trip the breaker nor egress the prompt to a cloud fallback.
+    #[tokio::test]
+    async fn test_chat_client_error_is_a_content_fault() {
+        for status in [400, 404, 413, 422] {
+            let error = chat_error_for(status, r#"{"error":"context length exceeded"}"#).await;
+            assert!(
+                error.is_llm_error() && !error.is_llm_unavailable(),
+                "{status} should be a content fault: {error:?}"
+            );
+            assert!(error.to_string().contains("test-model"), "{error}");
+        }
+    }
+
+    /// Rejected credentials, rate limits, and 5xx describe the daemon, not
+    /// the prompt, so another backend may still serve the request.
+    #[tokio::test]
+    async fn test_chat_backend_statuses_are_availability_faults() {
+        for status in [401, 402, 408, 429, 500, 503] {
+            let error = chat_error_for(status, "model is loading").await;
+            assert!(
+                error.is_llm_unavailable(),
+                "{status} should be an availability fault: {error:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_chat_unreachable_daemon_is_an_availability_fault() {
+        let provider = provider_at("http://127.0.0.1:1", "test-model");
+        let error = provider
+            .chat("test-model", &user_message(), None)
+            .await
+            .unwrap_err();
+        assert!(error.is_llm_unavailable(), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn test_chat_malformed_success_body_is_an_availability_fault() {
+        let error = chat_error_for(200, "{").await;
+        assert!(error.is_llm_unavailable(), "{error:?}");
+    }
+
+    /// The chat request keeps the ollama-rs wire format: bearer auth, the
+    /// model options, JSON format, the think flag, and `stream: false`.
+    #[tokio::test]
+    async fn test_chat_request_keeps_auth_and_every_option() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .match_header("authorization", "Bearer test-key")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "model": "test-model",
+                "stream": false,
+                "format": "json",
+                "think": false,
+                "options": {"temperature": 0.0, "num_predict": 64}
+            })))
+            .match_request(|req| {
+                let body: serde_json::Value = req
+                    .utf8_lossy_body()
+                    .ok()
+                    .and_then(|body| serde_json::from_str(&body).ok())
+                    .unwrap_or_default();
+                body["messages"][0]["role"] == "user"
+                    && body["messages"][0]["content"] == "Describe this function."
+            })
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"model":"test-model","created_at":"2026-01-01T00:00:00Z",
+                    "message":{"role":"assistant","content":"{}"},"done":true}"#,
+            )
+            .create_async()
+            .await;
+        let settings = Settings {
+            llm_primary: SlotSettings {
+                model: Some("ollama::test-model".into()),
+                ..SlotSettings::default()
+            },
+            ollama_host: Some(server.url()),
+            ollama_api_key: Some("test-key".into()),
+            ..Settings::default()
+        };
+        let provider = OllamaRsLlmProvider::from_slot(&settings.primary_slot().unwrap());
+
+        let reply = provider
+            .chat(
+                "ollama::test-model",
+                &user_message(),
+                Some(crate::traits::LlmOptions {
+                    format_json: true,
+                    think: Some(false),
+                    temperature: Some(0.0),
+                    max_tokens: Some(64),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(reply, "{}");
+        mock.assert_async().await;
     }
 
     #[test]
-    fn malformed_response_body_is_classified_unavailable() {
-        let json_error = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
-        let error = OllamaError::JsonError(json_error);
-        assert!(classify_chat_error(&error, "qwen3.5:9b").is_llm_unavailable());
-    }
-
-    #[test]
-    fn classified_error_keeps_the_model_name_in_context() {
-        let error = OllamaError::Other("boom".into());
-        assert!(
-            classify_chat_error(&error, "qwen3.5:9b")
-                .to_string()
-                .contains("qwen3.5:9b")
+    fn test_parse_host_port_fallback_is_the_default_host() {
+        assert_eq!(
+            parse_host_port("not a url"),
+            parse_host_port(crate::ollama::DEFAULT_OLLAMA_HOST)
+        );
+        assert_eq!(
+            parse_host_port("ftp://gpu:11434"),
+            parse_host_port(crate::ollama::DEFAULT_OLLAMA_HOST)
         );
     }
 
@@ -508,6 +659,8 @@ mod tests {
     fn test_default_model() {
         let provider = OllamaRsLlmProvider {
             client: Ollama::default(),
+            chat_http: reqwest::Client::new(),
+            auth: None,
             default_model: "test-model".into(),
         };
         assert_eq!(provider.default_model(), "test-model");
@@ -516,7 +669,10 @@ mod tests {
     #[test]
     fn test_from_settings_stores_model() {
         let settings = Settings {
-            llm_model: Some("ollama::qwen3.5:9b".into()),
+            llm_primary: SlotSettings {
+                model: Some("ollama::qwen3.5:9b".into()),
+                ..SlotSettings::default()
+            },
             ..Settings::default()
         };
         let provider = OllamaRsLlmProvider::from_slot(&settings.primary_slot().unwrap());
@@ -526,7 +682,10 @@ mod tests {
     #[test]
     fn test_from_settings_with_api_key() {
         let settings = Settings {
-            llm_model: Some("ollama::qwen3.5:9b".into()),
+            llm_primary: SlotSettings {
+                model: Some("ollama::qwen3.5:9b".into()),
+                ..SlotSettings::default()
+            },
             ollama_api_key: Some("test-key".into()),
             ..Settings::default()
         };
@@ -558,7 +717,10 @@ mod tests {
     /// Helper: create a provider pointing at the given base URL.
     fn provider_at(base_url: &str, model: &str) -> OllamaRsLlmProvider {
         let settings = Settings {
-            llm_model: Some(model.into()),
+            llm_primary: SlotSettings {
+                model: Some(model.into()),
+                ..SlotSettings::default()
+            },
             ollama_host: Some(base_url.to_string()),
             ..Settings::default()
         };

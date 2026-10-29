@@ -243,12 +243,20 @@ pub struct CountMemoriesParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DeleteMemoryParams {
     pub memory_id: String,
+    /// Limits a short-ID prefix to this project's memories.
+    pub project: Option<String>,
+    /// Limits a short-ID prefix to this scope; wins over `project`.
+    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct UpdateMemoryParams {
     pub memory_id: String,
     pub memory: String,
+    /// Limits a short-ID prefix to this project's memories.
+    pub project: Option<String>,
+    /// Limits a short-ID prefix to this scope; wins over `project`.
+    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -787,35 +795,61 @@ impl MemcanService {
     }
 
     /// Resolve a full memory UUID or an unambiguous ≥8-char prefix, failing
-    /// with a `{tool} failed: …` error when it is ambiguous or matches nothing.
-    async fn resolve_memory_id(&self, tool: &str, memory_id: &str) -> Result<String, ErrorData> {
+    /// with a `{tool} failed: …` invalid-params error when it is ambiguous or
+    /// matches nothing.
+    ///
+    /// A prefix is looked up in the `project` / `user_id` scope when either is
+    /// given, and across all scopes otherwise; a full UUID matches in any scope.
+    async fn resolve_memory_id(
+        &self,
+        tool: &str,
+        memory_id: &str,
+        project: &Option<String>,
+        user_id: &Option<String>,
+    ) -> Result<String, ErrorData> {
+        let scope = (project.is_some() || user_id.is_some())
+            .then(|| resolve_user_id(project, user_id, &self.state.config.default_user_id));
         record_id::resolve_id(
             self.state.store.as_ref(),
             MEMORIES_TABLE,
             RecordKind::Memory,
             memory_id,
+            scope.as_deref(),
         )
         .await
-        .map_err(|e| ErrorData::internal_error(format!("{tool} failed: {e}"), None))?
+        .map_err(|e| match e {
+            MemcanError::AmbiguousIdPrefix { .. } => {
+                ErrorData::invalid_params(format!("{tool} failed: {e}"), None)
+            }
+            e => ErrorData::internal_error(format!("{tool} failed: {e}"), None),
+        })?
         .ok_or_else(|| {
-            ErrorData::internal_error(
-                format!("{tool} failed: memory not found: {memory_id}"),
-                None,
-            )
+            let message = match &scope {
+                Some(scope) => {
+                    format!("{tool} failed: memory not found in scope '{scope}': {memory_id}")
+                }
+                None => format!("{tool} failed: memory not found: {memory_id}"),
+            };
+            ErrorData::invalid_params(message, None)
         })
     }
 
     #[tool(
-        description = "Delete a specific memory by ID: a full UUID or an unambiguous short-ID prefix (>= 8 chars). An ambiguous prefix fails asking for the full UUID; an unknown ID fails as not found."
+        description = "Delete a specific memory by ID: a full UUID or an unambiguous short-ID prefix (>= 8 chars). A full UUID matches in any scope; a prefix is matched within project/user_id when given, across all scopes otherwise. An ambiguous prefix fails asking for the full UUID; an unknown ID fails as not found."
     )]
     async fn delete_memory(
         &self,
         Parameters(params): Parameters<DeleteMemoryParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        debug!(tool = "delete_memory", memory_id = %params.memory_id, "MCP request");
+        debug!(tool = "delete_memory", memory_id = %params.memory_id, project = ?params.project, user_id = ?params.user_id, "MCP request");
 
         let memory_id = self
-            .resolve_memory_id("delete_memory", &params.memory_id)
+            .resolve_memory_id(
+                "delete_memory",
+                &params.memory_id,
+                &params.project,
+                &params.user_id,
+            )
             .await?;
         self.state
             .store
@@ -830,16 +864,21 @@ impl MemcanService {
     }
 
     #[tool(
-        description = "Update an existing memory's content. memory_id is a full UUID or an unambiguous short-ID prefix (>= 8 chars); an ambiguous prefix fails asking for the full UUID, an unknown ID fails as not found."
+        description = "Update an existing memory's content. memory_id is a full UUID or an unambiguous short-ID prefix (>= 8 chars); a full UUID matches in any scope, a prefix is matched within project/user_id when given and across all scopes otherwise. An ambiguous prefix fails asking for the full UUID, an unknown ID fails as not found."
     )]
     async fn update_memory(
         &self,
         Parameters(params): Parameters<UpdateMemoryParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        debug!(tool = "update_memory", memory_id = %params.memory_id, "MCP request");
+        debug!(tool = "update_memory", memory_id = %params.memory_id, project = ?params.project, user_id = ?params.user_id, "MCP request");
 
         let memory_id = self
-            .resolve_memory_id("update_memory", &params.memory_id)
+            .resolve_memory_id(
+                "update_memory",
+                &params.memory_id,
+                &params.project,
+                &params.user_id,
+            )
             .await?;
         let existing = self
             .state
@@ -850,11 +889,8 @@ impl MemcanService {
 
         // Deleted between resolution and this read.
         if existing.is_empty() {
-            return Err(ErrorData::internal_error(
-                format!(
-                    "update_memory failed: memory not found: {}",
-                    params.memory_id
-                ),
+            return Err(ErrorData::invalid_params(
+                format!("update_memory failed: memory not found: {memory_id}"),
                 None,
             ));
         }
@@ -2432,12 +2468,22 @@ mod tests {
                 return Ok(rows.iter().skip(offset).take(limit).cloned().collect());
             }
             let mut records: Vec<_> = self.records.lock().unwrap().values().cloned().collect();
-            if let Some(prefix) = filter
-                .and_then(|value| value.strip_prefix("id LIKE '"))
-                .and_then(|value| value.strip_suffix("%'"))
-            {
-                records.retain(|record| record.id.starts_with(prefix));
+            // Understands the `id LIKE 'prefix%' [AND user_id = 'scope']` filters of
+            // ID-prefix resolution.
+            for clause in filter.into_iter().flat_map(|value| value.split(" AND ")) {
+                if let Some(prefix) = clause
+                    .strip_prefix("id LIKE '")
+                    .and_then(|value| value.strip_suffix("%'"))
+                {
+                    records.retain(|record| record.id.starts_with(prefix));
+                } else if let Some(scope) = clause
+                    .strip_prefix("user_id = '")
+                    .and_then(|value| value.strip_suffix('\''))
+                {
+                    records.retain(|record| record.payload["user_id"] == scope);
+                }
             }
+            records.sort_by(|left, right| left.id.cmp(&right.id));
             records.truncate(limit);
             Ok(records)
         }
@@ -2521,7 +2567,10 @@ mod tests {
                 tech_stack: String::new(),
                 distill_memories: false,
                 log_file: String::new(),
-                llm_model: Some("test".into()),
+                llm_primary: memcan_core::config::SlotSettings {
+                    model: Some("test".into()),
+                    ..Default::default()
+                },
                 embed_model: "test".into(),
                 embed_dims: 3,
                 ollama_host: None,
@@ -2549,10 +2598,16 @@ mod tests {
     const MEMORY_ID: &str = "2e22752c-0b1c-4376-a4ff-8ea963917a1c";
 
     fn service_with_memories(ids: &[&str]) -> MemcanService {
+        let scoped: Vec<_> = ids.iter().map(|id| (*id, "global")).collect();
+        service_with_scoped_memories(&scoped)
+    }
+
+    /// A service holding memories `(id, user_id)`.
+    fn service_with_scoped_memories(memories: &[(&str, &str)]) -> MemcanService {
         let store = MockStore::default();
         {
             let mut records = store.records.lock().unwrap();
-            for id in ids {
+            for (id, user_id) in memories {
                 records.insert(
                     (*id).to_string(),
                     SearchResult {
@@ -2560,7 +2615,7 @@ mod tests {
                         score: 0.0,
                         payload: serde_json::json!({
                             "data": "a memory",
-                            "user_id": "global",
+                            "user_id": user_id,
                             "created_at": "2026-10-01T00:00:00Z",
                         }),
                     },
@@ -2568,6 +2623,115 @@ mod tests {
             }
         }
         make_test_service_with_store(store)
+    }
+
+    fn delete_params(memory_id: &str, project: Option<&str>) -> DeleteMemoryParams {
+        DeleteMemoryParams {
+            memory_id: memory_id.into(),
+            project: project.map(str::to_string),
+            user_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_prefix_is_matched_within_the_given_scope() {
+        let other = "2e22752c-ffff-4376-a4ff-8ea963917a1c";
+        let service =
+            service_with_scoped_memories(&[(MEMORY_ID, "project:a"), (other, "project:b")]);
+
+        let error = service
+            .delete_memory(Parameters(delete_params("2e22752c", Some("c"))))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(
+            error.message.contains("not found in scope 'project:c'"),
+            "{}",
+            error.message
+        );
+
+        let deleted = service
+            .delete_memory(Parameters(delete_params("2e22752c", Some("a"))))
+            .await
+            .unwrap();
+        assert_eq!(response_json(&deleted)["memory_id"], MEMORY_ID);
+        assert!(memory_exists(&service, other).await);
+    }
+
+    #[tokio::test]
+    async fn unscoped_memory_prefix_and_full_ids_match_across_scopes() {
+        // Agents pass short IDs from search results without the scope.
+        let other = "2e22752c-ffff-4376-a4ff-8ea963917a1c";
+        let service =
+            service_with_scoped_memories(&[(MEMORY_ID, "project:a"), (other, "project:b")]);
+
+        let error = service
+            .delete_memory(Parameters(delete_params("2e22752c", None)))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(error.message.contains("ambiguous"), "{}", error.message);
+
+        // A full UUID ignores a mismatched scope.
+        let deleted = service
+            .delete_memory(Parameters(delete_params(other, Some("a"))))
+            .await
+            .unwrap();
+        assert_eq!(response_json(&deleted)["memory_id"], other);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_memory_prefix_lists_at_most_five_matches() {
+        let ids: Vec<String> = (0..6)
+            .map(|n| format!("2e22752c-000{n}-4376-a4ff-8ea963917a1c"))
+            .collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let service = service_with_memories(&refs);
+
+        let error = service
+            .delete_memory(Parameters(delete_params("2e22752c", None)))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .message
+                .contains("matches more than 5 memories (showing 5:"),
+            "{}",
+            error.message
+        );
+        assert!(!error.message.contains(&ids[5]), "{}", error.message);
+        for id in &ids {
+            assert!(memory_exists(&service, id).await);
+        }
+    }
+
+    #[tokio::test]
+    async fn update_memory_names_the_resolved_id_when_the_memory_vanished() {
+        // The prefix resolves, then the record is gone before the read.
+        let store = MockStore::default();
+        store.tables.lock().unwrap().insert(
+            MEMORIES_TABLE.to_string(),
+            vec![SearchResult {
+                id: MEMORY_ID.into(),
+                score: 0.0,
+                payload: serde_json::json!({"data": "a memory", "user_id": "global"}),
+            }],
+        );
+        let service = make_test_service_with_store(store);
+
+        let error = service
+            .update_memory(Parameters(UpdateMemoryParams {
+                memory_id: "2e22752c".into(),
+                memory: "updated".into(),
+                project: None,
+                user_id: None,
+            }))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(error.message.contains(MEMORY_ID), "{}", error.message);
     }
 
     async fn memory_exists(service: &MemcanService, id: &str) -> bool {
@@ -2598,6 +2762,8 @@ mod tests {
         let deleted = service
             .delete_memory(Parameters(DeleteMemoryParams {
                 memory_id: "2e22752c".into(),
+                project: None,
+                user_id: None,
             }))
             .await
             .unwrap();
@@ -2615,6 +2781,8 @@ mod tests {
         let deleted = service
             .delete_memory(Parameters(DeleteMemoryParams {
                 memory_id: MEMORY_ID.into(),
+                project: None,
+                user_id: None,
             }))
             .await
             .unwrap();
@@ -2636,6 +2804,8 @@ mod tests {
             let error = service
                 .delete_memory(Parameters(DeleteMemoryParams {
                     memory_id: memory_id.into(),
+                    project: None,
+                    user_id: None,
                 }))
                 .await
                 .unwrap_err();
@@ -2656,6 +2826,8 @@ mod tests {
         let error = service
             .delete_memory(Parameters(DeleteMemoryParams {
                 memory_id: "2e22752c".into(),
+                project: None,
+                user_id: None,
             }))
             .await
             .unwrap_err();
@@ -2682,6 +2854,8 @@ mod tests {
             .update_memory(Parameters(UpdateMemoryParams {
                 memory_id: format!("  {}\n", MEMORY_ID.to_uppercase()),
                 memory: "updated".into(),
+                project: None,
+                user_id: None,
             }))
             .await
             .unwrap();
@@ -2690,6 +2864,8 @@ mod tests {
         let deleted = service
             .delete_memory(Parameters(DeleteMemoryParams {
                 memory_id: " 2E22752C ".into(),
+                project: None,
+                user_id: None,
             }))
             .await
             .unwrap();
@@ -2730,6 +2906,8 @@ mod tests {
             .update_memory(Parameters(UpdateMemoryParams {
                 memory_id: "2e22752c".into(),
                 memory: "updated".into(),
+                project: None,
+                user_id: None,
             }))
             .await
             .unwrap();
@@ -2748,6 +2926,8 @@ mod tests {
             .update_memory(Parameters(UpdateMemoryParams {
                 memory_id: "ffffffff".into(),
                 memory: "updated".into(),
+                project: None,
+                user_id: None,
             }))
             .await
             .unwrap_err();
@@ -2761,6 +2941,8 @@ mod tests {
             .update_memory(Parameters(UpdateMemoryParams {
                 memory_id: "2e22752c".into(),
                 memory: "updated".into(),
+                project: None,
+                user_id: None,
             }))
             .await
             .unwrap_err();

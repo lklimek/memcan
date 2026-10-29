@@ -4,12 +4,12 @@
 //! IDs they display, and both refuse to guess when a prefix is ambiguous.
 
 use crate::error::{MemcanError, Result};
-use crate::query::sanitize_like;
+use crate::query::{sanitize_eq, sanitize_like};
 use crate::traits::VectorStore;
 
 /// Minimum prefix length before scanning: eight hex characters provide a 32-bit collision-resistance floor.
 pub const MIN_ID_PREFIX_LEN: usize = 8;
-/// Caps ambiguous candidates listed before the error falls back to "N+" wording.
+/// Caps ambiguous candidates listed before the error says "more than N".
 pub const MAX_ID_PREFIX_MATCHES: usize = 5;
 
 /// Kind of record an ID names, for error messages.
@@ -41,7 +41,7 @@ impl RecordKind {
 pub(crate) fn describe_matches(kind: RecordKind, matches: &[String], truncated: bool) -> String {
     if truncated {
         format!(
-            "at least {MAX_ID_PREFIX_MATCHES}+ {} (showing {MAX_ID_PREFIX_MATCHES}: {})",
+            "more than {MAX_ID_PREFIX_MATCHES} {} (showing {MAX_ID_PREFIX_MATCHES}: {})",
             kind.plural(),
             matches.join(", ")
         )
@@ -64,6 +64,9 @@ fn normalize(id: &str) -> String {
 /// Resolve `id` as an exact ID first, then as a short-ID prefix. The prefix
 /// match ignores surrounding whitespace and case.
 ///
+/// `user_id` limits the prefix match to records of that `user_id` scope (for
+/// tables with that column); an exact ID matches in any scope.
+///
 /// Returns `Ok(None)` when nothing matches (including a prefix shorter than
 /// [`MIN_ID_PREFIX_LEN`]) and [`MemcanError::AmbiguousIdPrefix`] when a
 /// prefix matches more than one record.
@@ -72,12 +75,13 @@ pub async fn resolve_id(
     table: &str,
     kind: RecordKind,
     id: &str,
+    user_id: Option<&str>,
 ) -> Result<Option<String>> {
     let exact = store.get(table, &[id.to_string()]).await?;
     if let Some(record) = exact.first() {
         return Ok(Some(record.id.clone()));
     }
-    resolve_id_prefix(store, table, kind, id).await
+    resolve_id_prefix(store, table, kind, id, user_id).await
 }
 
 /// Resolve `prefix` to the single record ID that starts with it.
@@ -88,13 +92,17 @@ pub async fn resolve_id_prefix(
     table: &str,
     kind: RecordKind,
     prefix: &str,
+    user_id: Option<&str>,
 ) -> Result<Option<String>> {
     let prefix = normalize(prefix);
     if prefix.chars().count() < MIN_ID_PREFIX_LEN {
         return Ok(None);
     }
 
-    let filter = format!("id LIKE '{}%'", sanitize_like(&prefix));
+    let mut filter = format!("id LIKE '{}%'", sanitize_like(&prefix));
+    if let Some(user_id) = user_id {
+        filter.push_str(&format!(" AND user_id = '{}'", sanitize_eq(user_id)));
+    }
     let candidates = store
         .scroll(table, Some(&filter), MAX_ID_PREFIX_MATCHES + 1, 0)
         .await?;
@@ -137,6 +145,18 @@ mod tests {
             error.to_string(),
             "ambiguous memory id prefix '2e22752c' matches 2 memories \
              (2e22752c-a, 2e22752c-b) — provide the full UUID"
+        );
+
+        let truncated = MemcanError::AmbiguousIdPrefix {
+            kind: RecordKind::Todo,
+            prefix: "2e22752c".into(),
+            matches: vec!["2e22752c-a".into(); MAX_ID_PREFIX_MATCHES],
+            truncated: true,
+        };
+        let message = truncated.to_string();
+        assert!(
+            message.contains("matches more than 5 todos (showing 5:"),
+            "{message}"
         );
     }
 }

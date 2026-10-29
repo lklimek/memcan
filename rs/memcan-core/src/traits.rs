@@ -149,6 +149,15 @@ pub trait EmbeddingProvider: Send + Sync {
     fn dimensions(&self) -> usize;
 }
 
+/// Context window assumed when a local model doesn't report one.
+pub const DEFAULT_CONTEXT_WINDOW: usize = 4096;
+
+/// Context window assumed for a cloud slot, which cannot report one.
+///
+/// Every supported cloud model has a far larger window; 8x the local default
+/// lifts the input budget without discovering per-model limits.
+pub const CLOUD_DEFAULT_CONTEXT_WINDOW: usize = 8 * DEFAULT_CONTEXT_WINDOW;
+
 /// Abstraction over an LLM chat provider.
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
@@ -168,9 +177,9 @@ pub trait LlmProvider: Send + Sync {
 
     /// Context window, in tokens, to assume when [`Self::context_window`]
     /// returns `None`. Defaults to the conservative local
-    /// [`DEFAULT_CONTEXT_WINDOW`](crate::pipeline::DEFAULT_CONTEXT_WINDOW).
+    /// [`DEFAULT_CONTEXT_WINDOW`].
     fn assumed_context_window(&self) -> usize {
-        crate::pipeline::DEFAULT_CONTEXT_WINDOW
+        DEFAULT_CONTEXT_WINDOW
     }
 
     /// Provider-specific initialization (e.g. model availability check).
