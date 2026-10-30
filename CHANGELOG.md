@@ -4,11 +4,11 @@ All notable changes to this project are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [3.0.0] - 2026-10-30
 
 ### Added
 
-- Native Anthropic backend (`anthropic`, alias `claude`) on the Messages API, with an ephemeral prompt-cache breakpoint on the system prompt, no `temperature`/`response_format`/`thinking` parameters, and a 4096 `max_tokens` default. Token telemetry reports prompt-cache read/creation counts.
+- Native Anthropic backend (`anthropic`, alias `claude`) on the Messages API, with an ephemeral prompt-cache breakpoint on the system prompt, no `temperature`/`response_format` parameters, and a 4096 `max_tokens` default. Thinking is disabled, except on Opus 5.5, Sonnet 5.5, Fable 5.x, and Mythos 5.x, which reject that and run at low effort instead. Token telemetry reports prompt-cache read/creation counts.
 - Provider aliases `openai` and `openai-compatible` (alias `openai-compat`), each with a default base URL; unknown provider values fail startup listing the accepted ones.
 - Per-slot LLM settings: `LLM_MODEL`, `LLM_API_KEY`, `LLM_BASE_URL` for the primary and `LLM_FALLBACK_MODEL`, `LLM_FALLBACK_API_KEY`, `LLM_FALLBACK_BASE_URL` for the fallback. Any backend combination is valid, including the same kind twice; errors name the exact missing or invalid variable. Each slot's backend, model, and base URL are logged at startup.
 - A startup warning for an `openai` / `openrouter` / `openai-compatible` slot aimed at `api.anthropic.com`, whose OpenAI-compatible endpoint has been observed to reject JSON mode with a 400; use `anthropic` there.
@@ -20,7 +20,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project fol
 - Base URLs in logs, `Debug` output, and configuration errors omit userinfo, query, and fragment.
 - Ollama 4xx replies other than 401/402/408/429 are content faults, as on the cloud backends: a rejected prompt no longer trips the breaker or reaches the fallback. A content fault closes a half-open breaker. `/health` reports a fixed note instead of upstream error text for LLM slots.
 - `delete_memory` / `update_memory` accept optional `project` / `user_id` to match a short-ID prefix within that scope; unknown and ambiguous IDs are invalid-params errors.
-- `memcan-core` API: `Settings` holds `llm_primary: SlotSettings` and `llm_fallback: Option<SlotSettings>` instead of flat `llm_*` / `openrouter_*` fields; `LlmSlot.provider` is `LlmSlot.kind`; the `from_settings` / `from_openrouter_settings` constructors and `DependencyId::{Ollama, OpenRouter}` are replaced by slot-based ones; LLM configuration errors are the typed `MemcanError::LlmConfig`. `MemcanError` gains the `LlmConfig` and `AmbiguousIdPrefix` variants on the public, non-`#[non_exhaustive]` enum, which breaks exhaustive matches.
+- `memcan-core` API: `Settings` holds `llm_primary: SlotSettings` and `llm_fallback: Option<SlotSettings>` instead of flat `llm_*` / `openrouter_*` fields; `LlmSlot.provider` is `LlmSlot.kind`; the `from_settings` / `from_openrouter_settings` constructors and `DependencyId::{Ollama, OpenRouter}` are replaced by slot-based ones; LLM configuration errors are the typed `MemcanError::LlmConfig`. `MemcanError` gains the `LlmConfig`, `AmbiguousIdPrefix`, and `LlmClientBuild` variants on the public, non-`#[non_exhaustive]` enum, which breaks exhaustive matches.
+
+- **Breaking:** building MemCan, including the published `memcan` CLI, requires Rust 1.99 (previously 1.92). CI, release builds, and the Docker image use the latest stable toolchain.
+- Embedding uses about 1.1 GB less resident memory on the default model, because ONNX weight prepacking is disabled; embedding queries run about 30% slower in exchange.
+- Update LanceDB to 0.41 (lance 14, arrow 58). Existing data stays on storage format 2.0, so a rollback to the previous release can still read it.
+- Update rmcp to 3.8, genai to 0.7.2, fastembed to 7.5, md-5 and sha2 to 0.11, and serial_test to 4. Embedding vectors and content hashes are unchanged, so existing data needs no re-indexing.
+- With the non-default genai-only Ollama path, requests use Ollama's native `/api/chat`; the endpoint is the server root and the key is sent as a Bearer header.
 
 ### Deprecated
 
@@ -32,11 +38,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project fol
 - Cloud LLM slots assume a 32768-token context window (8x the local 4096 default) when sizing prompt budgets, instead of truncating memory, code-description, and standards input to a ~1.6k-token budget. A known smaller fallback window still caps the budget, and with neither window known the smaller of both slots' assumptions applies.
 - Cloud (OpenAI-compatible) backends no longer receive `temperature`; code and standards indexing failed with a 400 on Anthropic's OpenAI-compatible endpoint and on OpenAI reasoning models.
 
+- Duplicate detection works again with Claude Haiku when its reply opens with reasoning text before the JSON answer. Such replies failed to parse, so those memories were stored without checking for duplicates (`completed_degraded`).
+
 ### Security
 
 - An API key is only sent to the endpoint configured with it. `OPENROUTER_API_KEY` pairs only with `OPENROUTER_BASE_URL` or the default endpoint, and the reverse; `OLLAMA_API_KEY` is only sent to `OLLAMA_HOST`'s host; a `./.env` in the working directory may not set the endpoint for a key from the environment or `~/.config/memcan/.env`. Mismatches fail startup naming both variables (the Ollama case withholds the key instead).
 - Cloud LLM clients time out (10s connect, 120s request) and never follow redirects, which could carry the `x-api-key` header and the request body to another host or to plain HTTP. A timeout is an availability fault, so the fallback engages.
 - Update rustls-webpki to 0.103.16 and webpki-roots / webpki-root-certs to 1.0.11 (RUSTSEC-2026-0381, RUSTSEC-2026-0382, RUSTSEC-2026-0383).
+- Update rmcp, picking up upstream fixes for OAuth metadata SSRF and resource spoofing, redirect header leaks, a streamable-HTTP session leak, unbounded memory, and malformed JSON-RPC handling. MemCan keeps request bodies unlimited in size, as before, so large `index_code_files` batches still work; ingestion stays bounded in time by `MEMCAN_BODY_READ_TIMEOUT`.
+- `cargo audit` reads its exceptions from `.cargo/audit.toml`; the previous `audit.toml` in the repository root was never read. It ignores three zstd advisories (RUSTSEC-2026-0391, RUSTSEC-2026-0403, RUSTSEC-2026-0398) pulled in through arrow-ipc: MemCan's dependencies use only zstd's bulk API, not the affected functions, and no patched zstd 0.13 exists. The exceptions go away once lancedb moves to arrow 60 or newer.
 
 ## [2.0.3] - 2026-10-19
 
