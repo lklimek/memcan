@@ -803,6 +803,9 @@ impl Drop for PipelineGuard {
     }
 }
 
+/// Characters of an unparseable dedup reply kept in the debug log.
+const DEDUP_REPLY_LOG_CHARS: usize = 300;
+
 async fn run_dedup_llm(
     existing_memories: &[serde_json::Value],
     fact: &str,
@@ -830,8 +833,15 @@ async fn run_dedup_llm(
         ..Default::default()
     });
     let response = llm.chat(llm_model, &messages, options).await?;
-    let parsed: MemoryUpdateResponse =
-        serde_json::from_str(strip_code_fence(&response)).context("dedup response JSON parse")?;
+    let parsed: MemoryUpdateResponse = serde_json::from_str(strip_code_fence(&response))
+        .inspect_err(|_| {
+            // The parse error alone hides reply-format drift; the excerpt shows it.
+            debug!(
+                reply = %truncate_with(&response, DEDUP_REPLY_LOG_CHARS, "…"),
+                "dedup reply is not valid JSON"
+            );
+        })
+        .context("dedup response JSON parse")?;
     Ok(parsed.events)
 }
 
