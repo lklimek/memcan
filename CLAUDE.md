@@ -34,7 +34,7 @@ Reusable library. All domain logic lives here. Must not depend on transport, CLI
 |---|---|
 | `traits` | `VectorStore`, `EmbeddingProvider`, `LlmProvider`, `TableSchema` abstractions |
 | `lancedb_store` | LanceDB implementation of `VectorStore` |
-| `embed` | fastembed implementation of `EmbeddingProvider` |
+| `embed` | fastembed implementation of `EmbeddingProvider`. ONNX weight prepacking is disabled (`session.disable_prepacking`): ~1.1 GB less resident memory on the default model for slightly slower queries. |
 | `llm_ollama_rs` | **Default** `LlmProvider` backed by ollama-rs 0.3.5 (feature `ollama-rs-llm`). Posts the ollama-rs chat request itself so the HTTP status survives for fault classification. Token counts from `ChatMessageFinalResponseData.{prompt_eval_count, eval_count}`. |
 | `llm` | `LlmProvider` backed by genai 0.5.3 (default feature `genai-llm`) serving the cloud backends: native Anthropic adapter (system-prompt cache breakpoint) or OpenAI adapter with a base-URL override. Token counts from `ChatResponse.usage.{prompt_tokens, completion_tokens, prompt_tokens_details}`. |
 | `llm_telemetry` | Shared structured debug log emitter for per-call token counts; called by both LLM backends. |
