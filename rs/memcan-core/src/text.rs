@@ -70,9 +70,16 @@ pub fn strip_code_fence(s: &str) -> &str {
     if trimmed.starts_with(['{', '[']) {
         return trimmed;
     }
-    let Some(after_open) = trimmed.strip_prefix("```") else {
-        return last_fenced_block(trimmed).map_or(trimmed, strip_code_fence);
-    };
+    if trimmed.starts_with("```") {
+        return fence_body(trimmed);
+    }
+    last_fenced_block(trimmed).map_or(trimmed, fence_body)
+}
+
+/// The body of `block`, which opens with a fence: drops that fence, an
+/// optional language tag and an optional closing fence.
+fn fence_body(block: &str) -> &str {
+    let after_open = block.strip_prefix("```").unwrap_or(block);
     // Discard an optional language tag (a contiguous alphanumeric run right
     // after the opening fence, e.g. `json`) — regardless of whether the body
     // starts on the same line (`` ```json {...}\n``` ``) or the next one
@@ -88,8 +95,9 @@ pub fn strip_code_fence(s: &str) -> &str {
 /// one (or the end of `s` when unclosed); `None` when `s` has no fence.
 ///
 /// Fences pair up in order, and only fences opening a line count. A trailing
-/// unclosed block (e.g. a truncated answer) wins over an earlier complete one,
-/// so a quoted example is never mistaken for the answer.
+/// unclosed block with a body (e.g. a truncated answer) wins over an earlier
+/// complete one, so a quoted example is never mistaken for the answer; an
+/// empty one, such as a stray fence, does not.
 fn last_fenced_block(s: &str) -> Option<&str> {
     let mut open = None;
     let mut last = None;
@@ -106,7 +114,9 @@ fn last_fenced_block(s: &str) -> Option<&str> {
             Some(start) => last = Some(&s[start..at + 3]),
         }
     }
-    open.map(|start| &s[start..]).or(last)
+    open.map(|start| &s[start..])
+        .filter(|block| !fence_body(block).is_empty())
+        .or(last)
 }
 
 #[cfg(test)]
@@ -320,6 +330,24 @@ mod tests {
     fn test_fence_after_prose_unclosed_last_block_wins() {
         let input = "Format:\n```json\n{\"events\": []}\n```\nAnswer:\n```json\n{\"events\": [";
         assert_eq!(strip_code_fence(input), "{\"events\": [");
+    }
+
+    // A stray empty fence after the answer is not a truncated answer.
+    #[test]
+    fn test_fence_after_prose_stray_trailing_fence_ignored() {
+        let input = "Reasoning.\n```json\n{\"a\":1}\n```\nNote:\n```";
+        assert_eq!(strip_code_fence(input), "{\"a\":1}");
+    }
+
+    #[test]
+    fn test_fence_after_prose_empty_unclosed_tag_ignored() {
+        let input = "Reasoning.\n```json\n{\"a\":1}\n```\n```json\n";
+        assert_eq!(strip_code_fence(input), "{\"a\":1}");
+    }
+
+    #[test]
+    fn test_fence_after_prose_only_empty_fence_passthrough() {
+        assert_eq!(strip_code_fence("Reasoning.\n```"), "Reasoning.\n```");
     }
 
     // Prose without any fence is only trimmed — the caller's parse fails.
