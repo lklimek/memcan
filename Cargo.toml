@@ -46,10 +46,7 @@ ollama-rs = { version = "0.3", features = ["headers"] }
 reqwest = { version = "0.13", features = ["json"] }
 
 # Vector DB
-# TODO: bump to the next lancedb release; 0.38.0-0.40.0 fail to build without the
-# `remote` feature (fixed upstream in lancedb/lancedb#4103 and #4233, unreleased).
-# arrow stays at lancedb's arrow major.
-lancedb = "0.37.1"
+lancedb = "0.41"
 arrow-array = "58"
 arrow-schema = "58"
 
