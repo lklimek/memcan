@@ -41,13 +41,18 @@ pub fn truncate_with<'a>(s: &'a str, max: usize, suffix: &str) -> Cow<'a, str> {
     }
 }
 
-/// Strip a surrounding markdown code fence from `s`, returning the inner body.
+/// Strip a markdown code fence from an LLM reply, returning the inner body.
 ///
 /// Some LLMs wrap their answer in a ` ```json … ``` ` (or bare ` ``` … ``` `)
 /// fence even when asked for raw JSON output. This removes a single leading
 /// fence line — including an optional language tag such as `json` — and the
-/// matching trailing fence, so the body can be parsed directly. Input that is
-/// not fenced is returned trimmed and otherwise unchanged (no-op passthrough).
+/// matching trailing fence, so the body can be parsed directly.
+///
+/// A reply opening with prose rather than a fence or JSON (`{`/`[`) yields the
+/// body of its last fenced block: Claude models with thinking disabled reason
+/// aloud before the fenced answer despite being asked for JSON only. Only a
+/// fence opening a line counts, so backticks inside a JSON string never split
+/// the block. Any other input is returned trimmed and otherwise unchanged.
 ///
 /// The returned slice always borrows from `s`; no allocation is performed.
 ///
@@ -58,11 +63,15 @@ pub fn truncate_with<'a>(s: &'a str, max: usize, suffix: &str) -> Cow<'a, str> {
 /// assert_eq!(strip_code_fence("```json\n{\"a\":1}\n```"), "{\"a\":1}");
 /// assert_eq!(strip_code_fence("```\n{\"a\":1}\n```"), "{\"a\":1}");
 /// assert_eq!(strip_code_fence("{\"a\":1}"), "{\"a\":1}");
+/// assert_eq!(strip_code_fence("Reasoning.\n```json\n{\"a\":1}\n```"), "{\"a\":1}");
 /// ```
 pub fn strip_code_fence(s: &str) -> &str {
     let trimmed = s.trim();
-    let Some(after_open) = trimmed.strip_prefix("```") else {
+    if trimmed.starts_with(['{', '[']) {
         return trimmed;
+    }
+    let Some(after_open) = trimmed.strip_prefix("```") else {
+        return last_fenced_block(trimmed).map_or(trimmed, strip_code_fence);
     };
     // Discard an optional language tag (a contiguous alphanumeric run right
     // after the opening fence, e.g. `json`) — regardless of whether the body
@@ -73,6 +82,31 @@ pub fn strip_code_fence(s: &str) -> &str {
     let body = after_open.trim_start_matches(|c: char| c.is_ascii_alphanumeric());
     let body = body.trim();
     body.strip_suffix("```").map_or(body, str::trim)
+}
+
+/// The last fenced block of `s`, from its opening fence through its closing
+/// one (or the end of `s` when unclosed); `None` when `s` has no fence.
+///
+/// Fences pair up in order, and only fences opening a line count. A trailing
+/// unclosed block (e.g. a truncated answer) wins over an earlier complete one,
+/// so a quoted example is never mistaken for the answer.
+fn last_fenced_block(s: &str) -> Option<&str> {
+    let mut open = None;
+    let mut last = None;
+    for (at, _) in s.match_indices("```") {
+        let line_start = s[..at]
+            .rsplit('\n')
+            .next()
+            .is_some_and(|lead| lead.trim().is_empty());
+        if !line_start {
+            continue;
+        }
+        match open.take() {
+            None => open = Some(at),
+            Some(start) => last = Some(&s[start..at + 3]),
+        }
+    }
+    open.map(|start| &s[start..]).or(last)
 }
 
 #[cfg(test)]
@@ -232,5 +266,72 @@ mod tests {
     #[test]
     fn test_fence_empty() {
         assert_eq!(strip_code_fence("   "), "");
+    }
+
+    // Reply shape of Claude Haiku 5.5 with thinking disabled: prose reasoning,
+    // then the answer in a fenced block (captured from a live dedup call).
+    #[test]
+    fn test_fence_after_prose_preamble() {
+        let input = "The new fact is a specialization of the existing memory. \
+                     Per rule 1, merge into an UPDATE.\n\n\
+                     ```json\n{\"events\": [{\"type\": \"UPDATE\"}]}\n```";
+        assert_eq!(
+            strip_code_fence(input),
+            "{\"events\": [{\"type\": \"UPDATE\"}]}"
+        );
+    }
+
+    // The answer follows the reasoning, so an earlier fenced example loses.
+    #[test]
+    fn test_fence_after_prose_takes_last_block() {
+        let input = "The prompt shows:\n```json\n{\"events\": []}\n```\n\
+                     So the answer is:\n```json\n{\"events\": [1]}\n```";
+        assert_eq!(strip_code_fence(input), "{\"events\": [1]}");
+    }
+
+    // Prose after the fenced block is ignored.
+    #[test]
+    fn test_fence_after_prose_ignores_trailing_prose() {
+        let input = "Reasoning.\n```json\n{\"a\":1}\n```\nHope this helps.";
+        assert_eq!(strip_code_fence(input), "{\"a\":1}");
+    }
+
+    // Backticks inside a JSON string are not fences: only a fence opening a
+    // line delimits a block, and a JSON string cannot hold a raw newline.
+    #[test]
+    fn test_fence_after_prose_keeps_backticks_inside_json() {
+        let input = "Reasoning.\n```json\n{\"data\": \"use ```rust``` blocks\"}\n```";
+        assert_eq!(
+            strip_code_fence(input),
+            "{\"data\": \"use ```rust``` blocks\"}"
+        );
+    }
+
+    // A block left unclosed after the prose yields everything after its fence.
+    #[test]
+    fn test_fence_after_prose_unclosed() {
+        let input = "Reasoning.\n```json\n{\"a\":1}";
+        assert_eq!(strip_code_fence(input), "{\"a\":1}");
+    }
+
+    // A truncated answer must not fall back to an earlier, complete example
+    // block — that would parse as a valid but wrong reply.
+    #[test]
+    fn test_fence_after_prose_unclosed_last_block_wins() {
+        let input = "Format:\n```json\n{\"events\": []}\n```\nAnswer:\n```json\n{\"events\": [";
+        assert_eq!(strip_code_fence(input), "{\"events\": [");
+    }
+
+    // Prose without any fence is only trimmed — the caller's parse fails.
+    #[test]
+    fn test_fence_prose_without_fence_passthrough() {
+        assert_eq!(strip_code_fence(" no json here \n"), "no json here");
+    }
+
+    // Bare JSON is returned as-is even when a string holds a fence.
+    #[test]
+    fn test_fence_bare_json_with_backticks_passthrough() {
+        let input = "{\"data\": \"x\",\n\"code\": \"```\"}";
+        assert_eq!(strip_code_fence(input), input);
     }
 }

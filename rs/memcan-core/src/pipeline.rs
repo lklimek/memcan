@@ -884,6 +884,51 @@ mod tests {
         );
     }
 
+    /// Provider answering every chat call with `reply`.
+    struct FixedReplyLlm {
+        reply: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for FixedReplyLlm {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: &[LlmMessage],
+            _options: Option<LlmOptions>,
+        ) -> Result<String> {
+            Ok(self.reply.to_string())
+        }
+        async fn context_window(&self, _model: &str) -> Option<usize> {
+            None
+        }
+        fn assumed_context_window(&self) -> usize {
+            DEFAULT_CONTEXT_WINDOW
+        }
+    }
+
+    #[tokio::test]
+    async fn dedup_parses_events_after_a_prose_preamble() {
+        // Claude Haiku 5.5 with thinking disabled reasons in prose before the
+        // fenced JSON answer (shape captured from a live dedup call).
+        let llm = FixedReplyLlm {
+            reply: "The new fact is a specialization of the existing memory: it gives \
+                    concrete values. Per rule 1, merge into an UPDATE rather than adding \
+                    a parallel memory.\n\n```json\n{\"events\": [{\"type\": \"UPDATE\", \
+                    \"memory_id\": \"f69ebee7\", \"data\": \"merged fact\"}]}\n```",
+        };
+        let existing = [serde_json::json!({"id": "f69ebee7", "text": "old fact"})];
+
+        let events = run_dedup_llm(&existing, "new fact", &llm, "claude-haiku-5-5")
+            .await
+            .expect("prose-led fenced reply must parse");
+
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].event_type, EventType::Update);
+        assert_eq!(events[0].data.as_deref(), Some("merged fact"));
+        assert_eq!(events[0].memory_id.as_deref(), Some("f69ebee7"));
+    }
+
     #[test]
     fn cloud_default_window_is_eight_times_the_local_default() {
         assert_eq!(DEFAULT_CONTEXT_WINDOW, 4096);
