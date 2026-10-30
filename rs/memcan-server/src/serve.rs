@@ -679,7 +679,7 @@ impl MemcanService {
 
         let response =
             serde_json::json!({ "status": "queued", "user_id": uid, "operation_id": op_id });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&response).unwrap_or_default(),
         )]))
     }
@@ -727,7 +727,7 @@ impl MemcanService {
             "memories": format_memory_results(&results),
             "has_more": has_more,
         });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&output).unwrap_or_default(),
         )]))
     }
@@ -761,7 +761,7 @@ impl MemcanService {
             "memories": format_memory_results(&results),
             "has_more": has_more,
         });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&output).unwrap_or_default(),
         )]))
     }
@@ -789,7 +789,7 @@ impl MemcanService {
 
         info!(user_id = %uid, count, "count_memories: result");
         let response = serde_json::json!({ "count": count, "user_id": uid });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&response).unwrap_or_default(),
         )]))
     }
@@ -858,7 +858,7 @@ impl MemcanService {
             .map_err(|e| ErrorData::internal_error(format!("delete failed: {e}"), None))?;
 
         let response = serde_json::json!({ "status": "deleted", "memory_id": memory_id });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&response).unwrap_or_default(),
         )]))
     }
@@ -984,7 +984,7 @@ impl MemcanService {
             "memory_id": response_id,
             "operation_id": op_id,
         });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&response).unwrap_or_default(),
         )]))
     }
@@ -1007,7 +1007,7 @@ impl MemcanService {
         }
 
         let response = serde_json::json!({ "collections": collections });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&response).unwrap_or_default(),
         )]))
     }
@@ -1096,7 +1096,7 @@ impl MemcanService {
             "hint": hint,
         });
 
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&output).unwrap_or_default(),
         )]))
     }
@@ -1167,7 +1167,7 @@ impl MemcanService {
             "hint": hint,
         });
 
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&output).unwrap_or_default(),
         )]))
     }
@@ -1235,7 +1235,7 @@ impl MemcanService {
             "results": page.results,
             "has_more": page.has_more,
         });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&output).unwrap_or_default(),
         )]))
     }
@@ -1391,7 +1391,7 @@ impl MemcanService {
             "operation_id": op_id,
             "message": format!("Indexing standard '{}'", params.standard_id),
         });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&response).unwrap_or_default(),
         )]))
     }
@@ -1422,7 +1422,7 @@ impl MemcanService {
             "deleted": deleted,
             "standard_id": params.standard_id,
         });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&response).unwrap_or_default(),
         )]))
     }
@@ -1489,7 +1489,7 @@ impl MemcanService {
             "project": params.project,
             "predicate": predicate,
         });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&response).unwrap_or_default(),
         )]))
     }
@@ -1536,7 +1536,7 @@ impl MemcanService {
         self.state.health.report_success(DependencyId::Embedding);
         self.state.health.report_success(DependencyId::LanceDb);
 
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&item).unwrap_or_default(),
         )]))
     }
@@ -1577,7 +1577,7 @@ impl MemcanService {
             "has_more": has_more,
         });
 
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&output).unwrap_or_default(),
         )]))
     }
@@ -1626,7 +1626,7 @@ impl MemcanService {
         self.state.health.report_success(DependencyId::Embedding);
         self.state.health.report_success(DependencyId::LanceDb);
 
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&item).unwrap_or_default(),
         )]))
     }
@@ -1663,7 +1663,7 @@ impl MemcanService {
         self.state.health.report_success(DependencyId::Embedding);
         self.state.health.report_success(DependencyId::LanceDb);
 
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&item).unwrap_or_default(),
         )]))
     }
@@ -1694,7 +1694,7 @@ impl MemcanService {
         self.state.health.report_success(DependencyId::LanceDb);
 
         let response = serde_json::json!({ "status": "deleted", "todo_id": resolved_id });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&response).unwrap_or_default(),
         )]))
     }
@@ -1729,7 +1729,7 @@ impl MemcanService {
                 "todo_id": params.todo_id,
             }),
         };
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&response).unwrap_or_default(),
         )]))
     }
@@ -1759,9 +1759,9 @@ impl MemcanService {
                 Some(entry) => {
                     let json =
                         serde_json::to_string(&queue_entry_to_json(&entry)).unwrap_or_default();
-                    Ok(CallToolResult::success(vec![Content::text(json)]))
+                    Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
                 }
-                None => Ok(CallToolResult::success(vec![Content::text(
+                None => Ok(CallToolResult::success(vec![ContentBlock::text(
                     r#"{"error":"operation not found or expired from LRU cache"}"#,
                 )])),
             }
@@ -1782,7 +1782,7 @@ impl MemcanService {
                 "operations": json_entries,
             });
             let json = serde_json::to_string(&response).unwrap_or_default();
-            Ok(CallToolResult::success(vec![Content::text(json)]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
         }
     }
 
@@ -1847,7 +1847,7 @@ impl MemcanService {
             "offset": offset,
             "data": output,
         });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&response).unwrap_or_default(),
         )]))
     }
@@ -1894,7 +1894,7 @@ impl MemcanService {
             "skipped": result.skipped,
             "errors": errors,
         });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&response).unwrap_or_default(),
         )]))
     }
@@ -2031,7 +2031,7 @@ impl MemcanService {
             "operation_id": op_id,
             "message": format!("Indexing {file_count} files for project '{project}'"),
         });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&response).unwrap_or_default(),
         )]))
     }
@@ -2040,8 +2040,8 @@ impl MemcanService {
 // --- ServerHandler ---
 
 impl ServerHandler for MemcanService {
-    fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::default();
+    fn get_info(&self) -> ServerConfig {
+        let mut info = ServerConfig::default();
         info.protocol_version = ProtocolVersion::LATEST;
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info.server_info = {
@@ -2074,18 +2074,14 @@ impl ServerHandler for MemcanService {
             .into_iter()
             .filter(|t| !t.name.starts_with('_'))
             .collect();
-        std::future::ready(Ok(ListToolsResult {
-            tools,
-            next_cursor: None,
-            meta: None,
-        }))
+        std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
     }
 
     fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<CallToolResult, ErrorData>> + Send + '_ {
+    ) -> impl Future<Output = Result<CallToolResponse, ErrorData>> + Send + '_ {
         let tcc = ToolCallContext::new(self, request, context);
         async move { self.tool_router.call(tcc).await }
     }
@@ -2191,7 +2187,7 @@ pub(crate) fn mcp_router<S, M>(
     body_read_timeout: Duration,
 ) -> Router
 where
-    S: rmcp::service::Service<RoleServer> + Send + 'static,
+    S: ServerHandler + Send + 'static,
     M: SessionManager,
 {
     Router::new().route(
@@ -2213,8 +2209,11 @@ fn http_mcp_router(shared: Arc<SharedState>, body_read_timeout: Duration) -> Rou
         Arc::new(LocalSessionManager::default()),
         // Tool state and queued writes belong to SharedState, not idle HTTP sessions.
         StreamableHttpServerConfig::default()
-            .with_stateful_mode(false)
-            .with_json_response(true),
+            .with_legacy_session_mode(false)
+            .with_json_response(true)
+            // rmcp's 4 MiB default rejects `index_code_files` batches, which
+            // carry up to `--batch-size` files of up to 1 MiB each.
+            .with_max_request_body_bytes(usize::MAX),
     );
     mcp_router(service, body_read_timeout)
 }
@@ -3049,6 +3048,22 @@ mod tests {
                     .iter()
                     .any(|t| t["name"] == "add_memory")
             );
+        }
+
+        #[tokio::test]
+        async fn large_request_bodies_reach_the_handler() {
+            // `index_code_files` batches up to `--batch-size` files of up to
+            // 1 MiB each into one request.
+            let app = app(&make_test_service());
+            let padding = "x".repeat(8 * 1024 * 1024);
+            let response = request(
+                &app,
+                json!({"jsonrpc":"2.0", "id":2, "method":"tools/call",
+                    "params":{"name":"no_such_tool", "arguments":{"padding": padding}}}),
+                None,
+            )
+            .await;
+            assert_ne!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         }
 
         #[tokio::test(start_paused = true)]

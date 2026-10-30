@@ -9,6 +9,7 @@ members = [
 [workspace.package]
 version = "2.0.3"
 edition = "2024"
+rust-version = "1.99"
 license = "MIT"
 repository = "https://github.com/lklimek/memcan"
 
@@ -24,8 +25,9 @@ tracing-appender = "0.2"
 clap = { version = "4", features = ["derive"] }
 uuid = { version = "1", features = ["v4", "v5"] }
 chrono = { version = "0.4", features = ["serde"] }
-md-5 = "0.10"
-sha2 = "0.10"
+md-5 = "0.11"
+sha2 = "0.11"
+hex = "0.4.3"
 dotenvy = "0.15"
 dirs = "7.0.0"
 
@@ -34,10 +36,10 @@ async-trait = "0.1"
 futures = "0.3"
 
 # Embeddings (in-process ONNX, text models only — no image-models)
-fastembed = { version = "7.1.2", default-features = false, features = ["hf-hub-native-tls", "ort-download-binaries-native-tls"] }
+fastembed = { version = "7.5.0", default-features = false, features = ["hf-hub-native-tls", "ort-download-binaries-native-tls"] }
 
 # Multi-provider LLM
-genai = "0.5"
+genai = "0.7"
 ollama-rs = { version = "0.3", features = ["headers"] }
 
 # HTTP (used by memcan-test-classification)
@@ -49,7 +51,7 @@ arrow-array = "58"
 arrow-schema = "58"
 
 # MCP
-rmcp = { version = "1.8.0", features = ["server", "transport-io", "transport-streamable-http-server"] }
+rmcp = { version = "3.8.0", features = ["server", "transport-io", "transport-streamable-http-server"] }
 schemars = "1.2.3"
 
 # HTTP server
@@ -76,7 +78,7 @@ regex = "1"
 # Testing
 mockito = "1"
 tempfile = "3"
-serial_test = "3"
+serial_test = "4"
 tower = { version = "0.5", features = ["util"] }
 
 [profile.dev.package."*"]

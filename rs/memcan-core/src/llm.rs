@@ -63,6 +63,32 @@ fn classify_chat_error(error: &genai::Error, model: &str) -> MemcanError {
 /// produce.
 const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 4096;
 
+/// Reasoning effort sent with every Anthropic request.
+///
+/// Any explicit effort stops genai inferring one from a model-id suffix (`-low`,
+/// `-high`, …). `Zero` turns thinking off — genai sends `thinking: {"type":
+/// "disabled"}` to models that think by default — but the Messages API rejects
+/// `disabled` with a 400 on Opus 5.5, Sonnet 5.5, Fable 5.x and Mythos 5.x, so
+/// those get the lowest effort with adaptive thinking instead.
+// TODO(genai): drop the model list once genai stops sending `disabled` to models that reject it.
+fn anthropic_reasoning_effort(model: &str) -> ReasoningEffort {
+    const DISABLED_THINKING_REJECTED: [&str; 4] = [
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-fable-5",
+        "claude-mythos-5",
+    ];
+    let name = model.rsplit("::").next().unwrap_or(model);
+    if DISABLED_THINKING_REJECTED
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+    {
+        ReasoningEffort::Low
+    } else {
+        ReasoningEffort::Zero
+    }
+}
+
 /// Connect timeout of the cloud HTTP client.
 const CLOUD_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -94,11 +120,11 @@ enum CloudApi {
     OpenAiCompatible,
 }
 
-/// Split a system prompt so its cache breakpoint survives genai 0.5.3.
+/// Split a system prompt so its cache breakpoint survives genai.
 ///
-/// genai's Anthropic adapter emits `cache_control` only when the marked system
-/// block is not the first one (`last_cache_idx > 0`), so a lone marked prompt
-/// is silently sent uncached. Splitting after the first line yields an unmarked
+/// genai's Anthropic adapter renders `ChatRequest::system` as the first system
+/// block and never marks it with `cache_control`, so a lone prompt is silently
+/// sent uncached. Splitting after the first line yields an unmarked
 /// head and a marked tail; the breakpoint caches the whole prefix, and
 /// `head + tail` is the original prompt byte for byte. `None` when no split
 /// leaves both halves non-blank (Anthropic rejects empty text blocks) — such a
@@ -161,54 +187,42 @@ impl GenaiLlmProvider {
 
     /// Build an Ollama client for `slot`.
     ///
-    /// Always installs a `ServiceTargetResolver` that:
-    /// 1. Strips the `"ollama::"` prefix from model names (genai 0.5 compatibility)
-    /// 2. Applies the slot's base URL (`OLLAMA_HOST` by default) when set
-    /// 3. Applies the slot's API key (`OLLAMA_API_KEY` by default) as bearer auth
+    /// Applies the slot's base URL (`OLLAMA_HOST` by default) through a
+    /// `ServiceTargetResolver`; [`chat`](LlmProvider::chat) sends the slot's
+    /// API key (`OLLAMA_API_KEY` by default) as a bearer header, because
+    /// genai's native Ollama adapter ignores resolved auth.
     ///
     /// The genai crate reads neither `OLLAMA_HOST` nor `OLLAMA_API_KEY` from
     /// the environment on its own.
-    pub fn from_ollama_slot(slot: &LlmSlot) -> Self {
-        let ollama_host = slot.base_url.clone();
-        let ollama_api_key = slot.api_key.clone();
-
-        let endpoint = ollama_host.map(|host| {
-            let mut base = host.trim_end_matches('/').to_string();
-            if !base.ends_with("/v1/") {
-                base.push_str("/v1/");
-            }
-            Endpoint::from_owned(base)
-        });
+    pub fn from_ollama_slot(slot: &LlmSlot) -> Result<Self> {
+        // genai's Ollama adapter speaks the native API and appends `api/chat`.
+        let endpoint = slot
+            .base_url
+            .as_deref()
+            .map(|host| Endpoint::from_owned(format!("{}/", host.trim_end_matches('/'))));
 
         let client = Client::builder()
             .with_service_target_resolver_fn(move |mut st: genai::ServiceTarget| {
-                if st.model.adapter_kind == AdapterKind::Ollama {
-                    // genai 0.5 keeps the "ollama::" prefix in model_name,
-                    // which Ollama rejects with "model is required".
-                    let raw_name: &str = &st.model.model_name;
-                    let stripped = strip_ollama_prefix(raw_name);
-                    if stripped != raw_name {
-                        st.model = ModelIden::new(AdapterKind::Ollama, stripped);
-                    }
-
-                    if let Some(ref ep) = endpoint {
-                        st.endpoint = ep.clone();
-                    }
-                    if let Some(ref key) = ollama_api_key {
-                        st.auth = AuthData::Key(key.clone());
-                    }
+                if st.model.adapter_kind == AdapterKind::Ollama
+                    && let Some(ref ep) = endpoint
+                {
+                    st.endpoint = ep.clone();
                 }
                 Ok(st)
             })
-            .build();
+            .build()
+            .map_err(|source| MemcanError::LlmClientBuild {
+                role: slot.role,
+                source: Box::new(source),
+            })?;
 
-        Self {
+        Ok(Self {
             client,
             default_model: slot.model.clone(),
             ollama_host: slot.base_url.clone(),
             ollama_api_key: slot.api_key.clone(),
             cloud_api: None,
-        }
+        })
     }
 
     /// Build a client for the cloud slot `slot`; context-window discovery is
@@ -258,7 +272,7 @@ impl GenaiLlmProvider {
 
         let client = Client::builder()
             .with_reqwest(http)
-            // genai 0.5 resolves auth before applying the target override.
+            // genai resolves auth before applying the target override.
             .with_auth_resolver_fn(move |_| Ok(Some(AuthData::Key(auth_key.clone()))))
             .with_service_target_resolver_fn(move |mut st: genai::ServiceTarget| {
                 // Model ids such as `openai/gpt-4o-mini` or `claude-*` make genai
@@ -268,7 +282,11 @@ impl GenaiLlmProvider {
                 st.auth = AuthData::Key(resolver_key.clone());
                 Ok(st)
             })
-            .build();
+            .build()
+            .map_err(|source| MemcanError::LlmClientBuild {
+                role: slot.role,
+                source: Box::new(source),
+            })?;
 
         Ok(Self {
             client,
@@ -351,11 +369,11 @@ impl LlmProvider for GenaiLlmProvider {
         if opts.think == Some(false) {
             chat_opts = chat_opts.with_normalize_reasoning_content(true);
         }
+        if let Some(key) = &self.ollama_api_key {
+            chat_opts = chat_opts.with_extra_headers(("Authorization", format!("Bearer {key}")));
+        }
         if anthropic {
-            // An explicit `None` stops genai inferring an effort from a model-id
-            // suffix (`-low`, `-high`, …) and sending the legacy
-            // `thinking.budget_tokens`, which current Claude models reject.
-            chat_opts = chat_opts.with_reasoning_effort(ReasoningEffort::None);
+            chat_opts = chat_opts.with_reasoning_effort(anthropic_reasoning_effort(model));
         }
 
         let response = self
@@ -522,6 +540,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ollama_slot_uses_native_chat_api_with_bearer_key() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .match_header("authorization", "Bearer test-ollama-key")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "model": "qwen3.5:9b"
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "model": "qwen3.5:9b",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "message": {"role": "assistant", "content": "from ollama"},
+                    "done": true,
+                    "done_reason": "stop",
+                    "prompt_eval_count": 7,
+                    "eval_count": 3
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let provider = GenaiLlmProvider::from_ollama_slot(&cloud_slot(
+            LlmProviderKind::Ollama,
+            "qwen3.5:9b",
+            "test-ollama-key",
+            server.url(),
+        ))
+        .unwrap();
+
+        let result = provider
+            .chat(
+                "ollama::qwen3.5:9b",
+                &[LlmMessage {
+                    role: Role::User,
+                    content: "hello".into(),
+                }],
+                Some(LlmOptions {
+                    op: "ollama_native",
+                    ..LlmOptions::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, "from ollama");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
     async fn openai_compat_backend_omits_temperature() {
         // Anthropic's OpenAI-compatible endpoint and OpenAI reasoning models
         // reject non-default temperatures with a 400, so the cloud backend
@@ -651,15 +721,11 @@ mod tests {
             })))
             .match_request(|req| {
                 let body = request_json(req);
-                let top_level_absent = [
-                    "temperature",
-                    "thinking",
-                    "output_config",
-                    "response_format",
-                ]
-                .iter()
-                .all(|key| body.get(key).is_none());
+                let top_level_absent = ["temperature", "output_config", "response_format"]
+                    .iter()
+                    .all(|key| body.get(key).is_none());
                 top_level_absent
+                    && body["thinking"] == serde_json::json!({"type": "disabled"})
                     && body_lacks(req, &["budget_tokens"])
                     && body["system"]
                         == serde_json::json!([
@@ -730,7 +796,6 @@ mod tests {
                     && marks == [false, true]
                     && blocks[1]["cache_control"] == serde_json::json!({"type": "ephemeral"})
                     && joined == prompt
-                    && body.get("thinking").is_none()
             })
             .with_status(200)
             .with_header("content-type", "application/json")
@@ -788,8 +853,8 @@ mod tests {
     #[tokio::test]
     async fn anthropic_model_suffix_never_enables_legacy_thinking() {
         // genai reads a `-high`/`-low` model-id suffix as a reasoning effort
-        // and would send `thinking.budget_tokens`, which current Claude models
-        // reject with a 400. The id must also reach the API unmodified.
+        // and strips it from the id; thinking must stay off and the id must
+        // reach the API unmodified.
         let mut server = mockito::Server::new_async().await;
         let mock = server
             .mock("POST", "/messages")
@@ -798,7 +863,7 @@ mod tests {
             ))
             .match_request(|req| {
                 let body = request_json(req);
-                body.get("thinking").is_none()
+                body["thinking"] == serde_json::json!({"type": "disabled"})
                     && body.get("output_config").is_none()
                     && body_lacks(req, &["budget_tokens"])
             })
@@ -819,6 +884,65 @@ mod tests {
             .unwrap();
 
         mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn anthropic_models_rejecting_disabled_thinking_get_low_effort() {
+        for model in ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"] {
+            let mut server = mockito::Server::new_async().await;
+            let mock = server
+                .mock("POST", "/messages")
+                .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                    "model": model,
+                    "output_config": {"effort": "low"}
+                })))
+                .match_request(|req| {
+                    request_json(req)["thinking"]["type"] != "disabled"
+                        && body_lacks(req, &["budget_tokens"])
+                })
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(anthropic_reply("ok"))
+                .create_async()
+                .await;
+            let provider = anthropic_provider(server.url());
+
+            provider
+                .chat(model, &system_and_user("Answer.", "hello"), None)
+                .await
+                .unwrap_or_else(|e| panic!("{model}: {e}"));
+
+            mock.assert_async().await;
+        }
+    }
+
+    #[test]
+    fn anthropic_reasoning_effort_disables_thinking_where_the_api_allows_it() {
+        for model in [
+            "claude-haiku-5-5",
+            "claude-haiku-4-5",
+            "claude-opus-5",
+            "claude-sonnet-5",
+            "claude-opus-4-8",
+        ] {
+            assert!(
+                matches!(anthropic_reasoning_effort(model), ReasoningEffort::Zero),
+                "{model}"
+            );
+        }
+        for model in [
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-fable-5",
+            "claude-fable-5-1",
+            "claude-mythos-5-1",
+            "anthropic::claude-opus-5-5",
+        ] {
+            assert!(
+                matches!(anthropic_reasoning_effort(model), ReasoningEffort::Low),
+                "{model}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1058,7 +1182,7 @@ mod tests {
 
     #[test]
     fn test_default_model() {
-        let provider = GenaiLlmProvider::new(Client::default(), "test-model".into());
+        let provider = GenaiLlmProvider::new(Client::new().unwrap(), "test-model".into());
         assert_eq!(provider.default_model(), "test-model");
     }
 
@@ -1103,7 +1227,8 @@ mod tests {
             },
             ..crate::config::Settings::default()
         };
-        let provider = GenaiLlmProvider::from_ollama_slot(&settings.primary_slot().unwrap());
+        let provider =
+            GenaiLlmProvider::from_ollama_slot(&settings.primary_slot().unwrap()).unwrap();
         assert_eq!(provider.default_model(), "ollama::qwen3.5:4b");
     }
 
@@ -1127,7 +1252,8 @@ mod tests {
             "qwen3.5:9b",
             "key",
             "http://gpu:11434".into(),
-        ));
+        ))
+        .unwrap();
         assert_eq!(
             ollama.assumed_context_window(),
             crate::pipeline::DEFAULT_CONTEXT_WINDOW
@@ -1141,7 +1267,8 @@ mod tests {
             "qwen3.5:9b",
             "raw-ollama-secret",
             "http://user:host-secret@gpu:11434".into(),
-        ));
+        ))
+        .unwrap();
         let debug = format!("{ollama:?}");
         assert!(!debug.contains("raw-ollama-secret"), "{debug}");
         assert!(!debug.contains("host-secret"), "{debug}");

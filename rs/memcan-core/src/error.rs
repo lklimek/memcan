@@ -51,6 +51,15 @@ pub enum MemcanError {
     #[error("LLM backend unavailable ({context}): {detail}")]
     LlmUnavailable { context: String, detail: String },
 
+    /// The HTTP client of an LLM slot could not be built (e.g. the TLS backend
+    /// failed to initialise).
+    #[cfg(feature = "genai-llm")]
+    #[error("failed to build the HTTP client of the {role} LLM slot: {source}")]
+    LlmClientBuild {
+        role: crate::config::LlmRole,
+        source: Box<genai::Error>,
+    },
+
     // -- Validation ----------------------------------------------------------
     #[error("vector dimension mismatch: expected {expected}, got {actual}")]
     DimensionMismatch { expected: usize, actual: usize },
