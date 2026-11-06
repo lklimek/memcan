@@ -122,9 +122,10 @@ export function render(main, ctx) {
   const blocksSection = el('div');
   const blockersHeading = el('h2', { id: 'blockers-heading' });
 
-  function relationItem(other, note) {
+  /** `asBlocker` rows describe tasks blocking this one; reverse rows describe tasks it blocks. */
+  function relationItem(other, note, { asBlocker = true } = {}) {
     const crossProject = other.project !== task.project;
-    const terminal = other.status === 'done' || other.status === 'cancelled';
+    const terminal = asBlocker && (other.status === 'done' || other.status === 'cancelled');
     return el(
       'li',
       {},
@@ -200,7 +201,7 @@ export function render(main, ctx) {
           ...ids.map((otherId) => {
             const other = store.get(otherId);
             if (otherId === task.id) return el('li', {}, el('span', { class: 'chip-static' }, 'Self-reference'));
-            return other ? relationItem(other, task.blockedBy.includes(otherId) ? 'Cycle' : null) : null;
+            return other ? relationItem(other, task.blockedBy.includes(otherId) ? 'Cycle' : null, { asBlocker: false }) : null;
           }),
         ),
       );
@@ -290,7 +291,7 @@ export function render(main, ctx) {
         ' ',
         el('span', { class: 'readonly-label' }, 'Read-only'),
       ),
-      loadError ? panelError(loadError, () => load()) : null,
+      loadError ? panelError(loadError, () => load(), { refresh: true }) : null,
       el(
         'div',
         { class: 'detail-grid' },

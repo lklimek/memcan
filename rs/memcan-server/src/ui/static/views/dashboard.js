@@ -256,7 +256,7 @@ export function render(main, ctx) {
       impacts.length ? el('ul', { class: 'impacts' }, ...impacts.map((text) => el('li', {}, text))) : null,
       el('p', { class: 'muted small' }, 'Circuit-breaker state as last observed by the server; Refresh reads it and does not probe models. Task reads mainly need LanceDB.'),
     );
-    if (health.error) append(healthPanel.body, panelError(health.error, () => ctx.refreshHealth()));
+    if (health.error) append(healthPanel.body, panelError(health.error, () => ctx.refreshHealth(), { refresh: true }));
   }
 
   // ---- queue
@@ -287,7 +287,7 @@ export function render(main, ctx) {
     }
     metaLine(queuePanel.meta, queue, QUEUE_INTERVAL_MS, loadQueue);
     clear(queuePanel.body);
-    if (queue.error) append(queuePanel.body, panelError(queue.error, loadQueue));
+    if (queue.error) append(queuePanel.body, panelError(queue.error, loadQueue, { refresh: Boolean(queue.data) }));
     const data = queue.data;
     if (!data) {
       if (!queue.error) append(queuePanel.body, el('p', { 'aria-busy': 'true' }, 'Loading queue…'));
@@ -353,7 +353,7 @@ export function render(main, ctx) {
     }
     metaLine(collectionsPanel.meta, counts, COUNTS_INTERVAL_MS, loadCounts);
     clear(collectionsPanel.body);
-    if (counts.error) append(collectionsPanel.body, panelError(counts.error, loadCounts));
+    if (counts.error) append(collectionsPanel.body, panelError(counts.error, loadCounts, { refresh: Boolean(counts.data) }));
     if (!counts.data) {
       if (!counts.error) append(collectionsPanel.body, el('p', { 'aria-busy': 'true' }, 'Loading collections…'));
       return;

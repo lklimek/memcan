@@ -34,6 +34,12 @@ export function clear(node) {
   return node;
 }
 
+/** Stable, unique element id for a form option; `value` must be the option's string value. */
+export function fieldId(prefix, value) {
+  if (typeof value !== 'string') throw new TypeError('fieldId needs a string value');
+  return `${prefix}-${encodeURIComponent(value)}`;
+}
+
 /** Same-origin in-app link handled by the router (`data-nav`). */
 export function navLink(href, label, attrs = {}) {
   return el('a', { href, dataset: { nav: '' }, ...attrs }, label);
@@ -154,17 +160,18 @@ export async function copyText(value, label, toast) {
   }
 }
 
-export function panelError(error, onRetry) {
+/** `refresh` marks a failure to update data that is already shown. */
+export function panelError(error, onRetry, { refresh = false } = {}) {
   return el(
     'div',
     { class: 'panel-error', role: 'alert' },
-    el('p', {}, errorMessage(error)),
+    el('p', {}, errorMessage(error, { refresh })),
     onRetry ? el('button', { type: 'button', class: 'button secondary', onclick: onRetry }, 'Retry') : null,
     errorDetails(error),
   );
 }
 
-export function errorMessage(error) {
+export function errorMessage(error, { refresh = false } = {}) {
   switch (error?.category) {
     case 'auth':
       return error.message;
@@ -173,7 +180,7 @@ export function errorMessage(error) {
     case 'throttled':
       return error.retryAfter ? `The server is limiting requests. Retry in ${error.retryAfter} s.` : 'The server is limiting requests. Retry shortly.';
     case 'unavailable':
-      return 'Refresh failed: the server could not be reached or is unavailable.';
+      return `${refresh ? 'Refresh failed: the' : 'The'} server could not be reached or is unavailable.`;
     case 'ambiguous':
       return 'Use the full task ID: this short ID matches more than one task.';
     case 'invalid-input':

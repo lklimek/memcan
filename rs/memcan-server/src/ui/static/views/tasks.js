@@ -1,6 +1,6 @@
 // Task list: local literal search, filters, grouping, sorting and client pagination over the task scan.
 
-import { append, clear, el, exactDate, highlighted, navLink, panelError, priorityBadge, statusBadge } from '../components.js';
+import { append, clear, clockTime, el, fieldId, exactDate, highlighted, navLink, panelError, priorityBadge, statusBadge } from '../components.js';
 import {
   PRIORITY_ORDER,
   STATUS_ORDER,
@@ -27,6 +27,7 @@ import {
 
 const SEARCH_DEBOUNCE_MS = 150;
 const SCAN_INTERVAL_MS = 60000;
+const STALE_CHECK_MS = 15000;
 const VIEW_LABELS = new Map([
   ['open', 'Open'],
   ['high', 'High priority'],
@@ -217,7 +218,7 @@ export function render(main, ctx) {
         { class: 'popover-body' },
         el('legend', {}, label),
         ...values.map((value) => {
-          const id = `${label.toLowerCase()}-${encodeURIComponent(value)}`;
+          const id = fieldId(label.toLowerCase(), value.value);
           const box = el('input', { type: 'checkbox', id, value: value.value, checked: value.checked, onchange: () => onToggle(value.value, box.checked) });
           return el('div', { class: 'checkbox-field' }, box, el('label', { for: id }, labelFor(value.value)));
         }),
@@ -384,7 +385,10 @@ export function render(main, ctx) {
   }
 
   // ------------------------------------------------------------ results
+  let lastMatches = null;
+
   function renderCoverage(matches) {
+    lastMatches = matches;
     const coverage = store.coverage();
     clear(coverageRegion);
     const line = el('p', { class: 'coverage' });
@@ -411,8 +415,12 @@ export function render(main, ctx) {
         append(line, 'Not loaded yet');
     }
     if (coverage.malformed) append(line, ` · ${coverage.malformed} unreadable record${coverage.malformed === 1 ? '' : 's'} skipped`);
+    if (coverage.fetchedAt) {
+      const stale = Date.now() - coverage.fetchedAt > SCAN_INTERVAL_MS * 2;
+      append(line, ` · Data fetched ${clockTime(coverage.fetchedAt)}`, stale ? el('strong', { class: 'stale' }, ' · Stale') : null);
+    }
     if (coverage.refreshError) {
-      append(coverageRegion, panelError(coverage.refreshError, () => manualRefresh()));
+      append(coverageRegion, panelError(coverage.refreshError, () => manualRefresh(), { refresh: true }));
     }
     append(coverageRegion, line);
     clear(summary);
@@ -636,6 +644,9 @@ export function render(main, ctx) {
   renderResults();
   lastCoverageStatus = store.coverage().status;
   ctx.every(SCAN_INTERVAL_MS, () => store.refresh());
+  ctx.every(STALE_CHECK_MS, () => {
+    if (lastMatches) renderCoverage(lastMatches);
+  });
   if (!ctx.restoreHistoryPosition()) heading.focus();
 
   return {
