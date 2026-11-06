@@ -185,6 +185,7 @@ export function render(main, ctx) {
     const url = tasksUrl(query);
     if (push) history.pushState(null, '', url);
     else history.replaceState(history.state, '', url);
+    ctx.trackLocation();
   }
 
   function setQuery(next, { push = true, announce = true, focusResults = false } = {}) {
@@ -385,27 +386,56 @@ export function render(main, ctx) {
   }
 
   // ------------------------------------------------------------ results
-  let lastMatches = null;
+  // Updated in place by the staleness timer so focus and alert regions are never rebuilt.
+  const freshness = el('span', { class: 'freshness' });
+
+  function updateFreshness() {
+    const { fetchedAt } = store.coverage();
+    clear(freshness);
+    if (!fetchedAt) return;
+    const stale = Date.now() - fetchedAt > SCAN_INTERVAL_MS * 2;
+    append(freshness, ` · Data fetched ${clockTime(fetchedAt)}`, stale ? el('strong', { class: 'stale' }, ' · Stale') : null);
+  }
+
+  // Error panels are alerts: re-insert them only when the error itself changes.
+  const scanErrorSlot = el('div');
+  const refreshErrorSlot = el('div');
+  const coverageLine = el('p', { class: 'coverage' });
+  append(coverageRegion, scanErrorSlot, refreshErrorSlot, coverageLine);
+  let shownScanError = null;
+  let shownRefreshError = null;
+
+  function syncErrorSlot(slot, shown, error, build) {
+    if (shown === error) return shown;
+    clear(slot);
+    if (error) append(slot, build(error));
+    return error;
+  }
 
   function renderCoverage(matches) {
-    lastMatches = matches;
     const coverage = store.coverage();
-    clear(coverageRegion);
-    const line = el('p', { class: 'coverage' });
+    shownScanError = syncErrorSlot(scanErrorSlot, shownScanError, coverage.status === 'error' ? coverage.error : null, (error) =>
+      panelError(error, () => store.continueScan()),
+    );
+    shownRefreshError = syncErrorSlot(refreshErrorSlot, shownRefreshError, coverage.refreshError, (error) =>
+      panelError(error, () => manualRefresh(), { refresh: true }),
+    );
+    const focusKey = coverageLine.contains(document.activeElement) ? document.activeElement.dataset.focusKey : null;
+    const line = clear(coverageLine);
     const scanned = `${coverage.unique} loaded`;
+    const action = (key, label, onclick) => el('button', { type: 'button', class: 'link-button', dataset: { focusKey: key }, onclick }, label);
     switch (coverage.status) {
       case 'loading':
-        append(line, `${coverage.unique} records loaded; loading more `, el('button', { type: 'button', class: 'link-button', onclick: () => store.stopScan() }, 'Stop loading'));
+        append(line, `${coverage.unique} records loaded; loading more `, action('stop', 'Stop loading', () => store.stopScan()));
         break;
       case 'paused':
       case 'stopped':
-        append(line, `Partial data: ${scanned}. `, el('button', { type: 'button', class: 'link-button', onclick: () => store.continueScan() }, 'Continue loading'));
+        append(line, `Partial data: ${scanned}. `, action('continue', 'Continue loading', () => store.continueScan()));
         break;
       case 'budget':
         append(line, `Partial data: ${scanned}. The browser memory budget is reached — narrow to a project to see more.`);
         break;
       case 'error':
-        append(coverageRegion, panelError(coverage.error, () => store.continueScan()));
         append(line, `Incomplete: ${scanned}; loading stopped after a failure.`);
         break;
       case 'complete':
@@ -415,14 +445,12 @@ export function render(main, ctx) {
         append(line, 'Not loaded yet');
     }
     if (coverage.malformed) append(line, ` · ${coverage.malformed} unreadable record${coverage.malformed === 1 ? '' : 's'} skipped`);
-    if (coverage.fetchedAt) {
-      const stale = Date.now() - coverage.fetchedAt > SCAN_INTERVAL_MS * 2;
-      append(line, ` · Data fetched ${clockTime(coverage.fetchedAt)}`, stale ? el('strong', { class: 'stale' }, ' · Stale') : null);
+    updateFreshness();
+    append(line, freshness);
+    if (focusKey) {
+      // The action may have changed (Stop → Continue); keep focus inside the line either way.
+      (line.querySelector(`[data-focus-key="${focusKey}"]`) ?? line.querySelector('button') ?? resultsHeading).focus();
     }
-    if (coverage.refreshError) {
-      append(coverageRegion, panelError(coverage.refreshError, () => manualRefresh(), { refresh: true }));
-    }
-    append(coverageRegion, line);
     clear(summary);
     if (matches.total) append(summary, `Showing ${matches.start}–${matches.end} of ${matches.total} matches · ${scanned}${coverage.partial ? ' (partial)' : ''}`);
     else append(summary, `0 matches · ${scanned}${coverage.partial ? ' (partial)' : ''}`);
@@ -644,9 +672,7 @@ export function render(main, ctx) {
   renderResults();
   lastCoverageStatus = store.coverage().status;
   ctx.every(SCAN_INTERVAL_MS, () => store.refresh());
-  ctx.every(STALE_CHECK_MS, () => {
-    if (lastMatches) renderCoverage(lastMatches);
-  });
+  ctx.every(STALE_CHECK_MS, updateFreshness);
   if (!ctx.restoreHistoryPosition()) heading.focus();
 
   return {
