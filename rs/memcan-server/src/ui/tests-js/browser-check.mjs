@@ -68,9 +68,9 @@ assert.ok(title.includes('<script>alert(1)</script>'), 'malicious title stays in
 const firstCalls = await calls();
 assert.equal(firstCalls[0].tool, 'get_todo', 'detail fetch is the first tool call');
 assert.equal(firstCalls[0].hasBasic, false);
-await page.getByText('Task unavailable (deleted or unknown ID)').waitFor();
+await page.getByText('This task may have been deleted. The relationship remains visible.').waitFor();
 await page.getByText('Self-reference').first().waitFor();
-await page.getByText('Other project').first().waitFor();
+await page.getByText('Other project: other-project').first().waitFor();
 await page.getByText('Cycle: also blocked by this task').waitFor();
 assert.ok(await page.getByText('<b>not bold</b>', { exact: false }).isVisible());
 await shot('02-task-detail');

@@ -123,20 +123,21 @@ export function render(main, ctx) {
   const blockersHeading = el('h2', { id: 'blockers-heading' });
 
   function relationItem(other, note) {
+    const crossProject = other.project !== task.project;
+    const terminal = other.status === 'done' || other.status === 'cancelled';
     return el(
       'li',
       {},
-      statusBadge(other.status),
-      ' ',
-      navLink(linkTo(other.id), other.title || '(untitled)', { dataset: { taskId: other.id, nav: '' } }),
+      el('div', {}, navLink(linkTo(other.id), other.title || '(untitled)', { class: 'relation-title', dataset: { taskId: other.id, nav: '' } })),
       el(
-        'span',
-        { class: 'muted small' },
-        ` · ${other.owner ?? 'Unassigned'}`,
-        other.project !== task.project ? ` · ${other.project || '(no project)'}` : '',
+        'div',
+        { class: 'relation-meta' },
+        statusBadge(other.status),
+        crossProject ? el('span', { class: 'chip-static' }, `Other project: ${other.project || '(no project)'}`) : null,
+        el('span', { class: 'muted small' }, crossProject ? (other.owner ?? 'Unassigned') : `${other.owner ?? 'Unassigned'} · ${other.project || '(no project)'}`),
+        note ? el('span', { class: 'chip-static' }, note) : null,
       ),
-      other.project !== task.project ? el('span', { class: 'chip-static' }, 'Other project') : null,
-      note ? el('span', { class: 'chip-static' }, note) : null,
+      terminal ? el('p', { class: 'muted small' }, 'Resolved blocker — relationship retained.') : null,
     );
   }
 
@@ -153,14 +154,35 @@ export function render(main, ctx) {
       } else if (entry.status === 'self') {
         append(blockersList, el('li', {}, el('code', { class: 'id' }, blockerId), ' ', el('span', { class: 'chip-static' }, 'Self-reference')));
       } else if (entry.status === 'missing') {
-        append(blockersList, el('li', {}, el('code', { class: 'id' }, blockerId), ' · Task unavailable (deleted or unknown ID)'));
+        append(
+          blockersList,
+          el(
+            'li',
+            {},
+            el('strong', {}, 'Task unavailable'),
+            el('p', { class: 'muted small' }, 'Missing reference · ', el('code', { class: 'id' }, blockerId)),
+            el('p', {}, 'This task may have been deleted. The relationship remains visible.'),
+          ),
+        );
       } else if (entry.status === 'error') {
         append(blockersList, 
-          el('li', {}, el('code', { class: 'id' }, blockerId), ' · Could not load. ', el('button', { type: 'button', class: 'link-button', onclick: () => retryBlocker(blockerId), 'aria-label': `Retry loading blocker ${blockerId}` }, 'Retry')),
+          el(
+            'li',
+            {},
+            el('p', {}, el('code', { class: 'id' }, blockerId), ' · Could not load this blocker.'),
+            el('button', { type: 'button', class: 'button secondary', onclick: () => retryBlocker(blockerId), 'aria-label': `Retry loading blocker ${blockerId}` }, 'Retry blocker'),
+          ),
         );
       } else {
         append(blockersList, el('li', { 'aria-busy': 'true' }, el('code', { class: 'id' }, blockerId), ' · Loading…'));
       }
+    }
+    const resolved = task.blockedBy.map((blockerId) => blockerState.get(blockerId));
+    if (resolved.length && resolved.every((entry) => entry?.status === 'found' && ['done', 'cancelled'].includes(entry.task.status))) {
+      append(
+        blockersList,
+        el('li', { class: 'muted small' }, 'All blockers are done or cancelled. The stored status is unchanged until an agent changes it.'),
+      );
     }
     drawBlocks();
   }

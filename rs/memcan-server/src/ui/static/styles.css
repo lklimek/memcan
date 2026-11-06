@@ -1035,8 +1035,24 @@ th[aria-sort="descending"]::after {
 }
 
 .relation-list li {
-  padding: 6px 0;
+  padding: 8px 0;
   border-bottom: 1px solid var(--border);
+}
+
+.relation-title {
+  font-weight: 600;
+}
+
+.relation-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.relation-list p {
+  margin: 4px 0 0;
 }
 
 /* ---------------------------------------------------------------- dialogs, toasts */
