@@ -252,7 +252,8 @@ the API's Bearer middleware so the application's Basic Auth can work, but it rem
 The UI is a static JavaScript SPA embedded via `include_str!` (`rs/memcan-server/src/ui/static/`, no
 Node build step). `ui::router` serves only the shell, allowlisted assets and security headers; the
 browser loads data from `/health` and `/mcp` with the API key the user enters (memory only, never
-persisted). JS tests: `node --test 'rs/memcan-server/src/ui/tests-js/*.test.mjs'`; dev mock server
+persisted). Opening the UI via a non-localhost host name requires that name in
+`MEMCAN_ALLOWED_HOSTS`, or `/mcp` answers `403`. JS tests: `node --test 'rs/memcan-server/src/ui/tests-js/*.test.mjs'`; dev mock server
 and Playwright scenario live in the same directory.
 
 Keep the allowlist at its default localhost-only setting (`127.0.0.1/32,::1/128`) until TLS is

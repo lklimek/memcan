@@ -48,7 +48,9 @@ and `/mcp` in the browser. After page login it asks for the `MEMCAN_API_KEY`, wh
 the tab's memory (reload, close or **Disconnect** forgets it) and sends as a Bearer token. Phase 1
 calls only read tools (`get_todo`, `list_todos`, `export_collection` for todos, `list_collections`,
 `get_queue_status`). On plain HTTP beyond localhost the key can be intercepted like the page
-credentials; the UI warns before entry.
+credentials; the UI warns before entry. The MCP endpoint only accepts `Host` names on loopback by
+default: to use the UI via any other host name (e.g. `http://agentic.lan:8190`), add it to
+`MEMCAN_ALLOWED_HOSTS`, otherwise every API call is refused with `403`.
 
 The bundled Docker Compose entrypoint is plain HTTP and does not provide TLS out of the box. Its
 dedicated `/ui*` router bypasses the API's Bearer middleware so the application's Basic Auth can
