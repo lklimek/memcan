@@ -432,7 +432,9 @@ function render() {
   const project = new URLSearchParams(location.search).get('project');
   if (document.activeElement !== projectInput) projectInput.value = project ?? '';
 
+  trackLocation();
   const ctx = {
+    trackLocation,
     route,
     params: new URLSearchParams(location.search),
     client: state.client,
@@ -726,9 +728,14 @@ document.addEventListener('click', (event) => {
   navigate(url.pathname + url.search);
 });
 
+/** Remember the path+query the current view shows; views report their own URL rewrites. */
+function trackLocation() {
+  state.currentLocation = location.pathname + location.search;
+}
+
 window.addEventListener('popstate', () => {
-  // The app never routes on fragments; a fragment entry comes from an in-page anchor.
-  if (!location.hash) render();
+  // A fragment-only change (in-page anchor) keeps the view; any path or query change routes.
+  if (location.pathname + location.search !== state.currentLocation) render();
 });
 
 // ---------------------------------------------------------------- start

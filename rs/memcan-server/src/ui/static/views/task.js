@@ -53,6 +53,7 @@ export function render(main, ctx) {
         if (task.id !== id) {
           id = task.id;
           history.replaceState(history.state, '', `${taskPath(task.id)}${location.search}`);
+          ctx.trackLocation();
         }
       }
     } catch (error) {
