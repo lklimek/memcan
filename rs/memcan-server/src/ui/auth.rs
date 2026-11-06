@@ -54,8 +54,9 @@ const MAX_COOKIE_HEADER_LEN: usize = 4 * 1024;
 const MAX_SESSIONS: usize = 256;
 /// Consecutive failed sign-ins answered without delay; later ones back off exponentially.
 const FREE_FAILURES: u32 = 3;
-/// Longest wait the backoff imposes, so nobody can lock the shared account out for long.
-const MAX_BACKOFF: Duration = Duration::from_secs(30);
+/// Longest single wait the backoff imposes. Sustained guessing settles at one try per this
+/// interval (288 a day); a longer cap would slow guessing further but stretch each wait for the owner.
+const MAX_BACKOFF: Duration = Duration::from_secs(5 * 60);
 /// Quiet time after which earlier failures are forgotten.
 const FAILURE_MEMORY: Duration = Duration::from_secs(15 * 60);
 /// Rejected Basic headers remembered so a stale cached credential is not re-counted per page load.
@@ -235,10 +236,12 @@ fn random_token() -> Result<String, UiError> {
 /// Sign-in backoff for the single shared account. All failures (form and Basic, any username)
 /// share one counter, so the response never reveals whether a username exists. After
 /// [`FREE_FAILURES`] consecutive failures each further attempt must wait 1, 2, 4 … s, capped at
-/// [`MAX_BACKOFF`]: online guessing is bounded to about two tries a minute, while an attacker can
-/// delay the owner by at most that cap, never lock them out. Success or [`FAILURE_MEMORY`] of quiet
-/// resets it. Checking, verifying and recording happen under one lock, so parallel requests
-/// cannot slip past the backoff.
+/// [`MAX_BACKOFF`], which bounds online guessing to one try per cap interval. Without a trusted
+/// client identity the counter cannot tell an attacker from the owner: a client that keeps failing
+/// can keep sign-in refused for as long as it continues. That residual is accepted because the UI
+/// sits behind the proxy IP allowlist and per-client `/ui/auth/*` limit; existing sessions are
+/// unaffected. Success or [`FAILURE_MEMORY`] of quiet resets it. Checking, verifying and recording
+/// happen under one lock, so parallel requests cannot slip past the backoff.
 #[derive(Default)]
 struct Throttle {
     state: Mutex<ThrottleState>,
@@ -260,7 +263,7 @@ enum Attempt {
 fn backoff(failures: u32) -> Duration {
     match failures.checked_sub(FREE_FAILURES) {
         None => Duration::ZERO,
-        Some(step) => Duration::from_secs(1 << step.min(5)).min(MAX_BACKOFF),
+        Some(step) => Duration::from_secs(1 << step.min(9)).min(MAX_BACKOFF),
     }
 }
 
@@ -286,6 +289,42 @@ impl Throttle {
         Attempt::Rejected {
             failures: state.failures,
         }
+    }
+}
+
+/// Kinds of refused request whose warnings are rate-limited, since unauthenticated clients can
+/// trigger them at will.
+#[derive(Debug, Clone, Copy)]
+enum Rejection {
+    Host,
+    FetchSite,
+    Origin,
+    Csrf,
+    Backoff,
+}
+
+/// Minimum spacing of warnings per [`Rejection`] kind; refusals in between are only counted.
+const REJECTION_LOG_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Per-kind warning budget: the first refusal of a kind is logged, then at most one per
+/// [`REJECTION_LOG_INTERVAL`] carrying the count suppressed since the previous warning.
+#[derive(Default)]
+struct RejectionLog {
+    kinds: Mutex<[(Option<Instant>, u64); 5]>,
+}
+
+impl RejectionLog {
+    /// `Some(suppressed)` when this refusal should be logged now.
+    fn note(&self, kind: Rejection) -> Option<u64> {
+        let now = Instant::now();
+        let mut kinds = self.kinds.lock().unwrap_or_else(PoisonError::into_inner);
+        let (last, suppressed) = &mut kinds[kind as usize];
+        if last.is_some_and(|last| now.duration_since(last) < REJECTION_LOG_INTERVAL) {
+            *suppressed += 1;
+            return None;
+        }
+        *last = Some(now);
+        Some(std::mem::take(suppressed))
     }
 }
 
@@ -397,6 +436,7 @@ pub(super) struct Auth {
     sessions: SessionStore,
     throttle: Throttle,
     rejected_basic: Mutex<VecDeque<[u8; 32]>>,
+    rejections: RejectionLog,
 }
 
 impl Auth {
@@ -418,6 +458,7 @@ impl Auth {
             },
             throttle: Throttle::default(),
             rejected_basic: Mutex::default(),
+            rejections: RejectionLog::default(),
         }
     }
 
@@ -474,7 +515,7 @@ impl Auth {
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default();
         let Some((name, port)) = split_host(host) else {
-            return Err(reject_host(host));
+            return Err(self.reject_host(host));
         };
         let loopback = ["localhost", "127.0.0.1", "::1"]
             .iter()
@@ -488,7 +529,7 @@ impl Auth {
         if loopback || listed {
             Ok(())
         } else {
-            Err(reject_host(host))
+            Err(self.reject_host(host))
         }
     }
 
@@ -497,7 +538,7 @@ impl Auth {
     /// plain HTTP was opted into; forwarding headers are never trusted.
     pub(super) fn check_post(&self, headers: &HeaderMap) -> Result<(), UiError> {
         self.check_host(headers)?;
-        check_fetch_site(headers)?;
+        self.check_fetch_site(headers)?;
         let host = headers
             .get(header::HOST)
             .and_then(|value| value.to_str().ok())
@@ -515,12 +556,15 @@ impl Auth {
         if same_origin("https") || (self.insecure_http && same_origin("http")) {
             Ok(())
         } else {
-            warn!(
-                origin = ?clip(origin),
-                host = ?clip(host),
-                insecure_http_allowed = self.insecure_http,
-                "web UI request rejected: Origin is missing or not this Host (http:// origins need MEMCAN_WEBUI_ALLOW_INSECURE_HTTP=true)"
-            );
+            if let Some(suppressed) = self.rejections.note(Rejection::Origin) {
+                warn!(
+                    origin = ?clip(origin),
+                    host = ?clip(host),
+                    insecure_http_allowed = self.insecure_http,
+                    suppressed_since_last_warning = suppressed,
+                    "web UI request rejected: Origin is missing or not this Host (http:// origins need MEMCAN_WEBUI_ALLOW_INSECURE_HTTP=true)"
+                );
+            }
             Err(UiError::CrossOrigin)
         }
     }
@@ -548,11 +592,14 @@ impl Auth {
                 Err(UiError::InvalidCredentials)
             }
             Attempt::Throttled(wait) => {
-                info!(
-                    method = method.as_str(),
-                    retry_after_secs = wait.as_secs().max(1),
-                    "web UI sign-in refused while backing off after repeated failures"
-                );
+                if let Some(suppressed) = self.rejections.note(Rejection::Backoff) {
+                    warn!(
+                        method = method.as_str(),
+                        retry_after_secs = wait.as_secs().max(1),
+                        suppressed_since_last_warning = suppressed,
+                        "web UI sign-in refused while backing off after repeated failures"
+                    );
+                }
                 Err(UiError::Throttled(wait))
             }
         }
@@ -621,46 +668,60 @@ fn split_host(value: &str) -> Option<(&str, Option<&str>)> {
     })
 }
 
-/// Browsers label cross-site requests; requests without Fetch Metadata are left to the other guards.
-fn check_fetch_site(headers: &HeaderMap) -> Result<(), UiError> {
-    match headers.get("sec-fetch-site") {
-        None => Ok(()),
-        Some(value) if value == "same-origin" => Ok(()),
-        Some(value) => {
-            warn!(
-                sec_fetch_site = ?clip(value.to_str().unwrap_or_default()),
-                "web UI request rejected: the browser marked it as not same-origin"
-            );
-            Err(UiError::CrossOrigin)
+impl Auth {
+    /// Browsers label cross-site requests; requests without Fetch Metadata are left to the other guards.
+    fn check_fetch_site(&self, headers: &HeaderMap) -> Result<(), UiError> {
+        match headers.get("sec-fetch-site") {
+            None => Ok(()),
+            Some(value) if value == "same-origin" => Ok(()),
+            Some(value) => {
+                if let Some(suppressed) = self.rejections.note(Rejection::FetchSite) {
+                    warn!(
+                        sec_fetch_site = ?clip(value.to_str().unwrap_or_default()),
+                        suppressed_since_last_warning = suppressed,
+                        "web UI request rejected: the browser marked it as not same-origin"
+                    );
+                }
+                Err(UiError::CrossOrigin)
+            }
         }
     }
-}
 
-fn reject_host(host: &str) -> UiError {
-    warn!(
-        host = ?clip(host),
-        "web UI request rejected: Host is neither loopback nor listed in MEMCAN_ALLOWED_HOSTS"
-    );
-    UiError::HostNotAllowed
+    fn reject_host(&self, host: &str) -> UiError {
+        if let Some(suppressed) = self.rejections.note(Rejection::Host) {
+            warn!(
+                host = ?clip(host),
+                suppressed_since_last_warning = suppressed,
+                "web UI request rejected: Host is neither loopback nor listed in MEMCAN_ALLOWED_HOSTS"
+            );
+        }
+        UiError::HostNotAllowed
+    }
+
+    pub(super) fn check_csrf(
+        &self,
+        view: &SessionView,
+        headers: &HeaderMap,
+    ) -> Result<(), UiError> {
+        let valid = headers
+            .get(CSRF_HEADER)
+            .is_some_and(|sent| bool::from(sent.as_bytes().ct_eq(view.csrf.as_bytes())));
+        if valid {
+            return Ok(());
+        }
+        if let Some(suppressed) = self.rejections.note(Rejection::Csrf) {
+            warn!(
+                suppressed_since_last_warning = suppressed,
+                "web UI request rejected: missing or stale CSRF token (another tab may have signed in again)"
+            );
+        }
+        Err(UiError::Csrf)
+    }
 }
 
 /// Bound attacker-controlled text before it reaches a log line.
 pub(super) fn clip(value: &str) -> String {
     value.chars().take(80).collect()
-}
-
-pub(super) fn check_csrf(view: &SessionView, headers: &HeaderMap) -> Result<(), UiError> {
-    let valid = headers
-        .get(CSRF_HEADER)
-        .is_some_and(|sent| bool::from(sent.as_bytes().ct_eq(view.csrf.as_bytes())));
-    if valid {
-        Ok(())
-    } else {
-        warn!(
-            "web UI request rejected: missing or stale CSRF token (another tab may have signed in again)"
-        );
-        Err(UiError::Csrf)
-    }
 }
 
 /// Read a request body within `limit`, failing with `408` when it stalls for `timeout`
@@ -733,7 +794,7 @@ pub(super) async fn session(
 ) -> Result<Response, UiError> {
     let auth = &state.auth;
     auth.check_host(&headers)?;
-    check_fetch_site(&headers)?;
+    auth.check_fetch_site(&headers)?;
     let now = Instant::now();
     if let Some((_, view)) = auth.current(&headers, now) {
         return Ok(auth.signed_in(&view, None));
@@ -748,7 +809,7 @@ pub(super) async fn session(
             match auth.verify(&username, &password, Method::Basic, now) {
                 Ok(()) => {
                     let (id, view) = auth.sessions.create(&auth.account, Method::Basic, now)?;
-                    info!(method = "basic", "web UI sign-in succeeded");
+                    info!("web UI session started from proxy Basic credentials");
                     return Ok(auth.signed_in(&view, Some(auth.cookie(&id, false)?)));
                 }
                 Err(UiError::InvalidCredentials) => {
@@ -793,7 +854,7 @@ pub(super) async fn login(
         auth.sessions.revoke(previous);
     }
     let (id, view) = auth.sessions.create(&auth.account, Method::Form, now)?;
-    info!(method = "form", "web UI sign-in succeeded");
+    info!("web UI sign-in form accepted; session started");
     Ok(auth.signed_in(&view, Some(auth.cookie(&id, false)?)))
 }
 
@@ -806,7 +867,7 @@ pub(super) async fn logout(
     let auth = &state.auth;
     auth.check_post(&headers)?;
     if let Some((id, view)) = auth.current(&headers, Instant::now()) {
-        check_csrf(&view, &headers)?;
+        auth.check_csrf(&view, &headers)?;
         auth.sessions.revoke(id);
         info!(method = view.method.as_str(), "web UI session signed out");
     }
@@ -829,7 +890,7 @@ pub(super) async fn activity(
     let (id, view) = auth
         .current(&headers, now)
         .ok_or(UiError::Unauthenticated)?;
-    check_csrf(&view, &headers)?;
+    auth.check_csrf(&view, &headers)?;
     let view = auth
         .sessions
         .get(id, now, true)
@@ -900,7 +961,7 @@ mod tests {
             );
         }
         // From here on every attempt must wait, doubling up to MAX_BACKOFF.
-        for wait in [1, 2, 4, 8, 16, 30, 30, 30] {
+        for wait in [1, 2, 4, 8, 16, 32, 64, 128, 256, 300, 300] {
             let Attempt::Throttled(left) = throttle.attempt(Instant::now(), || true) else {
                 panic!("expected backoff of {wait}s");
             };
@@ -911,10 +972,7 @@ mod tests {
         let Attempt::Throttled(left) = throttle.attempt(Instant::now(), || true) else {
             panic!("still backing off");
         };
-        assert!(
-            left <= MAX_BACKOFF,
-            "the owner is never locked out for long"
-        );
+        assert!(left <= MAX_BACKOFF, "a single wait never exceeds the cap");
         tokio::time::advance(left).await;
         assert!(matches!(
             throttle.attempt(Instant::now(), || true),
@@ -935,6 +993,19 @@ mod tests {
         }
         tokio::time::advance(FAILURE_MEMORY).await;
         assert!(matches!(fail(&throttle), Attempt::Rejected { failures: 1 }));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rejection_warnings_are_rate_limited_per_kind_and_count_the_rest() {
+        let log = RejectionLog::default();
+        assert_eq!(log.note(Rejection::Origin), Some(0));
+        for _ in 0..50 {
+            assert_eq!(log.note(Rejection::Origin), None);
+        }
+        assert_eq!(log.note(Rejection::Host), Some(0), "kinds are independent");
+        tokio::time::advance(REJECTION_LOG_INTERVAL).await;
+        assert_eq!(log.note(Rejection::Origin), Some(50));
+        assert_eq!(log.note(Rejection::Origin), None);
     }
 
     #[test]

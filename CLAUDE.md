@@ -265,14 +265,20 @@ and assets are public (no data), and every data path is session-gated:
 - Every UI POST needs an allowed Host (loopback or `MEMCAN_ALLOWED_HOSTS`), no cross-site
   `Sec-Fetch-Site`, and `Origin` equal to `https://<Host>` (also `http://<Host>` with
   `MEMCAN_WEBUI_ALLOW_INSECURE_HTTP=true`). Forwarding headers are never trusted.
-- Sessions are in memory (restart signs everyone out), capped at 256. Sign-in backs off instead of
-  locking the shared account: after 3 consecutive failures (form or Basic, any username, one shared counter) each attempt waits 1, 2, 4 … s, capped at 30 s, `429` + `Retry-After`; success or 15 quiet minutes reset it. A rejected Basic header is remembered (32 digests),
+- Sessions are in memory (restart signs everyone out), capped at 256. Sign-in backs off: after 3
+  consecutive failures (form or Basic, any username, one shared counter) each attempt waits
+  1, 2, 4 … s, capped at 5 min, `429` + `Retry-After`; success or 15 quiet minutes reset it.
+  Sustained guessing is ~288 tries/day; a `MEMCAN_WEBUI_PASSWORD` under 12 characters draws a
+  startup `warn!`. Accepted residual: the counter cannot tell an attacker from the owner, so a
+  client that keeps failing can keep sign-in refused (existing sessions keep working) — the proxy
+  IP allowlist and per-client `/ui/auth/*` limit are what keep such clients out. A rejected Basic header is remembered (32 digests),
   so a stale cached credential resent on every page load counts and logs once. Logout cannot clear
   browser-cached Basic credentials; the UI says so.
 - UI POST bodies honour `MEMCAN_BODY_READ_TIMEOUT` (`408` when a body stalls).
 - Security events go to the tracing log (no secrets, tagged with a `webui` span carrying method and
   path): sign-in success/failure/backoff, ignored Basic credentials, sign-out, Host/Origin/Fetch
-  Metadata/CSRF rejections and BFF allowlist denials. A persistent audit store and
+  Metadata/CSRF rejections and BFF allowlist denials. Refusals that unauthenticated clients can
+  trigger warn at most once a minute per kind, with `suppressed_since_last_warning`. A persistent audit store and
   `MEMCAN_WEBUI_AUDIT_RETENTION_DAYS` are deferred until write tools exist (P2).
 
 The bundled Docker Compose entrypoint is plain HTTP and does not provide TLS. Its `/ui*` routers

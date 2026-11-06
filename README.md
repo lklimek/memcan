@@ -56,7 +56,9 @@ Sessions live in memory: they end after 30 idle minutes or 8 hours
 (`MEMCAN_WEBUI_SESSION_IDLE_SECS`, `MEMCAN_WEBUI_SESSION_ABSOLUTE_SECS`), on **Sign out**, and on
 server restart. Signing out cannot remove Basic credentials the browser cached for a proxy; close
 the browser for that. After three failed sign-ins in a row, each further attempt has to wait a
-little longer (up to 30 seconds); a successful sign-in resets it. The account role
+little longer (up to 5 minutes); a successful sign-in resets it. Someone who keeps guessing can keep
+new sign-ins waiting, so keep the UI behind the proxy IP allowlist, and use a long random password
+(the server warns at startup about one shorter than 12 characters). The account role
 (`MEMCAN_WEBUI_ROLE`, default `viewer`) is reported in the UI; every role is read-only for now.
 
 Sign-in assumes HTTPS terminated by a reverse proxy. On plain HTTP the UI shows "HTTPS required"

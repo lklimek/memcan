@@ -50,6 +50,21 @@ export function render(main, ctx) {
     return {};
   }
 
+  if (ctx.signInUnchecked) {
+    append(
+      main,
+      el(
+        'div',
+        { class: 'panel' },
+        el('h2', {}, 'Sign-in unavailable'),
+        el('p', {}, 'The server’s sign-in settings could not be checked, so no password is requested over this unencrypted connection.'),
+        el('p', {}, el('button', { type: 'button', class: 'button primary', onclick: () => location.reload() }, 'Reload')),
+      ),
+    );
+    ctx.focusHeading();
+    return {};
+  }
+
   const status = el('div', { id: 'login-error', class: 'form-error', role: 'alert', tabindex: '-1' });
   const username = el('input', {
     id: 'username',

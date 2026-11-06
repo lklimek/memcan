@@ -38,6 +38,10 @@ const SVG: &str = "image/svg+xml";
 
 const SHELL: &str = include_str!("static/index.html");
 
+/// Below this length `MEMCAN_WEBUI_PASSWORD` draws a startup warning: the sign-in backoff bounds
+/// guessing to a few hundred tries a day, which only a long random password makes irrelevant.
+const MIN_PASSWORD_CHARS: usize = 12;
+
 /// Embedded assets served under `/ui/static/<path>`; anything else there is a 404.
 const ASSETS: &[(&str, &str, &str)] = &[
     ("app.js", JAVASCRIPT, include_str!("static/app.js")),
@@ -174,6 +178,12 @@ fn auth_from(settings: &Settings) -> Option<Auth> {
             "web UI disabled: MEMCAN_WEBUI_SESSION_IDLE_SECS and MEMCAN_WEBUI_SESSION_ABSOLUTE_SECS must be positive, with idle not above absolute"
         );
         return None;
+    }
+    if password.chars().count() < MIN_PASSWORD_CHARS {
+        warn!(
+            min_chars = MIN_PASSWORD_CHARS,
+            "MEMCAN_WEBUI_PASSWORD is short: online guessing is only slowed, not stopped, so use at least 12 random characters"
+        );
     }
     if settings.webui_allow_insecure_http {
         warn!(

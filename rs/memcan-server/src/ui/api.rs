@@ -20,7 +20,7 @@ use tracing::warn;
 
 use super::{
     UiState,
-    auth::{UiError, check_csrf, clip, read_body, require_json},
+    auth::{UiError, clip, read_body, require_json},
 };
 
 /// In-process MCP endpoint: receives a fresh `POST /mcp` request and returns its response.
@@ -192,7 +192,7 @@ pub(super) async fn mcp(
     let (_, session) = auth
         .current(&headers, Instant::now())
         .ok_or(UiError::Unauthenticated)?;
-    check_csrf(&session, &headers)?;
+    auth.check_csrf(&session, &headers)?;
     require_json(&headers)?;
     let body = read_body(body, MAX_REQUEST_BODY, state.body_read_timeout).await?;
     let message: Value =

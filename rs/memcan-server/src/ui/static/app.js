@@ -221,8 +221,8 @@ function buildShell() {
 
 function renderBanners() {
   clear(banners);
-  // Only where a password can actually be sent over plain HTTP; otherwise the sign-in page explains.
-  if (insecureHttp && state.insecureHttpAllowed === true) {
+  // Plain HTTP beyond loopback, unless the server is known to refuse it (then sign-in explains).
+  if (insecureHttp && state.insecureHttpAllowed !== false) {
     append(banners, 
       el(
         'p',
@@ -350,6 +350,7 @@ async function startSession(info) {
   endSession();
   const client = createMcpClient({ auth: sessionAuth(info.csrfToken), onAuthFailure: (error) => handleAuthFailure(client, error) });
   state.session = info;
+  if (typeof info.insecureHttpAllowed === 'boolean') state.insecureHttpAllowed = info.insecureHttpAllowed;
   state.lastActivity = Date.now();
   try {
     const connected = await client.connect();
@@ -523,6 +524,8 @@ function render() {
     connected: Boolean(state.client),
     signedIn: Boolean(state.client),
     httpsRequired: location.protocol === 'http:' && state.insecureHttpAllowed === false,
+    // On plain HTTP a password may only be offered once the server confirmed it accepts HTTP sign-in.
+    signInUnchecked: location.protocol === 'http:' && state.insecureHttpAllowed === null,
     prefs,
     health: state.health,
     insecureHttp,
