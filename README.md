@@ -43,6 +43,13 @@ Set both `MEMCAN_WEBUI_USERNAME` and `MEMCAN_WEBUI_PASSWORD` to mount the task b
 `/ui/tasks`; leaving either value unset or empty keeps every `/ui*` route unmounted. The password is
 masked in settings debug output.
 
+The UI is a static single-page app embedded in `memcan-server`; it reads everything from `/health`
+and `/mcp` in the browser. After page login it asks for the `MEMCAN_API_KEY`, which it keeps only in
+the tab's memory (reload, close or **Disconnect** forgets it) and sends as a Bearer token. Phase 1
+calls only read tools (`get_todo`, `list_todos`, `export_collection` for todos, `list_collections`,
+`get_queue_status`). On plain HTTP beyond localhost the key can be intercepted like the page
+credentials; the UI warns before entry.
+
 The bundled Docker Compose entrypoint is plain HTTP and does not provide TLS out of the box. Its
 dedicated `/ui*` router bypasses the API's Bearer middleware so the application's Basic Auth can
 work, but `TRAEFIK_IP_ALLOWLIST` must remain at its default localhost-only setting until TLS is
