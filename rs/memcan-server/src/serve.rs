@@ -2231,6 +2231,13 @@ fn http_mcp_router(
 pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
     let ctx = MemcanContext::init().await?;
     setup_logging(&ctx.settings.log_file);
+    for rejected in &ctx.settings.mcp_rejected_hosts {
+        warn!(
+            entry = %rejected.entry,
+            reason = rejected.reason,
+            "ignoring MEMCAN_ALLOWED_HOSTS entry: use `host` or `host:port` (e.g. agentic.lan or agentic.lan:8190)"
+        );
+    }
     let health = Arc::new(DependencyHealth::with_defaults());
     let (llm, llm_model) = create_llm_provider(&ctx.settings, Arc::clone(&health))?;
     if ctx.settings.distill_memories {

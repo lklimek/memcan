@@ -387,6 +387,18 @@ pub struct Settings {
     /// Extra `Host` values (host or host:port) accepted on `/mcp` in addition to the
     /// MCP transport's loopback defaults, which guard against DNS rebinding.
     pub mcp_allowed_hosts: Vec<String>,
+    /// `MEMCAN_ALLOWED_HOSTS` entries skipped as malformed. Kept for the server to log once
+    /// its subscriber is installed; settings load before logging is set up.
+    pub mcp_rejected_hosts: Vec<RejectedHost>,
+}
+
+/// A malformed `MEMCAN_ALLOWED_HOSTS` entry and why it was skipped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedHost {
+    /// The entry as configured (trimmed).
+    pub entry: String,
+    /// Why it is not a `host` or `host:port` value.
+    pub reason: &'static str,
 }
 
 impl std::fmt::Debug for Settings {
@@ -424,6 +436,7 @@ impl std::fmt::Debug for Settings {
                 &self.mcp_body_read_timeout_secs,
             )
             .field("mcp_allowed_hosts", &self.mcp_allowed_hosts)
+            .field("mcp_rejected_hosts", &self.mcp_rejected_hosts)
             .finish()
     }
 }
@@ -451,6 +464,7 @@ impl Default for Settings {
             compact_fragment_threshold: 64,
             mcp_body_read_timeout_secs: 30,
             mcp_allowed_hosts: Vec::new(),
+            mcp_rejected_hosts: Vec::new(),
         }
     }
 }
@@ -572,7 +586,8 @@ impl Settings {
             "MEMCAN_BODY_READ_TIMEOUT",
             defaults.mcp_body_read_timeout_secs,
         );
-        let mcp_allowed_hosts = parse_host_list(&env_or("MEMCAN_ALLOWED_HOSTS", ""));
+        let (mcp_allowed_hosts, mcp_rejected_hosts) =
+            parse_host_list(&env_or("MEMCAN_ALLOWED_HOSTS", ""));
 
         let settings = Settings {
             lancedb_path,
@@ -595,6 +610,7 @@ impl Settings {
             compact_fragment_threshold,
             mcp_body_read_timeout_secs,
             mcp_allowed_hosts,
+            mcp_rejected_hosts,
         };
         settings.validate_with(&origins, &cwd_vars)?;
         Ok(settings)
@@ -829,27 +845,27 @@ fn env_or(key: &str, default: &str) -> String {
 }
 
 /// Split `MEMCAN_ALLOWED_HOSTS`, trimming entries and dropping empties and duplicates.
-/// Malformed entries are skipped with one `warn!` each; startup never fails on them.
-fn parse_host_list(value: &str) -> Vec<String> {
+/// Malformed entries are returned separately (never fatal) so the server can warn about them.
+fn parse_host_list(value: &str) -> (Vec<String>, Vec<RejectedHost>) {
     let mut hosts: Vec<String> = Vec::new();
+    let mut rejected = Vec::new();
     for host in value
         .split(',')
         .map(str::trim)
         .filter(|host| !host.is_empty())
     {
         if let Err(reason) = check_allowed_host(host) {
-            warn!(
-                entry = host,
+            rejected.push(RejectedHost {
+                entry: host.to_string(),
                 reason,
-                "ignoring MEMCAN_ALLOWED_HOSTS entry: use `host` or `host:port` (e.g. agentic.lan or agentic.lan:8190)"
-            );
+            });
             continue;
         }
         if !hosts.iter().any(|existing| existing == host) {
             hosts.push(host.to_string());
         }
     }
-    hosts
+    (hosts, rejected)
 }
 
 /// Accept a bare `Host` value: `host`, `host:port`, bare IPv6, or `[ipv6]` with optional port.
@@ -2659,11 +2675,11 @@ mod tests {
     #[test]
     fn test_parse_host_list_trims_drops_empties_and_duplicates() {
         assert_eq!(
-            parse_host_list(" agentic.lan , ,memcan.example:8190,agentic.lan,"),
+            parse_host_list(" agentic.lan , ,memcan.example:8190,agentic.lan,").0,
             vec!["agentic.lan".to_string(), "memcan.example:8190".to_string()]
         );
-        assert!(parse_host_list("").is_empty());
-        assert!(parse_host_list(" , ").is_empty());
+        assert_eq!(parse_host_list(""), (vec![], vec![]));
+        assert_eq!(parse_host_list(" , "), (vec![], vec![]));
     }
 
     #[test]
@@ -2706,11 +2722,17 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_host_list_keeps_valid_entries_and_drops_invalid_ones() {
+    fn test_parse_host_list_keeps_valid_entries_and_reports_invalid_ones() {
+        let (hosts, rejected) =
+            parse_host_list("agentic.lan, http://bad, *.lan, memcan.example:8190, x:0");
         assert_eq!(
-            parse_host_list("agentic.lan, http://bad, *.lan, memcan.example:8190, x:0"),
+            hosts,
             vec!["agentic.lan".to_string(), "memcan.example:8190".to_string()]
         );
+        let entries: Vec<&str> = rejected.iter().map(|r| r.entry.as_str()).collect();
+        assert_eq!(entries, vec!["http://bad", "*.lan", "x:0"]);
+        assert!(rejected[0].reason.contains("scheme"));
+        assert!(rejected[2].reason.contains("port"));
     }
 
     #[test]
@@ -2723,12 +2745,26 @@ mod tests {
             vec!["agentic.lan", "10.0.0.5:8190"]
         );
 
+        assert!(settings.mcp_rejected_hosts.is_empty());
+
+        let settings =
+            load_with(&[("MEMCAN_ALLOWED_HOSTS", Some("ok.lan, http://bad.lan"))]).unwrap();
+        assert_eq!(settings.mcp_allowed_hosts, vec!["ok.lan"]);
+        assert_eq!(
+            settings.mcp_rejected_hosts,
+            vec![RejectedHost {
+                entry: "http://bad.lan".into(),
+                reason: "has a URL scheme",
+            }]
+        );
+
         let settings = load_with(&[("MEMCAN_ALLOWED_HOSTS", Some(""))]).unwrap();
         assert!(settings.mcp_allowed_hosts.is_empty());
 
         let settings = load_with(&[]).unwrap();
         assert!(settings.mcp_allowed_hosts.is_empty());
         assert!(Settings::default().mcp_allowed_hosts.is_empty());
+        assert!(Settings::default().mcp_rejected_hosts.is_empty());
     }
 
     #[test]
