@@ -384,6 +384,9 @@ pub struct Settings {
     /// stalled connection without penalizing a large body that keeps arriving.
     /// `0` disables the bound.
     pub mcp_body_read_timeout_secs: u64,
+    /// Extra `Host` values (host or host:port) accepted on `/mcp` in addition to the
+    /// MCP transport's loopback defaults, which guard against DNS rebinding.
+    pub mcp_allowed_hosts: Vec<String>,
 }
 
 impl std::fmt::Debug for Settings {
@@ -420,6 +423,7 @@ impl std::fmt::Debug for Settings {
                 "mcp_body_read_timeout_secs",
                 &self.mcp_body_read_timeout_secs,
             )
+            .field("mcp_allowed_hosts", &self.mcp_allowed_hosts)
             .finish()
     }
 }
@@ -446,6 +450,7 @@ impl Default for Settings {
             compact_on_startup: true,
             compact_fragment_threshold: 64,
             mcp_body_read_timeout_secs: 30,
+            mcp_allowed_hosts: Vec::new(),
         }
     }
 }
@@ -567,6 +572,7 @@ impl Settings {
             "MEMCAN_BODY_READ_TIMEOUT",
             defaults.mcp_body_read_timeout_secs,
         );
+        let mcp_allowed_hosts = parse_host_list(&env_or("MEMCAN_ALLOWED_HOSTS", ""));
 
         let settings = Settings {
             lancedb_path,
@@ -588,6 +594,7 @@ impl Settings {
             compact_on_startup,
             compact_fragment_threshold,
             mcp_body_read_timeout_secs,
+            mcp_allowed_hosts,
         };
         settings.validate_with(&origins, &cwd_vars)?;
         Ok(settings)
@@ -819,6 +826,21 @@ impl Settings {
 /// Read an environment variable, falling back to a default.
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+/// Split a comma-separated list, trimming entries and dropping empties and duplicates.
+fn parse_host_list(value: &str) -> Vec<String> {
+    let mut hosts: Vec<String> = Vec::new();
+    for host in value
+        .split(',')
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+    {
+        if !hosts.iter().any(|existing| existing == host) {
+            hosts.push(host.to_string());
+        }
+    }
+    hosts
 }
 
 /// Read an unsigned integer setting from the environment, warning on garbage.
@@ -1335,7 +1357,7 @@ mod tests {
     }
 
     /// Variables `Settings::load` reads that a test may change.
-    const ISOLATED_VARS: [&str; 15] = [
+    const ISOLATED_VARS: [&str; 16] = [
         "LLM_PROVIDER",
         "LLM_MODEL",
         "LLM_API_KEY",
@@ -1351,6 +1373,7 @@ mod tests {
         "OLLAMA_API_KEY",
         "MEMCAN_WEBUI_USERNAME",
         "MEMCAN_WEBUI_PASSWORD",
+        "MEMCAN_ALLOWED_HOSTS",
     ];
 
     /// Isolate `Settings::load()` from the host's `.env` files and LLM env.
@@ -2565,6 +2588,34 @@ mod tests {
     #[test]
     fn test_validate_defaults_ok() {
         Settings::default().validate().unwrap();
+    }
+
+    #[test]
+    fn test_parse_host_list_trims_drops_empties_and_duplicates() {
+        assert_eq!(
+            parse_host_list(" agentic.lan , ,memcan.example:8190,agentic.lan,"),
+            vec!["agentic.lan".to_string(), "memcan.example:8190".to_string()]
+        );
+        assert!(parse_host_list("").is_empty());
+        assert!(parse_host_list(" , ").is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn test_allowed_hosts_load_from_env_and_default_to_none() {
+        let settings =
+            load_with(&[("MEMCAN_ALLOWED_HOSTS", Some("agentic.lan, 10.0.0.5:8190"))]).unwrap();
+        assert_eq!(
+            settings.mcp_allowed_hosts,
+            vec!["agentic.lan", "10.0.0.5:8190"]
+        );
+
+        let settings = load_with(&[("MEMCAN_ALLOWED_HOSTS", Some(""))]).unwrap();
+        assert!(settings.mcp_allowed_hosts.is_empty());
+
+        let settings = load_with(&[]).unwrap();
+        assert!(settings.mcp_allowed_hosts.is_empty());
+        assert!(Settings::default().mcp_allowed_hosts.is_empty());
     }
 
     #[test]

@@ -2203,12 +2203,22 @@ where
 
 // --- Entry point ---
 
-fn http_mcp_router(shared: Arc<SharedState>, body_read_timeout: Duration) -> Router {
+/// `extra_hosts` are added to rmcp's loopback `Host` allow-list (DNS-rebinding guard);
+/// they never replace it, so the list can't become empty (which would allow every host).
+fn http_mcp_router(
+    shared: Arc<SharedState>,
+    body_read_timeout: Duration,
+    extra_hosts: &[String],
+) -> Router {
+    let mut config = StreamableHttpServerConfig::default();
+    let mut allowed_hosts = config.allowed_hosts.clone();
+    allowed_hosts.extend(extra_hosts.iter().cloned());
+    config = config.with_allowed_hosts(allowed_hosts);
     let service = StreamableHttpService::new(
         move || Ok(MemcanService::new(Arc::clone(&shared))),
         Arc::new(LocalSessionManager::default()),
         // Tool state and queued writes belong to SharedState, not idle HTTP sessions.
-        StreamableHttpServerConfig::default()
+        config
             .with_legacy_session_mode(false)
             .with_json_response(true)
             // rmcp's 4 MiB default rejects `index_code_files` batches, which
@@ -2329,7 +2339,17 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
             );
         }
 
-        let mcp_app_router = http_mcp_router(Arc::clone(&shared), body_read_timeout);
+        if !ctx.settings.mcp_allowed_hosts.is_empty() {
+            info!(
+                extra_hosts = ?ctx.settings.mcp_allowed_hosts,
+                "MCP Host allow-list extended beyond loopback (MEMCAN_ALLOWED_HOSTS)"
+            );
+        }
+        let mcp_app_router = http_mcp_router(
+            Arc::clone(&shared),
+            body_read_timeout,
+            &ctx.settings.mcp_allowed_hosts,
+        );
 
         let mcp_app_router = if let Some(ref key) = ctx.settings.api_key {
             let expected = format!("Bearer {key}");
@@ -2962,7 +2982,70 @@ mod tests {
         use tower::ServiceExt;
 
         fn app(service: &MemcanService) -> Router {
-            http_mcp_router(Arc::clone(&service.state), Duration::from_secs(30))
+            http_mcp_router(Arc::clone(&service.state), Duration::from_secs(30), &[])
+        }
+
+        async fn initialize_with_host(app: &Router, host: &str) -> StatusCode {
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("/mcp")
+                .header("host", host)
+                .header("accept", "application/json, text/event-stream")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                        "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                            "clientInfo": {"name": "memcan-http-test", "version": "1"}}
+                    })
+                    .to_string(),
+                ))
+                .unwrap();
+            app.clone().oneshot(request).await.unwrap().status()
+        }
+
+        #[tokio::test]
+        async fn configured_extra_hosts_are_accepted_alongside_loopback() {
+            let service = make_test_service();
+            let extra = vec!["agentic.lan".to_string(), "memcan.example:8190".to_string()];
+            let app = http_mcp_router(Arc::clone(&service.state), Duration::from_secs(30), &extra);
+            for host in [
+                "agentic.lan:8190",
+                "agentic.lan",
+                "memcan.example:8190",
+                "localhost:8190",
+                "127.0.0.1",
+            ] {
+                assert_eq!(
+                    initialize_with_host(&app, host).await,
+                    StatusCode::OK,
+                    "{host}"
+                );
+            }
+            for host in [
+                "evil.example",
+                "memcan.example:9999",
+                "agentic.lan.evil.example",
+            ] {
+                assert_eq!(
+                    initialize_with_host(&app, host).await,
+                    StatusCode::FORBIDDEN,
+                    "{host}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn without_extra_hosts_only_loopback_is_accepted() {
+            let app = app(&make_test_service());
+            assert_eq!(
+                initialize_with_host(&app, "localhost:8190").await,
+                StatusCode::OK
+            );
+            assert_eq!(
+                initialize_with_host(&app, "agentic.lan:8190").await,
+                StatusCode::FORBIDDEN
+            );
         }
 
         async fn request(app: &Router, message: Value, session: Option<&str>) -> Response {
