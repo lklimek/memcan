@@ -39,10 +39,12 @@ const auth = createAuth();
 const state = {
   /** Signed-in principal from the backend (`username`, `role`, `method`, `csrfToken`), or null. */
   session: null,
-  insecureHttpAllowed: false,
+  /** Whether the server accepts sign-in over plain HTTP; null until a bootstrap succeeds. */
+  insecureHttpAllowed: null,
   ready: false,
   lastActivity: 0,
-  lastRenew: 0,
+  /** Last silent re-bootstrap per cause, so a server that keeps refusing cannot cause a loop. */
+  lastRenew: { session: 0, token: 0 },
   client: null,
   store: null,
   missingTools: [],
@@ -150,6 +152,16 @@ const projectInput = el('input', {
   class: 'project-input',
 });
 const projectOptions = el('datalist', { id: 'project-options' });
+const primaryNav = el('nav', { 'aria-label': 'Primary', class: 'primary-nav' }, el('ul', {}, el('li', {}, navTasks), el('li', {}, navDashboard)));
+const projectForm = el(
+  'form',
+  { class: 'project-picker', role: 'search', 'aria-label': 'Project', onsubmit: onProjectSubmit },
+  el('label', { for: 'project-picker' }, 'Project'),
+  projectInput,
+  projectOptions,
+  el('button', { type: 'submit', class: 'button secondary' }, 'Go'),
+);
+const readonlyLabel = el('span', { class: 'readonly-label' }, 'Read-only');
 const signOutButton = el('button', { type: 'button', class: 'button secondary', onclick: () => signOut() }, 'Sign out');
 const refreshButton = el('button', { type: 'button', class: 'button secondary', onclick: () => refreshView() }, 'Refresh');
 const commandsButton = el(
@@ -174,15 +186,8 @@ function buildShell() {
       'div',
       { class: 'header-row' },
       navLink('/ui/tasks', 'MemCan', { class: 'logo', 'aria-label': 'MemCan — Tasks' }),
-      el('nav', { 'aria-label': 'Primary', class: 'primary-nav' }, el('ul', {}, el('li', {}, navTasks), el('li', {}, navDashboard))),
-      el(
-        'form',
-        { class: 'project-picker', role: 'search', 'aria-label': 'Project', onsubmit: onProjectSubmit },
-        el('label', { for: 'project-picker' }, 'Project'),
-        projectInput,
-        projectOptions,
-        el('button', { type: 'submit', class: 'button secondary' }, 'Go'),
-      ),
+      primaryNav,
+      projectForm,
       el('div', { class: 'header-actions' }, commandsButton, refreshButton, signOutButton),
     ),
     el(
@@ -190,7 +195,7 @@ function buildShell() {
       { class: 'header-row status-row' },
       healthIndicator,
       connectionIndicator,
-      el('span', { class: 'readonly-label' }, 'Read-only'),
+      readonlyLabel,
       el('label', { class: 'theme-label', for: 'theme-select' }, 'Theme'),
       themeSelect,
     ),
@@ -216,7 +221,8 @@ function buildShell() {
 
 function renderBanners() {
   clear(banners);
-  if (insecureHttp) {
+  // Only where a password can actually be sent over plain HTTP; otherwise the sign-in page explains.
+  if (insecureHttp && state.insecureHttpAllowed === true) {
     append(banners, 
       el(
         'p',
@@ -256,7 +262,10 @@ function renderConnection() {
   const { session } = state;
   connectionIndicator.textContent = session ? `Signed in as ${session.username} (${session.role})` : 'Not signed in';
   connectionIndicator.dataset.tone = state.client ? 'good' : 'neutral';
-  signOutButton.hidden = !session;
+  // Signed out, the header keeps only what works without a session: brand, server health, theme.
+  for (const control of [primaryNav, projectForm, commandsButton, refreshButton, connectionIndicator, readonlyLabel, signOutButton]) {
+    control.hidden = !session;
+  }
   renderBanners();
 }
 
@@ -394,9 +403,11 @@ async function handleAuthFailure(client, error) {
   if (state.client !== client) return;
   endSession();
   renderConnection();
-  // An expired session renews silently once in a while when the browser still sends valid Basic credentials.
-  if (error.reason === 'session' && Date.now() - state.lastRenew > RENEW_INTERVAL_MS) {
-    state.lastRenew = Date.now();
+  // Re-bootstrap once per cause and interval: a stale CSRF token (another tab signed in again)
+  // picks up the current session, and an expired one renews when the browser still sends Basic.
+  const renewable = error.reason === 'session' || error.reason === 'token';
+  if (renewable && Date.now() - state.lastRenew[error.reason] > RENEW_INTERVAL_MS) {
+    state.lastRenew[error.reason] = Date.now();
     try {
       await restoreSession();
       if (state.session) {
@@ -414,7 +425,12 @@ async function handleAuthFailure(client, error) {
 async function signOut() {
   const { session } = state;
   if (!session) return;
-  await auth.logout(session.csrfToken).catch(() => {});
+  await auth.logout(session.csrfToken).catch(async (error) => {
+    // A stale token (another tab signed in again) still means "sign this browser out".
+    if (error.category !== 'forbidden') return;
+    const current = await auth.session().catch(() => null);
+    if (current?.authenticated) await auth.logout(current.csrfToken).catch(() => {});
+  });
   endSession();
   renderConnection();
   state.connectionNotice = {
@@ -506,7 +522,7 @@ function render() {
     store: state.store,
     connected: Boolean(state.client),
     signedIn: Boolean(state.client),
-    httpsRequired: location.protocol === 'http:' && !state.insecureHttpAllowed,
+    httpsRequired: location.protocol === 'http:' && state.insecureHttpAllowed === false,
     prefs,
     health: state.health,
     insecureHttp,
@@ -628,6 +644,7 @@ function commandList() {
 let commandsDialog = null;
 
 function openCommands() {
+  if (!state.session && !commandsDialog) return;
   if (commandsDialog) {
     commandsDialog.close();
     return;

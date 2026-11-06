@@ -9,8 +9,11 @@
 //! `WWW-Authenticate` challenge.
 
 use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex, PoisonError},
+    collections::{HashMap, VecDeque},
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -28,12 +31,18 @@ use base64::{
     Engine as _,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
+use bytes::Bytes;
+use http_body_util::BodyExt;
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tokio::time::Instant;
-use tracing::{error, info, warn};
+use tower_http::{
+    BoxError,
+    timeout::{TimeoutBody, TimeoutError},
+};
+use tracing::{debug, error, info, warn};
 
 use super::UiState;
 
@@ -43,13 +52,14 @@ const MAX_LOGIN_BODY: usize = 4 * 1024;
 const MAX_COOKIE_HEADER_LEN: usize = 4 * 1024;
 /// Sessions kept at once; the least recently active one is evicted beyond this.
 const MAX_SESSIONS: usize = 256;
-/// Failed sign-ins per username before it is locked for the rest of the window.
-const MAX_FAILURES: u32 = 5;
-const FAILURE_WINDOW: Duration = Duration::from_secs(15 * 60);
-const MAX_TRACKED_USERNAMES: usize = 1024;
-/// Sign-in attempts (form and Basic) accepted across all usernames per window.
-const MAX_ATTEMPTS: u32 = 60;
-const ATTEMPT_WINDOW: Duration = Duration::from_secs(60);
+/// Consecutive failed sign-ins answered without delay; later ones back off exponentially.
+const FREE_FAILURES: u32 = 3;
+/// Longest wait the backoff imposes, so nobody can lock the shared account out for long.
+const MAX_BACKOFF: Duration = Duration::from_secs(30);
+/// Quiet time after which earlier failures are forgotten.
+const FAILURE_MEMORY: Duration = Duration::from_secs(15 * 60);
+/// Rejected Basic headers remembered so a stale cached credential is not re-counted per page load.
+const MAX_REJECTED_BASIC: usize = 32;
 const CSRF_HEADER: &str = "x-csrf-token";
 const SECURE_COOKIE: &str = "__Host-memcan_ui";
 const INSECURE_COOKIE: &str = "memcan_ui";
@@ -74,6 +84,8 @@ pub(super) enum UiError {
     UnsupportedMediaType,
     #[error("The request is too large.")]
     PayloadTooLarge,
+    #[error("The request body was not received in time.")]
+    BodyTimeout,
     #[error("The request could not be read.")]
     BadRequest,
     #[error("Not found.")]
@@ -103,6 +115,7 @@ impl UiError {
                 (StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type")
             }
             Self::PayloadTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large"),
+            Self::BodyTimeout => (StatusCode::REQUEST_TIMEOUT, "request_timeout"),
             Self::BadRequest => (StatusCode::BAD_REQUEST, "bad_request"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::Busy => (StatusCode::TOO_MANY_REQUESTS, "busy"),
@@ -170,6 +183,15 @@ enum Method {
     Basic,
 }
 
+impl Method {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Form => "form",
+            Self::Basic => "basic",
+        }
+    }
+}
+
 /// The shared account. Credentials are compared as SHA-256 digests in constant time, with the
 /// username and password always both compared, so a wrong username costs the same as a wrong
 /// password. A slow password hash would add nothing: the plaintext already sits in the
@@ -210,8 +232,13 @@ fn random_token() -> Result<String, UiError> {
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
-/// Per-username failure counting plus a global attempt cap, both over fixed windows and bounded
-/// in memory. A locked username unlocks when its window ends; there is no permanent lockout.
+/// Sign-in backoff for the single shared account. All failures (form and Basic, any username)
+/// share one counter, so the response never reveals whether a username exists. After
+/// [`FREE_FAILURES`] consecutive failures each further attempt must wait 1, 2, 4 … s, capped at
+/// [`MAX_BACKOFF`]: online guessing is bounded to about two tries a minute, while an attacker can
+/// delay the owner by at most that cap, never lock them out. Success or [`FAILURE_MEMORY`] of quiet
+/// resets it. Checking, verifying and recording happen under one lock, so parallel requests
+/// cannot slip past the backoff.
 #[derive(Default)]
 struct Throttle {
     state: Mutex<ThrottleState>,
@@ -219,56 +246,46 @@ struct Throttle {
 
 #[derive(Default)]
 struct ThrottleState {
-    failures: HashMap<String, (u32, Instant)>,
-    attempts: Option<(u32, Instant)>,
+    failures: u32,
+    last_failure: Option<Instant>,
+}
+
+/// Result of one throttled credential check.
+enum Attempt {
+    Accepted,
+    Rejected { failures: u32 },
+    Throttled(Duration),
+}
+
+fn backoff(failures: u32) -> Duration {
+    match failures.checked_sub(FREE_FAILURES) {
+        None => Duration::ZERO,
+        Some(step) => Duration::from_secs(1 << step.min(5)).min(MAX_BACKOFF),
+    }
 }
 
 impl Throttle {
-    /// Count an attempt, or return how long to wait before the next one is accepted.
-    fn admit(&self, key: &str, now: Instant) -> Result<(), Duration> {
+    fn attempt(&self, now: Instant, verify: impl FnOnce() -> bool) -> Attempt {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let (count, start) = match state.attempts {
-            Some((count, start)) if now.duration_since(start) < ATTEMPT_WINDOW => (count, start),
-            _ => (0, now),
-        };
-        if count >= MAX_ATTEMPTS {
-            return Err(ATTEMPT_WINDOW - now.duration_since(start));
-        }
-        if let Some(&(failures, since)) = state.failures.get(key) {
-            let elapsed = now.duration_since(since);
-            if elapsed >= FAILURE_WINDOW {
-                state.failures.remove(key);
-            } else if failures >= MAX_FAILURES {
-                return Err(FAILURE_WINDOW - elapsed);
+        if let Some(last) = state.last_failure {
+            let elapsed = now.duration_since(last);
+            if elapsed >= FAILURE_MEMORY {
+                *state = ThrottleState::default();
+            } else if let Some(wait) = backoff(state.failures).checked_sub(elapsed)
+                && !wait.is_zero()
+            {
+                return Attempt::Throttled(wait);
             }
         }
-        state.attempts = Some((count + 1, start));
-        Ok(())
-    }
-
-    /// Record a failure; returns true when this failure locked the username.
-    fn failed(&self, key: &str, now: Instant) -> bool {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if !state.failures.contains_key(key) && state.failures.len() >= MAX_TRACKED_USERNAMES {
-            state
-                .failures
-                .retain(|_, (_, since)| now.duration_since(*since) < FAILURE_WINDOW);
+        if verify() {
+            *state = ThrottleState::default();
+            return Attempt::Accepted;
         }
-        // When still full, unknown usernames share one bucket instead of growing the map.
-        let key =
-            if !state.failures.contains_key(key) && state.failures.len() >= MAX_TRACKED_USERNAMES {
-                ""
-            } else {
-                key
-            };
-        let entry = state.failures.entry(key.to_string()).or_insert((0, now));
-        entry.0 += 1;
-        entry.0 == MAX_FAILURES
-    }
-
-    fn succeeded(&self, key: &str) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.failures.remove(key);
+        state.failures = state.failures.saturating_add(1);
+        state.last_failure = Some(now);
+        Attempt::Rejected {
+            failures: state.failures,
+        }
     }
 }
 
@@ -379,6 +396,7 @@ pub(super) struct Auth {
     allowed_hosts: Vec<String>,
     sessions: SessionStore,
     throttle: Throttle,
+    rejected_basic: Mutex<VecDeque<[u8; 32]>>,
 }
 
 impl Auth {
@@ -399,6 +417,7 @@ impl Auth {
                 absolute,
             },
             throttle: Throttle::default(),
+            rejected_basic: Mutex::default(),
         }
     }
 
@@ -453,8 +472,10 @@ impl Auth {
         let host = headers
             .get(header::HOST)
             .and_then(|value| value.to_str().ok())
-            .ok_or(UiError::HostNotAllowed)?;
-        let (name, port) = split_host(host).ok_or(UiError::HostNotAllowed)?;
+            .unwrap_or_default();
+        let Some((name, port)) = split_host(host) else {
+            return Err(reject_host(host));
+        };
         let loopback = ["localhost", "127.0.0.1", "::1"]
             .iter()
             .any(|allowed| name.eq_ignore_ascii_case(allowed));
@@ -467,7 +488,7 @@ impl Auth {
         if loopback || listed {
             Ok(())
         } else {
-            Err(UiError::HostNotAllowed)
+            Err(reject_host(host))
         }
     }
 
@@ -480,11 +501,11 @@ impl Auth {
         let host = headers
             .get(header::HOST)
             .and_then(|value| value.to_str().ok())
-            .ok_or(UiError::CrossOrigin)?;
+            .unwrap_or_default();
         let origin = headers
             .get(header::ORIGIN)
             .and_then(|value| value.to_str().ok())
-            .ok_or(UiError::CrossOrigin)?;
+            .unwrap_or_default();
         let same_origin = |scheme: &str| {
             origin
                 .strip_prefix(scheme)
@@ -494,25 +515,69 @@ impl Auth {
         if same_origin("https") || (self.insecure_http && same_origin("http")) {
             Ok(())
         } else {
+            warn!(
+                origin = ?clip(origin),
+                host = ?clip(host),
+                insecure_http_allowed = self.insecure_http,
+                "web UI request rejected: Origin is missing or not this Host (http:// origins need MEMCAN_WEBUI_ALLOW_INSECURE_HTTP=true)"
+            );
             Err(UiError::CrossOrigin)
         }
     }
 
     /// Check credentials under the throttle, whichever way they arrived.
-    fn verify(&self, username: &str, password: &str, now: Instant) -> Result<(), UiError> {
-        let key: String = username.trim().to_lowercase().chars().take(256).collect();
-        self.throttle.admit(&key, now).map_err(UiError::Throttled)?;
-        if self.account.verify(username, password) {
-            self.throttle.succeeded(&key);
-            return Ok(());
+    fn verify(
+        &self,
+        username: &str,
+        password: &str,
+        method: Method,
+        now: Instant,
+    ) -> Result<(), UiError> {
+        match self
+            .throttle
+            .attempt(now, || self.account.verify(username, password))
+        {
+            Attempt::Accepted => Ok(()),
+            Attempt::Rejected { failures } => {
+                warn!(
+                    method = method.as_str(),
+                    consecutive_failures = failures,
+                    next_wait_secs = backoff(failures).as_secs(),
+                    "web UI sign-in failed: wrong username or password"
+                );
+                Err(UiError::InvalidCredentials)
+            }
+            Attempt::Throttled(wait) => {
+                info!(
+                    method = method.as_str(),
+                    retry_after_secs = wait.as_secs().max(1),
+                    "web UI sign-in refused while backing off after repeated failures"
+                );
+                Err(UiError::Throttled(wait))
+            }
         }
-        if self.throttle.failed(&key, now) {
-            warn!(
-                window_secs = FAILURE_WINDOW.as_secs(),
-                "web UI sign-in locked for a username after repeated failures; it unlocks when the window ends"
-            );
+    }
+
+    /// Whether this exact Basic header was already rejected; browsers resend cached credentials on
+    /// every page load, and one stale header must not count (or log) as a new failure each time.
+    fn known_bad_basic(&self, header: &[u8]) -> bool {
+        let key = digest(header);
+        let rejected = self
+            .rejected_basic
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        rejected.contains(&key)
+    }
+
+    fn remember_bad_basic(&self, header: &[u8]) {
+        let mut rejected = self
+            .rejected_basic
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if rejected.len() >= MAX_REJECTED_BASIC {
+            rejected.pop_front();
         }
-        Err(UiError::InvalidCredentials)
+        rejected.push_back(digest(header));
     }
 
     fn signed_in(&self, view: &SessionView, cookie: Option<HeaderValue>) -> Response {
@@ -561,16 +626,75 @@ fn check_fetch_site(headers: &HeaderMap) -> Result<(), UiError> {
     match headers.get("sec-fetch-site") {
         None => Ok(()),
         Some(value) if value == "same-origin" => Ok(()),
-        Some(_) => Err(UiError::CrossOrigin),
+        Some(value) => {
+            warn!(
+                sec_fetch_site = ?clip(value.to_str().unwrap_or_default()),
+                "web UI request rejected: the browser marked it as not same-origin"
+            );
+            Err(UiError::CrossOrigin)
+        }
     }
 }
 
+fn reject_host(host: &str) -> UiError {
+    warn!(
+        host = ?clip(host),
+        "web UI request rejected: Host is neither loopback nor listed in MEMCAN_ALLOWED_HOSTS"
+    );
+    UiError::HostNotAllowed
+}
+
+/// Bound attacker-controlled text before it reaches a log line.
+pub(super) fn clip(value: &str) -> String {
+    value.chars().take(80).collect()
+}
+
 pub(super) fn check_csrf(view: &SessionView, headers: &HeaderMap) -> Result<(), UiError> {
-    let sent = headers.get(CSRF_HEADER).ok_or(UiError::Csrf)?;
-    if bool::from(sent.as_bytes().ct_eq(view.csrf.as_bytes())) {
+    let valid = headers
+        .get(CSRF_HEADER)
+        .is_some_and(|sent| bool::from(sent.as_bytes().ct_eq(view.csrf.as_bytes())));
+    if valid {
         Ok(())
     } else {
+        warn!(
+            "web UI request rejected: missing or stale CSRF token (another tab may have signed in again)"
+        );
         Err(UiError::Csrf)
+    }
+}
+
+/// Read a request body within `limit`, failing with `408` when it stalls for `timeout`
+/// (`MEMCAN_BODY_READ_TIMEOUT` semantics: an idle bound that resets per chunk; zero disables it).
+pub(super) async fn read_body(
+    body: Body,
+    limit: usize,
+    timeout: Duration,
+) -> Result<Bytes, UiError> {
+    if timeout.is_zero() {
+        return to_bytes(body, limit)
+            .await
+            .map_err(|_| UiError::PayloadTooLarge);
+    }
+    let stalled = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stalled);
+    let body = Body::new(
+        TimeoutBody::new(timeout, body).map_err(move |error: BoxError| {
+            if error.is::<TimeoutError>() {
+                flag.store(true, Ordering::Release);
+            }
+            error
+        }),
+    );
+    match to_bytes(body, limit).await {
+        Ok(bytes) => Ok(bytes),
+        Err(_) if stalled.load(Ordering::Acquire) => {
+            warn!(
+                timeout_secs = timeout.as_secs(),
+                "web UI request body stalled before it was fully received; raise MEMCAN_BODY_READ_TIMEOUT if the client is legitimate"
+            );
+            Err(UiError::BodyTimeout)
+        }
+        Err(_) => Err(UiError::PayloadTooLarge),
     }
 }
 
@@ -614,12 +738,28 @@ pub(super) async fn session(
     if let Some((_, view)) = auth.current(&headers, now) {
         return Ok(auth.signed_in(&view, None));
     }
-    if let Some((username, password)) = basic_credentials(&headers)
-        && auth.verify(&username, &password, now).is_ok()
-    {
-        let (id, view) = auth.sessions.create(&auth.account, Method::Basic, now)?;
-        info!("web UI session started from proxy Basic credentials");
-        return Ok(auth.signed_in(&view, Some(auth.cookie(&id, false)?)));
+    if let (Some(header), Some((username, password))) = (
+        headers.get(header::AUTHORIZATION),
+        basic_credentials(&headers),
+    ) {
+        if auth.known_bad_basic(header.as_bytes()) {
+            debug!("web UI ignored proxy Basic credentials it already rejected");
+        } else {
+            match auth.verify(&username, &password, Method::Basic, now) {
+                Ok(()) => {
+                    let (id, view) = auth.sessions.create(&auth.account, Method::Basic, now)?;
+                    info!(method = "basic", "web UI sign-in succeeded");
+                    return Ok(auth.signed_in(&view, Some(auth.cookie(&id, false)?)));
+                }
+                Err(UiError::InvalidCredentials) => {
+                    auth.remember_bad_basic(header.as_bytes());
+                    warn!(
+                        "web UI ignored proxy Basic credentials that do not match MEMCAN_WEBUI_USERNAME/MEMCAN_WEBUI_PASSWORD; align the proxy basicauth user or clear the browser's saved login"
+                    );
+                }
+                Err(_) => {}
+            }
+        }
     }
     Ok(Json(json!({
         "authenticated": false,
@@ -645,17 +785,15 @@ pub(super) async fn login(
     let auth = &state.auth;
     auth.check_post(&headers)?;
     require_json(&headers)?;
-    let body = to_bytes(body, MAX_LOGIN_BODY)
-        .await
-        .map_err(|_| UiError::PayloadTooLarge)?;
+    let body = read_body(body, MAX_LOGIN_BODY, state.body_read_timeout).await?;
     let request: LoginRequest = serde_json::from_slice(&body).map_err(|_| UiError::BadRequest)?;
     let now = Instant::now();
-    auth.verify(&request.username, &request.password, now)?;
+    auth.verify(&request.username, &request.password, Method::Form, now)?;
     if let Some(previous) = auth.session_id(&headers) {
         auth.sessions.revoke(previous);
     }
     let (id, view) = auth.sessions.create(&auth.account, Method::Form, now)?;
-    info!("web UI sign-in succeeded");
+    info!(method = "form", "web UI sign-in succeeded");
     Ok(auth.signed_in(&view, Some(auth.cookie(&id, false)?)))
 }
 
@@ -670,7 +808,7 @@ pub(super) async fn logout(
     if let Some((id, view)) = auth.current(&headers, Instant::now()) {
         check_csrf(&view, &headers)?;
         auth.sessions.revoke(id);
-        info!("web UI session signed out");
+        info!(method = view.method.as_str(), "web UI session signed out");
     }
     Ok((
         StatusCode::NO_CONTENT,
@@ -749,29 +887,69 @@ mod tests {
         );
     }
 
+    fn fail(throttle: &Throttle) -> Attempt {
+        throttle.attempt(Instant::now(), || false)
+    }
+
     #[tokio::test(start_paused = true)]
-    async fn throttle_caps_attempts_across_usernames() {
+    async fn throttle_backs_off_exponentially_up_to_a_short_cap() {
         let throttle = Throttle::default();
-        let now = Instant::now();
-        for attempt in 0..MAX_ATTEMPTS {
-            assert!(throttle.admit(&format!("user{attempt}"), now).is_ok());
+        for expected in 1..=FREE_FAILURES {
+            assert!(
+                matches!(fail(&throttle), Attempt::Rejected { failures } if failures == expected)
+            );
         }
-        let wait = throttle.admit("fresh", now).unwrap_err();
-        assert_eq!(wait, ATTEMPT_WINDOW);
-        tokio::time::advance(ATTEMPT_WINDOW).await;
-        assert!(throttle.admit("fresh", Instant::now()).is_ok());
+        // From here on every attempt must wait, doubling up to MAX_BACKOFF.
+        for wait in [1, 2, 4, 8, 16, 30, 30, 30] {
+            let Attempt::Throttled(left) = throttle.attempt(Instant::now(), || true) else {
+                panic!("expected backoff of {wait}s");
+            };
+            assert_eq!(left, Duration::from_secs(wait));
+            tokio::time::advance(left).await;
+            assert!(matches!(fail(&throttle), Attempt::Rejected { .. }));
+        }
+        let Attempt::Throttled(left) = throttle.attempt(Instant::now(), || true) else {
+            panic!("still backing off");
+        };
+        assert!(
+            left <= MAX_BACKOFF,
+            "the owner is never locked out for long"
+        );
+        tokio::time::advance(left).await;
+        assert!(matches!(
+            throttle.attempt(Instant::now(), || true),
+            Attempt::Accepted
+        ));
+        assert!(
+            matches!(fail(&throttle), Attempt::Rejected { failures: 1 }),
+            "success resets the backoff"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn throttle_forgets_failures_after_a_quiet_period() {
+        let throttle = Throttle::default();
+        for _ in 0..FREE_FAILURES + 2 {
+            fail(&throttle);
+            tokio::time::advance(MAX_BACKOFF).await;
+        }
+        tokio::time::advance(FAILURE_MEMORY).await;
+        assert!(matches!(fail(&throttle), Attempt::Rejected { failures: 1 }));
     }
 
     #[test]
-    fn throttle_bounds_tracked_usernames() {
+    fn throttle_does_not_verify_while_backing_off() {
         let throttle = Throttle::default();
-        let now = Instant::now();
-        for index in 0..MAX_TRACKED_USERNAMES + 50 {
-            throttle.failed(&format!("user{index}"), now);
+        for _ in 0..FREE_FAILURES {
+            fail(&throttle);
         }
-        let state = throttle.state.lock().unwrap();
-        assert_eq!(state.failures.len(), MAX_TRACKED_USERNAMES + 1);
-        assert_eq!(state.failures[""].0, 50, "overflow shares one bucket");
+        let mut verified = false;
+        let attempt = throttle.attempt(Instant::now(), || {
+            verified = true;
+            true
+        });
+        assert!(matches!(attempt, Attempt::Throttled(_)));
+        assert!(!verified, "no credential check while throttled");
     }
 
     #[test]

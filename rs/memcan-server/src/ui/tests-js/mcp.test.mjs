@@ -180,13 +180,21 @@ async function forbidden(body, headers = {}) {
   return error;
 }
 
-test('403 for a rejected security token or origin is a policy denial', async () => {
+test('403 for a stale CSRF token signs the tab out as a session change, not a policy denial', async () => {
   const error = await forbidden(JSON.stringify({ error: 'csrf', message: 'The security token is missing or invalid.' }), {
     'content-type': 'application/json',
   });
   assert.equal(error.category, 'auth');
+  assert.equal(error.reason, 'token');
+  assert.equal(error.message, 'Your session changed in another tab. Sign in to continue.');
+});
+
+test('403 for a rejected origin is a policy denial', async () => {
+  const error = await forbidden(JSON.stringify({ error: 'cross_origin', message: 'Cross-origin requests are not allowed.' }), {
+    'content-type': 'application/json',
+  });
   assert.equal(error.reason, 'policy');
-  assert.match(error.message, /origin, security token or an IP allowlist/);
+  assert.match(error.message, /request origin or an IP allowlist/);
 });
 
 test('403 from the backend host guard explains localhost access', async () => {

@@ -22,7 +22,7 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use memcan_core::config::Settings;
 use tokio::sync::Semaphore;
-use tracing::{info, warn};
+use tracing::{Instrument, info, info_span, warn};
 
 pub use api::McpDispatch;
 use auth::{Account, Auth, MAX_AUTH_HEADER_LEN, Role};
@@ -80,6 +80,8 @@ struct UiState {
     auth: Auth,
     dispatch: McpDispatch,
     mcp_permits: Arc<Semaphore>,
+    /// Idle bound for UI POST bodies (`MEMCAN_BODY_READ_TIMEOUT`).
+    body_read_timeout: Duration,
 }
 
 /// Build the web UI when its shared account is fully and validly configured; `dispatch` is the
@@ -90,6 +92,7 @@ pub fn router(settings: &Settings, dispatch: McpDispatch) -> Option<Router> {
         auth,
         dispatch,
         mcp_permits: Arc::new(Semaphore::new(api::MAX_CONCURRENT_CALLS)),
+        body_read_timeout: Duration::from_secs(settings.mcp_body_read_timeout_secs),
     });
     let backend = Router::new()
         .route("/ui/auth/session", get(auth::session))
@@ -103,7 +106,8 @@ pub fn router(settings: &Settings, dispatch: McpDispatch) -> Option<Router> {
         .route("/ui/api", any(auth::not_found))
         .route("/ui/api/", any(auth::not_found))
         .route("/ui/api/{*rest}", any(auth::not_found))
-        .with_state(state);
+        .with_state(state)
+        .layer(middleware::from_fn(request_span));
     let routes = Router::new()
         .route("/ui", get(shell))
         .route("/ui/", get(shell))
@@ -188,6 +192,16 @@ fn auth_from(settings: &Settings) -> Option<Auth> {
         Duration::from_secs(idle),
         Duration::from_secs(absolute),
     ))
+}
+
+/// Tag every security log line from the UI backend with the request it belongs to.
+async fn request_span(request: Request, next: Next) -> Response {
+    let span = info_span!(
+        "webui",
+        method = %request.method(),
+        path = %request.uri().path()
+    );
+    next.run(request).instrument(span).await
 }
 
 async fn security_headers(request: Request, next: Next) -> Response {
@@ -698,7 +712,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn webui_login_rejects_wrong_credentials_generically() {
         let (app, _) = app();
         let mut bodies = Vec::new();
@@ -717,6 +731,8 @@ mod tests {
             assert!(response.headers().get(header::SET_COOKIE).is_none());
             assert!(response.headers().get(header::WWW_AUTHENTICATE).is_none());
             bodies.push(body_json(response).await);
+            // Stay clear of the sign-in backoff between cases.
+            tokio::time::advance(Duration::from_secs(30)).await;
         }
         assert!(bodies.windows(2).all(|pair| pair[0] == pair[1]));
         assert_eq!(bodies[0]["error"], "invalid_credentials");
@@ -840,23 +856,21 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn webui_login_is_throttled_per_username_including_basic_attempts() {
+    async fn webui_sign_in_backs_off_briefly_across_form_and_basic_attempts() {
         let (app, _) = app();
-        for _ in 0..3 {
+        for body in [
+            r#"{"username":"testuser","password":"wrong"}"#,
+            r#"{"username":"someone","password":"else"}"#,
+        ] {
             let response = app
                 .clone()
-                .oneshot(post(
-                    "/ui/auth/login",
-                    r#"{"username":"testuser","password":"wrong"}"#,
-                    &[],
-                ))
+                .oneshot(post("/ui/auth/login", body, &[]))
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         }
-        for _ in 0..2 {
-            session_state(&app, &[("authorization", &basic("TestUser :wrong"))]).await;
-        }
+        session_state(&app, &[("authorization", &basic("testuser:wrong"))]).await;
+
         let correct = r#"{"username":"testuser","password":"testpass"}"#;
         let response = app
             .clone()
@@ -864,27 +878,76 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-        let retry_after: u64 = response
-            .headers()
-            .get(header::RETRY_AFTER)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert!((1..=900).contains(&retry_after), "{retry_after}");
+        assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "1");
         assert_eq!(body_json(response).await["error"], "throttled");
         let (_, state) =
             session_state(&app, &[("authorization", &basic("testuser:testpass"))]).await;
         assert_eq!(state["authenticated"], false, "Basic is throttled too");
 
-        tokio::time::advance(Duration::from_secs(15 * 60)).await;
+        tokio::time::advance(Duration::from_secs(1)).await;
         let response = app
             .clone()
             .oneshot(post("/ui/auth/login", correct, &[]))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "lock is temporary");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "the wait is short, not a lockout"
+        );
+    }
+
+    #[tokio::test]
+    async fn webui_repeated_stale_basic_header_counts_once() {
+        let (app, _) = app();
+        let stale = basic("testuser:old-password");
+        for _ in 0..10 {
+            let (_, state) = session_state(&app, &[("authorization", &stale)]).await;
+            assert_eq!(state["authenticated"], false);
+        }
+        let response = app
+            .clone()
+            .oneshot(post(
+                "/ui/auth/login",
+                r#"{"username":"testuser","password":"testpass"}"#,
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "page loads resending one cached credential do not build up a backoff"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn webui_posts_time_out_when_the_body_stalls() {
+        let (app, seen) = app();
+        let signed = sign_in(&app).await;
+        let stalled = || {
+            Body::from_stream(futures::stream::pending::<
+                Result<bytes::Bytes, std::io::Error>,
+            >())
+        };
+        let mut login = post("/ui/auth/login", "", &[]);
+        *login.body_mut() = stalled();
+        let response = app.clone().oneshot(login).await.unwrap();
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(body_json(response).await["error"], "request_timeout");
+
+        let mut api = post(
+            "/ui/api/mcp",
+            "",
+            &[
+                ("cookie", signed.cookie.as_str()),
+                ("x-csrf-token", signed.csrf.as_str()),
+            ],
+        );
+        *api.body_mut() = stalled();
+        let response = app.clone().oneshot(api).await.unwrap();
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+        assert!(seen.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -16,10 +16,11 @@ use axum::{
 };
 use serde_json::{Value, json};
 use tokio::time::Instant;
+use tracing::warn;
 
 use super::{
     UiState,
-    auth::{UiError, check_csrf, require_json},
+    auth::{UiError, check_csrf, clip, read_body, require_json},
 };
 
 /// In-process MCP endpoint: receives a fresh `POST /mcp` request and returns its response.
@@ -193,12 +194,18 @@ pub(super) async fn mcp(
         .ok_or(UiError::Unauthenticated)?;
     check_csrf(&session, &headers)?;
     require_json(&headers)?;
-    let body = to_bytes(body, MAX_REQUEST_BODY)
-        .await
-        .map_err(|_| UiError::PayloadTooLarge)?;
+    let body = read_body(body, MAX_REQUEST_BODY, state.body_read_timeout).await?;
     let message: Value =
         serde_json::from_slice(&body).map_err(|_| deny(&Value::Null, Denied::Parse))?;
-    let is_tools_list = authorize(&message)?;
+    let is_tools_list = authorize(&message).inspect_err(|error| {
+        let text = |value: Option<&Value>| value.and_then(Value::as_str).map(clip);
+        warn!(
+            rpc_method = ?text(message.get("method")),
+            tool = ?text(message.get("params").and_then(|params| params.get("name"))),
+            reason = %error,
+            "web UI MCP request denied by the read-only allowlist"
+        );
+    })?;
     let _permit = Arc::clone(&state.mcp_permits)
         .try_acquire_owned()
         .map_err(|_| UiError::Busy)?;

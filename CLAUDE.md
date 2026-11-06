@@ -219,7 +219,7 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 | `MEMCAN_WEBUI_ALLOW_INSECURE_HTTP` | `false` | Allow web UI sign-in over plain HTTP: cookie `memcan_ui` (`Path=/ui`, no `Secure`) instead of `__Host-memcan_ui`, `http://` origins accepted, UI warning banner, startup `warn!`. Only `true` enables it. Without it, plain HTTP shows "HTTPS required". |
 | `MEMCAN_URL` | `http://localhost:8190` | Server URL for thin clients (`memcan`) |
 | `MEMCAN_LOG_FILE` | *(none = stdout)* | Log file path (renamed from `LOG_FILE`) |
-| `MEMCAN_BODY_READ_TIMEOUT` | `30` | Seconds the `/mcp` route waits for the next chunk of an incoming request body. The clock resets on every chunk received, so a large body that keeps arriving is never cut off, while a stalled connection is answered `408` and logged at `error` instead of parking silently. Bounds only body ingestion — not handler execution, not the SSE response stream. `0` disables the bound; a non-numeric value logs a `warn!` and falls back to `30`. |
+| `MEMCAN_BODY_READ_TIMEOUT` | `30` | Seconds the `/mcp` route and the web UI POST routes (`/ui/auth/login`, `/ui/api/mcp`) wait for the next chunk of an incoming request body. The clock resets on every chunk received, so a large body that keeps arriving is never cut off, while a stalled connection is answered `408` and logged at `error` instead of parking silently. Bounds only body ingestion — not handler execution, not the SSE response stream. `0` disables the bound; a non-numeric value logs a `warn!` and falls back to `30`. |
 | `MEMCAN_ALLOWED_HOSTS` | *(none)* | Comma-separated extra `Host` values (`host` or `host:port`) accepted on `/mcp` and on the web UI backend (`/ui/auth/*`, `/ui/api/*`), added to the loopback defaults of the DNS-rebinding guard (other hosts get `403`). An entry without a port matches any port. Bearer auth still applies on `/mcp`; there is no allow-all switch. Logged at `info` on startup. |
 | `LANCEDB_PATH` | `~/.local/share/memcan/lancedb` | LanceDB storage directory |
 | `DEFAULT_USER_ID` | `global` | Default memory scope |
@@ -265,16 +265,22 @@ and assets are public (no data), and every data path is session-gated:
 - Every UI POST needs an allowed Host (loopback or `MEMCAN_ALLOWED_HOSTS`), no cross-site
   `Sec-Fetch-Site`, and `Origin` equal to `https://<Host>` (also `http://<Host>` with
   `MEMCAN_WEBUI_ALLOW_INSECURE_HTTP=true`). Forwarding headers are never trusted.
-- Sessions are in memory (restart signs everyone out), capped at 256. Sign-in (form and Basic) is
-  throttled: 5 failures per username per 15 min, 60 attempts per minute overall, `429` +
-  `Retry-After`. Logout cannot clear browser-cached Basic credentials; the UI says so.
+- Sessions are in memory (restart signs everyone out), capped at 256. Sign-in backs off instead of
+  locking the shared account: after 3 consecutive failures (form or Basic, any username, one shared counter) each attempt waits 1, 2, 4 … s, capped at 30 s, `429` + `Retry-After`; success or 15 quiet minutes reset it. A rejected Basic header is remembered (32 digests),
+  so a stale cached credential resent on every page load counts and logs once. Logout cannot clear
+  browser-cached Basic credentials; the UI says so.
+- UI POST bodies honour `MEMCAN_BODY_READ_TIMEOUT` (`408` when a body stalls).
+- Security events go to the tracing log (no secrets, tagged with a `webui` span carrying method and
+  path): sign-in success/failure/backoff, ignored Basic credentials, sign-out, Host/Origin/Fetch
+  Metadata/CSRF rejections and BFF allowlist denials. A persistent audit store and
+  `MEMCAN_WEBUI_AUDIT_RETENTION_DAYS` are deferred until write tools exist (P2).
 
 The bundled Docker Compose entrypoint is plain HTTP and does not provide TLS. Its `/ui*` routers
 skip the Bearer middleware but keep `TRAEFIK_IP_ALLOWLIST` and per-client-IP `ratelimit`
 middlewares with separate buckets, sized so normal use never sees a `429`:
 
 - `memcan-ui-auth` (`/ui/auth/*`, priority 300): `average=30`, `period=1m`, `burst=10` — the
-  per-client brute-force cap on sign-in (form and Basic) on top of the app's per-username throttle;
+  per-client brute-force cap on sign-in (form and Basic) on top of the app's sign-in backoff;
   normal use is one session check per page load plus one activity ping per minute.
 - `memcan-ui` (rest of `/ui*`: shell, assets, `/ui/api/mcp`): `average=50` req/s, `burst=100` — a
   flood guard only. A first load is ~25 requests and the client paces MCP calls at ≤ 4 starts/s and

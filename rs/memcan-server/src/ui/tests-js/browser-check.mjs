@@ -53,7 +53,18 @@ await page.goto(`${BASE}/ui/tasks/${TASK0}?project=memcan`);
 await page.waitForURL(/\/ui\/login\?returnTo=/);
 await page.getByRole('heading', { name: 'Sign in to MemCan' }).waitFor();
 assert.ok(await page.getByText('You will return to: task 81cbe927…').isVisible());
-assert.equal(await page.locator('#http-warning').count(), 0, 'no HTTP warning on loopback');
+assert.equal(await page.locator('.banner.warning').count(), 0, 'no HTTP warning on loopback');
+for (const control of [
+  page.getByRole('navigation', { name: 'Primary' }),
+  page.getByRole('search', { name: 'Project' }),
+  page.getByRole('button', { name: 'Commands' }),
+  page.getByRole('button', { name: 'Refresh' }),
+  page.getByRole('button', { name: 'Sign out' }),
+]) {
+  assert.equal(await control.isVisible(), false, 'signed-out header hides controls that need a session');
+}
+assert.ok(await page.getByLabel('Theme').isVisible());
+assert.ok(await page.getByRole('link', { name: /^Server:/ }).isVisible());
 assert.equal(await page.getByLabel('Username').getAttribute('autocomplete'), 'username');
 assert.equal(await page.getByLabel('Password', { exact: true }).getAttribute('autocomplete'), 'current-password');
 await shot('01-login');
@@ -79,6 +90,7 @@ const firstCalls = await calls();
 assert.equal(firstCalls[0].tool, 'get_todo', 'detail fetch is the first tool call');
 assert.equal(firstCalls[0].hasAuthorization, false);
 await page.getByText('Signed in as viewer (viewer)').waitFor();
+assert.ok(await page.getByRole('navigation', { name: 'Primary' }).isVisible());
 await page.getByText('This task may have been deleted. The relationship remains visible.').waitFor();
 await page.getByText('Self-reference').first().waitFor();
 await page.getByText('Other project: other-project').first().waitFor();

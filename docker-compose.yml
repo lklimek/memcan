@@ -87,7 +87,7 @@ services:
     # an operator adds TLS termination for /ui*; sign-in over plain HTTP also needs
     # MEMCAN_WEBUI_ALLOW_INSECURE_HTTP=true and exposes passwords and session cookies.
     # Rate limits are per client IP with separate buckets per middleware: sign-in endpoints
-    # (/ui/auth/*) get a tight cap on top of the app's per-username throttle; the rest of /ui
+    # (/ui/auth/*) get a tight cap on top of the app's sign-in backoff; the rest of /ui
     # (assets, /ui/api/mcp) only a flood guard well above normal use (see CLAUDE.md).
     labels:
       - "traefik.instance=ollama"

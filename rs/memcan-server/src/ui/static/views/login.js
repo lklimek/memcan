@@ -124,13 +124,6 @@ export function render(main, ctx) {
       },
     },
     el('p', {}, 'Your account determines what you can view or change.'),
-    ctx.insecureHttp
-      ? el(
-          'p',
-          { class: 'banner warning', id: 'http-warning' },
-          'This connection is unencrypted; your password and session can be intercepted. Use HTTPS or a localhost tunnel.',
-        )
-      : null,
     el('label', { for: 'username' }, 'Username'),
     username,
     el('label', { for: 'password' }, 'Password'),

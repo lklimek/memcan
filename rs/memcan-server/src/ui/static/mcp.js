@@ -20,7 +20,7 @@ export class McpError extends Error {
     this.status = details.status ?? null;
     this.retryAfter = details.retryAfter ?? null;
     this.code = details.code ?? null;
-    /** For `auth`: 'session' (signed out or expired), 'host' (Host guard) or 'policy' (other 403). */
+    /** For `auth`: 'session' (signed out or expired), 'token' (stale CSRF token), 'host' (Host guard) or 'policy' (other 403). */
     this.reason = null;
     this.at = new Date().toISOString();
   }
@@ -117,9 +117,15 @@ async function forbiddenError(response) {
     error.reason = 'host';
     return error;
   }
+  if (body.includes('"error":"csrf"')) {
+    // Another tab signed in again: the shared cookie names a newer session than this tab's token.
+    const error = new McpError('auth', 'Your session changed in another tab. Sign in to continue.', { status });
+    error.reason = 'token';
+    return error;
+  }
   const error = new McpError(
     'auth',
-    'Access denied by server or network policy: the request origin, security token or an IP allowlist was not accepted. Reload and sign in again, or ask the operator.',
+    'Access denied by server or network policy: the request origin or an IP allowlist was not accepted. Reload and sign in again, or ask the operator.',
     { status },
   );
   error.reason = 'policy';
