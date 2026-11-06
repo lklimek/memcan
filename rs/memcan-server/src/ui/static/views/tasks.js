@@ -154,7 +154,9 @@ export function render(main, ctx) {
     },
   });
 
-  const updateBanner = el('div', { class: 'update-banner', hidden: true });
+  // Persistent live region: content changes only when staged data appears or is applied.
+  const updateBanner = el('div', { class: 'update-banner', role: 'status' });
+  let bannerShown = false;
   const coverageRegion = el('div', { class: 'coverage-region' });
   const resultsHeading = el('h2', { id: 'results-heading', tabindex: '-1' }, 'Results');
   const summary = el('p', { class: 'results-summary' });
@@ -454,12 +456,16 @@ export function render(main, ctx) {
     clear(summary);
     if (matches.total) append(summary, `Showing ${matches.start}–${matches.end} of ${matches.total} matches · ${scanned}${coverage.partial ? ' (partial)' : ''}`);
     else append(summary, `0 matches · ${scanned}${coverage.partial ? ' (partial)' : ''}`);
-    updateBanner.hidden = !store.stagedReady();
-    if (store.stagedReady()) {
+    const ready = store.stagedReady();
+    if (ready !== bannerShown) {
+      bannerShown = ready;
       clear(updateBanner);
-      append(updateBanner, 
-        el('p', { role: 'status' }, 'Updated data available. ', el('button', { type: 'button', class: 'button secondary', onclick: () => applyUpdate() }, 'Show updates')),
-      );
+      if (ready) {
+        append(
+          updateBanner,
+          el('p', {}, 'Updated data available. ', el('button', { type: 'button', class: 'button secondary', onclick: () => applyUpdate() }, 'Show updates')),
+        );
+      }
     }
   }
 
