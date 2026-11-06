@@ -187,7 +187,15 @@ function buildShell() {
     banners,
   );
   document.body.replaceChildren(
-    el('a', { href: '#main', class: 'skip-link' }, 'Skip to content'),
+    el('a', {
+      href: '#main',
+      class: 'skip-link',
+      onclick: (event) => {
+        // Focus without a hash navigation, which would fire popstate and re-render the view.
+        event.preventDefault();
+        main.focus();
+      },
+    }, 'Skip to content'),
     header,
     main,
     live,
@@ -668,6 +676,19 @@ function openShortcutHelp() {
   });
 }
 
+/** Escape closes the popover holding focus (else the last open one); it never clears search. */
+function closePopover(event) {
+  const open = [...document.querySelectorAll('details.popover[open]')];
+  const target = open.find((details) => details.contains(document.activeElement)) ?? open.at(-1);
+  if (target) {
+    event.preventDefault();
+    target.open = false;
+    target.querySelector('summary')?.focus();
+  } else if (event.target instanceof HTMLInputElement && event.target.type === 'search') {
+    event.preventDefault();
+  }
+}
+
 function isEditable(target) {
   return target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
 }
@@ -679,6 +700,10 @@ document.addEventListener('keydown', (event) => {
     return;
   }
   if (event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented) return;
+  if (event.key === 'Escape' && !document.querySelector('dialog[open]')) {
+    closePopover(event);
+    return;
+  }
   if (!prefs.get().shortcuts || isEditable(event.target) || document.querySelector('dialog[open]')) return;
   if (event.key === '/') {
     if (state.view?.focusSearch) {
@@ -701,7 +726,10 @@ document.addEventListener('click', (event) => {
   navigate(url.pathname + url.search);
 });
 
-window.addEventListener('popstate', render);
+window.addEventListener('popstate', () => {
+  // The app never routes on fragments; a fragment entry comes from an in-page anchor.
+  if (!location.hash) render();
+});
 
 // ---------------------------------------------------------------- start
 
