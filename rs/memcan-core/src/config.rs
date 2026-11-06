@@ -828,7 +828,8 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
-/// Split a comma-separated list, trimming entries and dropping empties and duplicates.
+/// Split `MEMCAN_ALLOWED_HOSTS`, trimming entries and dropping empties and duplicates.
+/// Malformed entries are skipped with one `warn!` each; startup never fails on them.
 fn parse_host_list(value: &str) -> Vec<String> {
     let mut hosts: Vec<String> = Vec::new();
     for host in value
@@ -836,11 +837,76 @@ fn parse_host_list(value: &str) -> Vec<String> {
         .map(str::trim)
         .filter(|host| !host.is_empty())
     {
+        if let Err(reason) = check_allowed_host(host) {
+            warn!(
+                entry = host,
+                reason,
+                "ignoring MEMCAN_ALLOWED_HOSTS entry: use `host` or `host:port` (e.g. agentic.lan or agentic.lan:8190)"
+            );
+            continue;
+        }
         if !hosts.iter().any(|existing| existing == host) {
             hosts.push(host.to_string());
         }
     }
     hosts
+}
+
+/// Accept a bare `Host` value: `host`, `host:port`, bare IPv6, or `[ipv6]` with optional port.
+fn check_allowed_host(entry: &str) -> std::result::Result<(), &'static str> {
+    if entry.chars().any(char::is_whitespace) {
+        return Err("contains whitespace");
+    }
+    if entry.contains("://") {
+        return Err("has a URL scheme");
+    }
+    if entry.contains('/') {
+        return Err("has a path");
+    }
+    if entry.contains('*') {
+        return Err("wildcard is not supported");
+    }
+    if let Some(c) = entry
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '[' | ']')))
+    {
+        return Err(if c == '@' {
+            "invalid character '@' (no user info)"
+        } else {
+            "invalid character"
+        });
+    }
+    let (host, port) = if let Some(rest) = entry.strip_prefix('[') {
+        let Some((ipv6, after)) = rest.split_once(']') else {
+            return Err("host has an unclosed '['");
+        };
+        if ipv6.is_empty() || !ipv6.contains(':') {
+            return Err("host in brackets must be an IPv6 address");
+        }
+        match after {
+            "" => (ipv6, None),
+            _ => match after.strip_prefix(':') {
+                Some(port) => (ipv6, Some(port)),
+                None => return Err("unexpected text after ']' (expected :port)"),
+            },
+        }
+    } else if entry.matches(':').count() > 1 {
+        (entry, None)
+    } else {
+        match entry.split_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (entry, None),
+        }
+    };
+    if host.is_empty() || host.contains(['[', ']']) {
+        return Err("host is empty or malformed");
+    }
+    if let Some(port) = port
+        && !port.parse::<u16>().is_ok_and(|port| port != 0)
+    {
+        return Err("port must be a number from 1 to 65535");
+    }
+    Ok(())
 }
 
 /// Read an unsigned integer setting from the environment, warning on garbage.
@@ -2598,6 +2664,53 @@ mod tests {
         );
         assert!(parse_host_list("").is_empty());
         assert!(parse_host_list(" , ").is_empty());
+    }
+
+    #[test]
+    fn test_allowed_host_validation_accepts_host_and_host_port() {
+        for entry in [
+            "agentic.lan",
+            "agentic.lan:8190",
+            "memcan-server",
+            "10.0.0.5",
+            "10.0.0.5:8190",
+            "::1",
+            "[::1]",
+            "[::1]:8190",
+            "Host_With.Mixed-Case",
+        ] {
+            assert_eq!(check_allowed_host(entry), Ok(()), "{entry}");
+        }
+    }
+
+    #[test]
+    fn test_allowed_host_validation_rejects_malformed_entries_with_reasons() {
+        for (entry, reason) in [
+            ("http://agentic.lan", "scheme"),
+            ("agentic.lan/mcp", "path"),
+            ("*.lan", "wildcard"),
+            ("*", "wildcard"),
+            ("agentic lan", "whitespace"),
+            ("agentic.lan:", "port"),
+            ("agentic.lan:0", "port"),
+            ("agentic.lan:99999", "port"),
+            ("agentic.lan:80a", "port"),
+            (":8190", "host"),
+            ("[::1", "host"),
+            ("[::1]:x", "port"),
+            ("user@agentic.lan", "character"),
+        ] {
+            let error = check_allowed_host(entry).unwrap_err();
+            assert!(error.contains(reason), "{entry}: {error}");
+        }
+    }
+
+    #[test]
+    fn test_parse_host_list_keeps_valid_entries_and_drops_invalid_ones() {
+        assert_eq!(
+            parse_host_list("agentic.lan, http://bad, *.lan, memcan.example:8190, x:0"),
+            vec!["agentic.lan".to_string(), "memcan.example:8190".to_string()]
+        );
     }
 
     #[test]
