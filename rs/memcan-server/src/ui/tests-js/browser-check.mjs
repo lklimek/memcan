@@ -75,6 +75,14 @@ await page.getByText('Cycle: also blocked by this task').waitFor();
 assert.ok(await page.getByText('<b>not bold</b>', { exact: false }).isVisible());
 await shot('02-task-detail');
 
+step('reverse links: a scan lists blocked tasks without blocker-only wording');
+await page.getByRole('button', { name: 'Scan all tasks for relationships' }).click();
+const blocksPanel = page.locator('section.panel', { has: page.getByRole('heading', { name: 'Blocks (observed in loaded tasks)' }) });
+await blocksPanel.getByRole('link', { name: /Task 4:/ }).waitFor();
+assert.equal(await blocksPanel.getByText('Resolved blocker').count(), 0);
+await page.getByText(/None found in the last scan|Based on \d+ loaded tasks\./).first().waitFor();
+assert.equal(await page.locator('#blockers-heading + ul [aria-busy=true]').count(), 0, 'no blocker stuck loading');
+
 step('copy ID uses the clipboard; a rejected clipboard falls back to manual copy');
 await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: BASE });
 await page.getByRole('button', { name: 'Copy ID' }).click();
@@ -119,6 +127,35 @@ assert.match(summary, /matches/);
 assert.equal((await calls()).length, before, 'search/filter emit no MCP calls');
 await page.getByRole('button', { name: /o'brien & co\?#\/x/ }).first().waitFor();
 await shot('04-tasks-filtered-grouped');
+
+step('status checkboxes have their own labels; clicking a label toggles that box');
+await appGo('/ui/tasks');
+await page.getByText('scan complete').waitFor();
+await page.locator('summary', { hasText: 'Status:' }).click();
+const doneBox = page.getByRole('checkbox', { name: 'Done', exact: true });
+assert.equal(await doneBox.isChecked(), false);
+await page.locator('label', { hasText: /^Done$/ }).click();
+await page.waitForURL(/status=done/);
+const statusParams = new URL(page.url()).searchParams.getAll('status');
+assert.ok(statusParams.includes('pending') && statusParams.includes('done'), statusParams.join());
+assert.equal(await page.getByRole('checkbox', { name: 'Done', exact: true }).isChecked(), true);
+const ids = await page.locator('details.popover input[type=checkbox]').evaluateAll((boxes) => boxes.map((b) => b.id));
+assert.equal(new Set(ids).size, ids.length, 'unique checkbox ids');
+
+step('Escape closes an open popover and returns focus to its summary');
+await page.keyboard.press('Escape');
+assert.equal(await page.locator('details.popover[open]').count(), 0);
+assert.ok(await page.evaluate(() => document.activeElement?.tagName === 'SUMMARY'));
+await appGo('/ui/tasks?q=routing&priority=high&group=project&status_mode=open');
+await page.getByText('scan complete').waitFor();
+
+step('skip link focuses main without changing the URL or re-rendering');
+const searchBefore = await page.getByLabel('Find title, description, project, owner or ID').inputValue();
+await page.locator('.skip-link').focus();
+await page.keyboard.press('Enter');
+assert.equal(await page.evaluate(() => document.activeElement?.id), 'main');
+assert.equal(new URL(page.url()).hash, '');
+assert.equal(await page.getByLabel('Find title, description, project, owner or ID').inputValue(), searchBefore);
 
 step('detail from list and Back restores filters and focus');
 const link = page.locator('a.task-link').first();

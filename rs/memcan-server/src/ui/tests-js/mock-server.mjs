@@ -48,6 +48,7 @@ function fixtures() {
   todos[0].description = 'Full stored text, wrapped;\nline breaks preserved.\n<b>not bold</b> javascript:alert(3)';
   todos[0].blocked_by = [todos[1].id, todos[3].id, 'deadbeef-gone-0000-0000-000000000000', todos[0].id];
   todos[1].blocked_by = [todos[0].id];
+  todos[4].blocked_by = [todos[0].id];
   todos[3].project = 'other-project';
   todos[5].status = 'archived';
   todos[6].priority = 'urgent';
