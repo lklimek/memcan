@@ -27,6 +27,10 @@ services:
       - "--accesslog.fields.headers.defaultmode=drop"
       - "--experimental.plugins.traefik-api-token-middleware.modulename=github.com/Aetherinox/traefik-api-token-middleware"
       - "--experimental.plugins.traefik-api-token-middleware.version=v0.1.4"
+      # Exit when a plugin fails to load (e.g. download fails while DNS is down)
+      # instead of running without memcan-auth, which silently drops the /mcp
+      # router; `restart: unless-stopped` retries until the download succeeds.
+      - "--experimental.abortOnPluginFailure=true"
     network_mode: host
     extra_hosts:
       - "host.docker.internal:host-gateway"
