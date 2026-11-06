@@ -216,6 +216,10 @@ const server = createServer(async (req, res) => {
       });
     }
     if (url.pathname === '/__calls') return json(res, 200, calls);
+    if (url.pathname === '/__retitle') {
+      todos[2].title = url.searchParams.get('title') ?? todos[2].title;
+      return json(res, 200, { title: todos[2].title });
+    }
     if (url.pathname === '/__slow') {
       scenario.slow = Number(url.searchParams.get('ms') ?? 0);
       return json(res, 200, { slow: scenario.slow });

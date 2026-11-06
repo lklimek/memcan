@@ -273,6 +273,30 @@ assert.equal(await page.evaluate(() => document.querySelector('main h1')?.datase
 await page.goBack();
 await page.getByRole('heading', { name: 'Connect to MemCan' }).waitFor();
 
+step('background refresh keeps focus on "Show updates" while newer data is staged again');
+{
+  const timed = await context.newPage();
+  await timed.clock.install();
+  await timed.goto(`${BASE}/ui/tasks`);
+  await timed.getByLabel('API key').fill('test-key');
+  await timed.getByRole('button', { name: 'Connect', exact: true }).click();
+  await timed.getByText('scan complete').waitFor();
+  await fetch(`${BASE}/__retitle?title=${encodeURIComponent('Retitled once')}`);
+  await timed.clock.runFor(62000);
+  const showUpdates = timed.getByRole('button', { name: 'Show updates' });
+  await showUpdates.waitFor();
+  await showUpdates.focus();
+  await fetch(`${BASE}/__retitle?title=${encodeURIComponent('Retitled twice')}`);
+  await timed.clock.runFor(62000);
+  await timed.waitForTimeout(300);
+  assert.equal(await timed.evaluate(() => document.activeElement?.textContent), 'Show updates', 'focus survives the next refresh');
+  assert.equal(await timed.locator('.update-banner [role=status], .update-banner p').count(), 1);
+  await timed.keyboard.press('Enter');
+  await timed.getByRole('button', { name: 'Show updates' }).waitFor({ state: 'detached' });
+  await timed.close();
+  await fetch(`${BASE}/__retitle?title=${encodeURIComponent('Task 2: Resolve encoded IDs')}`);
+}
+
 step('disconnect clears key, data and storage; health-only dashboard still works');
 await page.getByRole('button', { name: 'Disconnect / forget key' }).click();
 await page.getByText('API connection cleared. Browser page login may remain active.').waitFor();
