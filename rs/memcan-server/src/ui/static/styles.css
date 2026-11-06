@@ -621,24 +621,33 @@ pre.plain {
   color: var(--warn);
 }
 
-/* ---------------------------------------------------------------- connect */
+/* ---------------------------------------------------------------- sign in */
 
-.connect-form {
+.login-form {
   max-width: 40rem;
 }
 
-.connect-form label {
+.login-form label {
   display: block;
   font-weight: 600;
   margin-bottom: 4px;
 }
 
-.key-row {
-  display: flex;
-  gap: 8px;
+.login-form > input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 28rem;
+  margin-bottom: 12px;
 }
 
-.key-row input {
+.password-row {
+  display: flex;
+  gap: 8px;
+  max-width: 28rem;
+}
+
+.password-row input {
   flex: 1;
   min-width: 0;
 }

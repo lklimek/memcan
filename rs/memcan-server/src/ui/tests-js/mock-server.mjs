@@ -1,7 +1,8 @@
 // Dev-only mock MemCan server for browser checks: serves the static UI under /ui/ with the
-// production headers and fakes /health and /mcp with fixture data. Never embedded or served
-// by memcan-server. Usage: node mock-server.mjs [port]  (API key: "test-key", page login: ui/ui)
+// production headers and fakes /health, /ui/auth/* and /ui/api/mcp with fixture data. Never
+// embedded or served by memcan-server. Usage: node mock-server.mjs [port]  (sign-in: viewer/test-pass)
 
+import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
@@ -9,13 +10,16 @@ import { fileURLToPath } from 'node:url';
 
 const STATIC_DIR = fileURLToPath(new URL('../static/', import.meta.url));
 const PORT = Number(process.argv[2] ?? 8199);
-const API_KEY = 'test-key';
-const BASIC = `Basic ${Buffer.from('ui:ui').toString('base64')}`;
+const USERNAME = 'viewer';
+const PASSWORD = 'test-pass';
+const BASIC = `Basic ${Buffer.from(`${USERNAME}:${PASSWORD}`).toString('base64')}`;
+const COOKIE = 'memcan_ui';
+// Plain HTTP sign-in is allowed unless MOCK_SECURE=1 (then the UI must show "HTTPS required").
+const INSECURE_ALLOWED = process.env.MOCK_SECURE !== '1';
 const CSP =
   "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
 const MIME = { '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
 const READ_TOOLS = ['get_todo', 'list_todos', 'export_collection', 'list_collections', 'get_queue_status'];
-const WRITE_TOOLS = ['add_todo', 'update_todo', 'complete_todo', 'delete_todo', 'add_memory'];
 
 const calls = [];
 const scenario = { sessions: process.env.MOCK_SESSIONS === '1', sse: process.env.MOCK_SSE === '1', slow: Number(process.env.MOCK_SLOW_MS ?? 0) };
@@ -124,35 +128,99 @@ async function readBody(req) {
 
 let sessionCounter = 0;
 const sessions = new Set();
+/** UI sign-in sessions: cookie value → { csrf, method }. */
+const uiSessions = new Map();
+
+function uiSession(req) {
+  const pair = (req.headers.cookie ?? '').split(';').map((part) => part.trim()).find((part) => part.startsWith(`${COOKIE}=`));
+  const id = pair?.slice(COOKIE.length + 1);
+  return id && uiSessions.has(id) ? { id, ...uiSessions.get(id) } : null;
+}
+
+function startUiSession(res, method) {
+  const id = randomBytes(32).toString('base64url');
+  const csrf = randomBytes(32).toString('base64url');
+  uiSessions.set(id, { csrf, method });
+  res.setHeader('set-cookie', `${COOKIE}=${id}; Path=/ui; HttpOnly; SameSite=Strict`);
+  return { csrf, method };
+}
+
+function signedIn(session) {
+  return {
+    authenticated: true,
+    username: USERNAME,
+    role: 'viewer',
+    method: session.method,
+    csrfToken: session.csrf,
+    idleExpiresIn: 1800,
+    absoluteExpiresIn: 28800,
+    insecureHttpAllowed: INSECURE_ALLOWED,
+  };
+}
+
+function sameOrigin(req) {
+  return req.headers.origin === `http://${req.headers.host}` && INSECURE_ALLOWED;
+}
+
+async function handleAuth(req, res, path) {
+  if (path === '/ui/auth/session' && req.method === 'GET') {
+    const existing = uiSession(req);
+    if (existing) return json(res, 200, signedIn(existing));
+    if (req.headers.authorization === BASIC) return json(res, 200, signedIn(startUiSession(res, 'basic')));
+    return json(res, 200, { authenticated: false, insecureHttpAllowed: INSECURE_ALLOWED });
+  }
+  if (req.method !== 'POST') return json(res, 405, { error: 'method_not_allowed' });
+  if (!sameOrigin(req)) return json(res, 403, { error: 'cross_origin', message: 'Cross-origin requests are not allowed.' });
+  if (path === '/ui/auth/login') {
+    const body = JSON.parse(await readBody(req));
+    calls.push({ method: 'login', hasAuthorization: Boolean(req.headers.authorization) });
+    if (body.username !== USERNAME || body.password !== PASSWORD) {
+      return json(res, 401, { error: 'invalid_credentials', message: 'Invalid username or password.' });
+    }
+    const previous = uiSession(req);
+    if (previous) uiSessions.delete(previous.id);
+    return json(res, 200, signedIn(startUiSession(res, 'session')));
+  }
+  const session = uiSession(req);
+  if (path === '/ui/auth/logout') {
+    if (session) {
+      if (req.headers['x-csrf-token'] !== session.csrf) return json(res, 403, { error: 'csrf' });
+      uiSessions.delete(session.id);
+    }
+    res.writeHead(204, { 'set-cookie': `${COOKIE}=; Path=/ui; HttpOnly; SameSite=Strict; Max-Age=0` });
+    return res.end();
+  }
+  if (path === '/ui/auth/activity') {
+    if (!session) return json(res, 401, { error: 'unauthenticated' });
+    if (req.headers['x-csrf-token'] !== session.csrf) return json(res, 403, { error: 'csrf' });
+    calls.push({ method: 'activity' });
+    return json(res, 200, { idleExpiresIn: 1800, absoluteExpiresIn: 28000 });
+  }
+  return json(res, 404, { error: 'not_found' });
+}
 
 async function handleMcp(req, res) {
   if (process.env.MOCK_HOST_GUARD === '1') {
-    // Mimics rmcp's DNS-rebinding guard for non-localhost Host headers.
-    res.writeHead(403, { 'content-type': 'text/plain' });
-    res.end('Forbidden: Host header is not allowed');
-    return;
+    return json(res, 403, { error: 'host_not_allowed', message: 'This host name is not allowed.' });
   }
-  if (req.headers.authorization !== `Bearer ${API_KEY}`) {
-    res.writeHead(401);
-    res.end('Unauthorized');
-    return;
-  }
-  if (req.method === 'DELETE') {
-    calls.push({ method: 'DELETE', session: req.headers['mcp-session-id'] ?? null });
-    sessions.delete(req.headers['mcp-session-id']);
-    res.writeHead(204);
-    res.end();
-    return;
-  }
+  if (req.method !== 'POST') return json(res, 405, { error: 'method_not_allowed' });
+  if (!sameOrigin(req)) return json(res, 403, { error: 'cross_origin' });
+  const session = uiSession(req);
+  if (!session) return json(res, 401, { error: 'unauthenticated', message: 'Sign in to continue.' });
+  if (req.headers['x-csrf-token'] !== session.csrf) return json(res, 403, { error: 'csrf' });
   const message = JSON.parse(await readBody(req));
   calls.push({
     method: message.method,
     tool: message.params?.name ?? null,
     args: message.params?.arguments ?? null,
-    hasBasic: /basic/i.test(req.headers.authorization ?? ''),
+    hasAuthorization: Boolean(req.headers.authorization),
+    sessionMethod: session.method,
     session: req.headers['mcp-session-id'] ?? null,
     protocol: req.headers['mcp-protocol-version'] ?? null,
   });
+  if (message.method === 'tools/call' && !READ_TOOLS.includes(message.params?.name)) {
+    return json(res, 200, { jsonrpc: '2.0', id: message.id, error: { code: -32602, message: 'Tool not available in the web UI' } });
+  }
   if (scenario.slow && message.params?.name === 'export_collection') {
     await new Promise((resolve) => setTimeout(resolve, scenario.slow));
   }
@@ -177,7 +245,7 @@ async function handleMcp(req, res) {
   }
   let reply;
   if (message.method === 'tools/list') {
-    reply = { jsonrpc: '2.0', id: message.id, result: { tools: [...READ_TOOLS, ...WRITE_TOOLS].map((name) => ({ name, inputSchema: { type: 'object' } })) } };
+    reply = { jsonrpc: '2.0', id: message.id, result: { tools: READ_TOOLS.map((name) => ({ name, inputSchema: { type: 'object' } })) } };
   } else if (message.method === 'tools/call') {
     reply = { jsonrpc: '2.0', id: message.id, ...callTool(message.params.name, message.params.arguments ?? {}) };
   } else {
@@ -198,12 +266,19 @@ function securityHeaders(res) {
   res.setHeader('referrer-policy', 'no-referrer');
 }
 
-const APP_ROUTE = /^\/ui(\/|\/tasks\/?|\/dashboard|\/connect|\/tasks\/[^/]+)?$/;
+const APP_ROUTE = /^\/ui(\/|\/tasks\/?|\/dashboard|\/login|\/tasks\/[^/]+)?$/;
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   try {
-    if (url.pathname === '/mcp') return await handleMcp(req, res);
+    if (url.pathname === '/ui/api/mcp') {
+      securityHeaders(res);
+      return await handleMcp(req, res);
+    }
+    if (url.pathname.startsWith('/ui/auth/')) {
+      securityHeaders(res);
+      return await handleAuth(req, res, url.pathname);
+    }
     if (url.pathname === '/health') {
       return json(res, 200, {
         status: 'degraded',
@@ -216,6 +291,11 @@ const server = createServer(async (req, res) => {
       });
     }
     if (url.pathname === '/__calls') return json(res, 200, calls);
+    if (url.pathname === '/__expire') {
+      // Simulates session expiry or a server restart.
+      uiSessions.clear();
+      return json(res, 200, { expired: true });
+    }
     if (url.pathname === '/__retitle') {
       todos[2].title = url.searchParams.get('title') ?? todos[2].title;
       return json(res, 200, { title: todos[2].title });
@@ -229,10 +309,6 @@ const server = createServer(async (req, res) => {
       return res.end();
     }
     securityHeaders(res);
-    if (process.env.MOCK_BASIC === '1' && req.headers.authorization !== BASIC) {
-      res.writeHead(401, { 'www-authenticate': 'Basic realm="MemCan Tasks"' });
-      return res.end();
-    }
     if (url.pathname.startsWith('/ui/static/')) {
       const rel = normalize(url.pathname.slice('/ui/static/'.length));
       const mime = MIME[extname(rel)];

@@ -20,7 +20,8 @@ test('parseRoute recognizes P1 routes and decodes task ids', () => {
   assert.deepEqual(parseRoute('/ui/tasks'), { name: 'tasks' });
   assert.deepEqual(parseRoute('/ui/tasks/'), { name: 'tasks' });
   assert.deepEqual(parseRoute('/ui/dashboard'), { name: 'dashboard' });
-  assert.deepEqual(parseRoute('/ui/connect'), { name: 'connect' });
+  assert.deepEqual(parseRoute('/ui/login'), { name: 'login' });
+  assert.deepEqual(parseRoute('/ui/connect'), { name: 'notfound' });
   assert.deepEqual(parseRoute('/ui/tasks/abc%2Fdef%20x'), { name: 'task', id: 'abc/def x' });
   assert.deepEqual(parseRoute('/ui/tasks/a/b'), { name: 'notfound' });
   assert.deepEqual(parseRoute('/ui/tasks/%E0%A4%A'), { name: 'notfound' });
@@ -120,7 +121,8 @@ test('safeReturnTo accepts only known same-origin /ui routes', () => {
   assert.equal(safeReturnTo('/ui/dashboard'), '/ui/dashboard');
   assert.equal(safeReturnTo('//evil.example/ui/tasks'), null);
   assert.equal(safeReturnTo('https://evil.example/ui/tasks'), null);
-  assert.equal(safeReturnTo('/ui/connect'), null);
+  assert.equal(safeReturnTo('/ui/login'), null);
+  assert.equal(safeReturnTo('/ui/login?returnTo=%2Fui%2Ftasks'), null);
   assert.equal(safeReturnTo('/mcp'), null);
   assert.equal(safeReturnTo('/ui/../mcp'), null);
   assert.equal(safeReturnTo('/ui/tasks\\evil'), null);

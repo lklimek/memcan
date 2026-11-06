@@ -176,7 +176,7 @@ export function errorMessage(error, { refresh = false } = {}) {
     case 'auth':
       return error.message;
     case 'forbidden':
-      return 'Access denied by server/network policy. An IP allowlist or origin policy may be responsible, not necessarily the key.';
+      return 'Access denied by server/network policy. An IP allowlist or origin policy may be responsible, not necessarily your sign-in.';
     case 'throttled':
       return error.retryAfter ? `The server is limiting requests. Retry in ${error.retryAfter} s.` : 'The server is limiting requests. Retry shortly.';
     case 'unavailable':

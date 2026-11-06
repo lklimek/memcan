@@ -31,6 +31,8 @@ bytes = { workspace = true }
 http-body-util = { workspace = true }
 tower-http = { workspace = true }
 subtle = { workspace = true }
+getrandom = { workspace = true }
+thiserror = { workspace = true }
 sha2 = { workspace = true }
 regex = { workspace = true }
 dirs = { workspace = true }

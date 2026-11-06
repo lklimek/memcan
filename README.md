@@ -43,26 +43,32 @@ Set both `MEMCAN_WEBUI_USERNAME` and `MEMCAN_WEBUI_PASSWORD` to mount the task b
 `/ui/tasks`; leaving either value unset or empty keeps every `/ui*` route unmounted. The password is
 masked in settings debug output.
 
-The UI is a static single-page app embedded in `memcan-server`; it reads everything from `/health`
-and `/mcp` in the browser. After page login it asks for the `MEMCAN_API_KEY`, which it keeps only in
-the tab's memory (reload, close or **Disconnect** forgets it) and sends as a Bearer token. Phase 1
-calls only read tools (`get_todo`, `list_todos`, `export_collection` for todos, `list_collections`,
-`get_queue_status`). On plain HTTP beyond localhost the key can be intercepted like the page
-credentials; the UI warns before entry. The MCP endpoint only accepts `Host` names on loopback by
-default: to use the UI via any other host name (e.g. `http://agentic.lan:8190`), add it to
-`MEMCAN_ALLOWED_HOSTS`, otherwise every API call is refused with `403`.
+The UI is a static single-page app embedded in `memcan-server`. Sign in with that account on the
+login page, or put a reverse proxy with Basic auth in front and pass its `Authorization` header
+through: valid Basic credentials for the same account open the UI without the form, and invalid
+ones fall back to it (the app never triggers a browser login prompt). The browser then holds only
+an HttpOnly session cookie and a CSRF token; it never sees `MEMCAN_API_KEY`. Tasks are read
+through the server's own `/ui/api/mcp` backend, which allows only the read tools (`get_todo`,
+`list_todos`, `export_collection` for todos, `list_collections`, `get_queue_status`) and calls the
+MCP service in-process. Agents keep using `/mcp` with the Bearer key.
 
-The bundled Docker Compose entrypoint is plain HTTP and does not provide TLS out of the box. Its
-dedicated `/ui*` router bypasses the API's Bearer middleware so the application's Basic Auth can
-work, but `TRAEFIK_IP_ALLOWLIST` must remain at its default localhost-only setting until TLS is
-added. Exposing `/ui*` beyond localhost requires an operator-configured Traefik TLS entrypoint and
-certificate resolver, or an upstream TLS-terminating reverse proxy. Plain-HTTP Basic Auth sends
-base64-encoded, not encrypted, credentials.
-Login throttling is intentionally delegated to the trusted proxy/network layer, where client IPs
-can be identified safely: the bundled `docker-compose.yml` applies a Traefik `ratelimit` middleware
-(`average=10` req/s, `burst=20`) to the `memcan-ui` router. Those values, and the choice to keep
-throttling out of the application, must be revisited before broader exposure. The shared Basic Auth
-account has no application logout; credentials normally persist for the browser session.
+Sessions live in memory: they end after 30 idle minutes or 8 hours
+(`MEMCAN_WEBUI_SESSION_IDLE_SECS`, `MEMCAN_WEBUI_SESSION_ABSOLUTE_SECS`), on **Sign out**, and on
+server restart. Signing out cannot remove Basic credentials the browser cached for a proxy; close
+the browser for that. Repeated failed sign-ins lock a username for 15 minutes. The account role
+(`MEMCAN_WEBUI_ROLE`, default `viewer`) is reported in the UI; every role is read-only for now.
+
+Sign-in assumes HTTPS terminated by a reverse proxy. On plain HTTP the UI shows "HTTPS required"
+unless `MEMCAN_WEBUI_ALLOW_INSECURE_HTTP=true` is set, in which case it works with a warning banner
+and passwords and session cookies can be intercepted. The UI backend only accepts loopback `Host`
+names by default: to use it via another name (e.g. `http://agentic.lan:8190`), add that name to
+`MEMCAN_ALLOWED_HOSTS`.
+
+The bundled Docker Compose entrypoint is plain HTTP without TLS. Its dedicated `/ui*` router skips
+the API's Bearer middleware but keeps `TRAEFIK_IP_ALLOWLIST` (localhost only by default) and a
+`ratelimit` middleware (`average=10` req/s, `burst=20`); keep the allowlist at its default until TLS
+is configured. `docker-compose.yml` contains a commented example of an optional Traefik `basicauth`
+middleware that passes the header through.
 
 ### Stack
 

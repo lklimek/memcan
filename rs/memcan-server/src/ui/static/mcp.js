@@ -1,6 +1,6 @@
-// MCP Streamable HTTP client limited to the Phase 1 read tools.
-// Endpoint and authentication are injected (`endpoint`, `auth`) so a cookie-session backend can
-// replace the in-browser Bearer key without touching the protocol code. close() forgets the auth.
+// MCP Streamable HTTP client limited to the Phase 1 read tools, spoken to the web UI backend
+// (`/ui/api/mcp`). Authentication is injected (`auth`: the session's CSRF header plus the
+// same-origin cookie); the server enforces its own allowlist. close() forgets the auth.
 
 export const P1_TOOLS = ['get_todo', 'list_todos', 'export_collection', 'list_collections', 'get_queue_status'];
 export const PROTOCOL_VERSION = '2025-11-25';
@@ -20,18 +20,10 @@ export class McpError extends Error {
     this.status = details.status ?? null;
     this.retryAfter = details.retryAfter ?? null;
     this.code = details.code ?? null;
-    /** For `auth`: 'key' (rejected key), 'host' (Host guard) or 'policy' (other 403). */
+    /** For `auth`: 'session' (signed out or expired), 'host' (Host guard) or 'policy' (other 403). */
     this.reason = null;
     this.at = new Date().toISOString();
   }
-}
-
-/** Return null for an acceptable key, else a user-facing validation message. */
-export function validateKey(value) {
-  if (typeof value !== 'string' || value.trim() === '') return 'Enter the API key.';
-  if (/[\u0000-\u001f\u007f]/.test(value)) return 'The API key contains control characters.';
-  if (/[^ -ÿ]/.test(value)) return 'The API key contains characters that cannot be sent in a header.';
-  return null;
 }
 
 /** Incremental text/event-stream parser; emits `{event, data}` per dispatched event. */
@@ -69,7 +61,7 @@ export function createSseParser(onEvent) {
   };
 }
 
-function parseRetryAfter(value) {
+export function parseRetryAfter(value) {
   if (!value) return null;
   if (/^\d+$/.test(value.trim())) return Number(value.trim());
   const date = Date.parse(value);
@@ -110,29 +102,24 @@ function localhostUrl() {
 }
 
 /**
- * Every 403 stops API work and forgets the key; the body only selects the explanation:
- * the bundled Traefik token check (bad key), rmcp's DNS-rebinding Host guard, or other policy.
+ * Every 403 stops API work and signs the tab out; the body only selects the explanation:
+ * the backend's Host guard, or other policy (origin, security token, proxy allowlist).
  */
 async function forbiddenError(response) {
   const status = 403;
   const body = await readPrefix(response, FORBIDDEN_BODY_BYTES).catch(() => '');
-  if (body.includes('Host header is not allowed')) {
+  if (body.includes('"host_not_allowed"')) {
     const error = new McpError(
       'auth',
-      `The server only accepts API calls addressed to localhost. Open the UI via ${localhostUrl()} (e.g. an SSH tunnel) or ask the operator to allow this host name.`,
+      `The server only accepts this UI on localhost. Open it via ${localhostUrl()} (e.g. an SSH tunnel) or ask the operator to allow this host name.`,
       { status },
     );
     error.reason = 'host';
     return error;
   }
-  if (body.includes('Access Denied. Provide a valid API Token')) {
-    const error = new McpError('auth', 'API key rejected. Reconnect with a valid key.', { status });
-    error.reason = 'key';
-    return error;
-  }
   const error = new McpError(
     'auth',
-    'Access denied by server or network policy. An IP allowlist or origin policy may be responsible; reconnect or ask the operator.',
+    'Access denied by server or network policy: the request origin, security token or an IP allowlist was not accepted. Reload and sign in again, or ask the operator.',
     { status },
   );
   error.reason = 'policy';
@@ -142,8 +129,8 @@ async function forbiddenError(response) {
 async function statusError(response) {
   const { status } = response;
   if (status === 401) {
-    const error = new McpError('auth', 'API key rejected. Reconnect with a valid key.', { status });
-    error.reason = 'key';
+    const error = new McpError('auth', 'Session expired. Sign in to continue.', { status });
+    error.reason = 'session';
     return error;
   }
   if (status === 403) return forbiddenError(response);
@@ -166,15 +153,10 @@ function rpcError(error) {
   return new McpError('tool', 'The server could not complete the request.', { code });
 }
 
-/** Auth that sends the API key as a Bearer token and never lets the browser add page credentials. */
-export function bearerAuth(key) {
-  return { headers: () => ({ Authorization: `Bearer ${key}` }), credentials: 'omit' };
-}
-
 export function createMcpClient(options) {
   const {
     fetch: doFetch = globalThis.fetch.bind(globalThis),
-    endpoint = '/mcp',
+    endpoint = '/ui/api/mcp',
     timeoutMs = 20000,
     maxResponseBytes = 16 * 1024 * 1024,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -184,7 +166,7 @@ export function createMcpClient(options) {
     maxStartsPerSecond = 4,
     onAuthFailure = () => {},
   } = options;
-  let auth = options.auth ?? bearerAuth(options.key);
+  let { auth } = options;
   let closed = false;
   let sessionId = null;
   let protocolVersion = null;

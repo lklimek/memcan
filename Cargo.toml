@@ -63,6 +63,7 @@ tower-http = { version = "0.7.1", default-features = false, features = ["timeout
 
 # Crypto
 subtle = "2"
+getrandom = "0.4.3"
 
 # CLI
 clap_complete = "4"

@@ -2228,6 +2228,23 @@ fn http_mcp_router(
     mcp_router(service, body_read_timeout)
 }
 
+/// In-process MCP endpoint for the web UI backend: a stateless JSON transport over the same
+/// service, reached without HTTP, Traefik or Bearer auth. The UI enforces its own session and
+/// tool allowlist before calling it; it must never be mounted as a route.
+fn ui_mcp_dispatch(shared: Arc<SharedState>) -> crate::ui::McpDispatch {
+    let service = StreamableHttpService::new(
+        move || Ok(MemcanService::new(Arc::clone(&shared))),
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default()
+            .with_legacy_session_mode(false)
+            .with_json_response(true),
+    );
+    Arc::new(move |request| {
+        let service = service.clone();
+        Box::pin(async move { service.handle(request).await.into_response() })
+    })
+}
+
 pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
     let ctx = MemcanContext::init().await?;
     setup_logging(&ctx.settings.log_file);
@@ -2391,7 +2408,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
             .merge(mcp_app_router);
 
         // `ui::router` already warns with the specific reason when it declines to mount.
-        let app = match crate::ui::router(&ctx.settings) {
+        let app = match crate::ui::router(&ctx.settings, ui_mcp_dispatch(Arc::clone(&shared))) {
             Some(ui) => app.merge(ui),
             None => app,
         };
@@ -3138,6 +3155,117 @@ mod tests {
                     .iter()
                     .any(|t| t["name"] == "add_memory")
             );
+        }
+
+        /// The web UI backend reaches the real MCP service in-process, without the master key.
+        #[tokio::test]
+        async fn webui_backend_dispatches_in_process_to_the_mcp_service() {
+            let service = make_test_service();
+            let settings = Settings {
+                webui_username: Some("viewer".into()),
+                webui_password: Some("secret".into()),
+                api_key: Some("master-key".into()),
+                ..Settings::default()
+            };
+            let ui =
+                crate::ui::router(&settings, ui_mcp_dispatch(Arc::clone(&service.state))).unwrap();
+            let post = |body: Value, auth: Option<(&str, &str)>| {
+                let mut request = Request::builder()
+                    .method(Method::POST)
+                    .uri(if auth.is_some() {
+                        "/ui/api/mcp"
+                    } else {
+                        "/ui/auth/login"
+                    })
+                    .header("host", "localhost:8190")
+                    .header("origin", "https://localhost:8190")
+                    .header("content-type", "application/json");
+                if let Some((cookie, csrf)) = auth {
+                    request = request
+                        .header("cookie", cookie)
+                        .header("x-csrf-token", csrf)
+                        .header("mcp-protocol-version", "2025-11-25");
+                }
+                request.body(Body::from(body.to_string())).unwrap()
+            };
+            let login = ui
+                .clone()
+                .oneshot(post(
+                    json!({"username": "viewer", "password": "secret"}),
+                    None,
+                ))
+                .await
+                .unwrap();
+            let cookie = login.headers()["set-cookie"]
+                .to_str()
+                .unwrap()
+                .split(';')
+                .next()
+                .unwrap()
+                .to_string();
+            let csrf = json_response(login).await["csrfToken"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            let auth = Some((cookie.as_str(), csrf.as_str()));
+
+            let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                    "clientInfo": {"name": "memcan-webui", "version": "1"}}});
+            let response = ui.clone().oneshot(post(init, auth)).await.unwrap();
+            assert_eq!(
+                json_response(response).await["result"]["serverInfo"]["name"],
+                "memcan"
+            );
+            let response = ui
+                .clone()
+                .oneshot(post(
+                    json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+                    auth,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+            let response = ui
+                .clone()
+                .oneshot(post(
+                    json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+                    auth,
+                ))
+                .await
+                .unwrap();
+            let mut names: Vec<String> = json_response(response).await["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap().to_string())
+                .collect();
+            names.sort();
+            assert_eq!(
+                names,
+                [
+                    "export_collection",
+                    "get_queue_status",
+                    "get_todo",
+                    "list_collections",
+                    "list_todos"
+                ]
+            );
+
+            let response = ui
+                .clone()
+                .oneshot(post(
+                    json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                        "params": {"name": "export_collection",
+                            "arguments": {"collection": "todos", "filter": "project = 'memcan'"}}}),
+                    auth,
+                ))
+                .await
+                .unwrap();
+            let reply = json_response(response).await;
+            assert!(reply.get("error").is_none(), "{reply}");
+            assert_ne!(reply["result"]["isError"], true, "{reply}");
         }
 
         #[tokio::test]

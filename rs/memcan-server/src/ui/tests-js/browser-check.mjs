@@ -11,6 +11,8 @@ const SCREENS = process.env.SCREENS ?? null;
 const READ_TOOLS = new Set(['get_todo', 'list_todos', 'export_collection', 'list_collections', 'get_queue_status']);
 const TASK0 = '81cbe927-0000-4000-8000-000000000000';
 const TASK1 = '81cbe928-0000-4000-8000-000000000001';
+const PASSWORD = 'test-pass';
+const basic = (credentials) => `Basic ${Buffer.from(credentials).toString('base64')}`;
 
 if (SCREENS) await mkdir(SCREENS, { recursive: true });
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || undefined });
@@ -32,7 +34,7 @@ const shot = async (name, fullPage = true) => {
   if (SCREENS) await page.screenshot({ path: `${SCREENS}/${name}.png`, fullPage });
 };
 const calls = async () => (await (await fetch(`${BASE}/__calls`)).json()).filter((c) => c.method === 'tools/call');
-// A full page load forgets the in-memory key by design; navigate inside the app instead.
+// In-app navigation (no full page load), as a user clicking links would.
 const appGo = (url) =>
   page.evaluate((target) => {
     history.pushState(null, '', target);
@@ -40,34 +42,43 @@ const appGo = (url) =>
   }, url);
 const step = (name) => process.stdout.write(`• ${name}\n`);
 
-step('direct task link without connection goes to Connect and keeps the target');
-await page.goto(`${BASE}/ui/tasks/${TASK0}?project=memcan`);
-await page.waitForURL(/\/ui\/connect\?returnTo=/);
-await page.getByRole('heading', { name: 'Connect to MemCan' }).waitFor();
-assert.ok(await page.getByText('After connecting: return to task 81cbe927…').isVisible());
-assert.equal(await page.locator('#http-warning').count(), 0, 'no HTTP warning on loopback');
-await shot('01-connect');
+const signIn = async (target, password = PASSWORD) => {
+  await target.getByLabel('Username').fill('viewer');
+  await target.getByLabel('Password', { exact: true }).fill(password);
+  await target.getByRole('button', { name: 'Sign in', exact: true }).click();
+};
 
-step('blank and wrong keys fail with recoverable messages');
-await page.getByRole('button', { name: 'Connect', exact: true }).click();
-await page.getByText('Enter the API key.').waitFor();
-await page.getByLabel('API key').fill('wrong-key');
+step('direct task link without a session goes to Sign in and keeps the target');
+await page.goto(`${BASE}/ui/tasks/${TASK0}?project=memcan`);
+await page.waitForURL(/\/ui\/login\?returnTo=/);
+await page.getByRole('heading', { name: 'Sign in to MemCan' }).waitFor();
+assert.ok(await page.getByText('You will return to: task 81cbe927…').isVisible());
+assert.equal(await page.locator('#http-warning').count(), 0, 'no HTTP warning on loopback');
+assert.equal(await page.getByLabel('Username').getAttribute('autocomplete'), 'username');
+assert.equal(await page.getByLabel('Password', { exact: true }).getAttribute('autocomplete'), 'current-password');
+await shot('01-login');
+
+step('blank and wrong credentials fail with recoverable, generic messages');
+await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+await page.getByText('Enter your username and password.').waitFor();
+await page.getByLabel('Username').fill('viewer');
+await page.getByLabel('Password', { exact: true }).fill('wrong-password');
 await page.getByRole('button', { name: 'Show' }).click();
 assert.equal(await page.getByRole('button', { name: 'Show' }).getAttribute('aria-pressed'), 'true');
-await page.getByRole('button', { name: 'Connect', exact: true }).click();
-await page.getByText('API key rejected. Reconnect with a valid key.').waitFor();
-assert.equal(await page.getByLabel('API key').inputValue(), '', 'key input cleared after submit');
+await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+await page.getByText('Invalid username or password.').waitFor();
+assert.equal(await page.getByLabel('Password', { exact: true }).inputValue(), '', 'password cleared after submit');
 
-step('connect opens the task before any export runs');
-await page.getByLabel('API key').fill('test-key');
-await page.getByRole('button', { name: 'Connect', exact: true }).click();
+step('sign-in opens the task before any export runs');
+await signIn(page);
 await page.waitForURL(`${BASE}/ui/tasks/${TASK0}?project=memcan`);
 await page.locator('h1.task-title').waitFor();
 const title = await page.locator('h1.task-title').textContent();
 assert.ok(title.includes('<script>alert(1)</script>'), 'malicious title stays inert text');
 const firstCalls = await calls();
 assert.equal(firstCalls[0].tool, 'get_todo', 'detail fetch is the first tool call');
-assert.equal(firstCalls[0].hasBasic, false);
+assert.equal(firstCalls[0].hasAuthorization, false);
+await page.getByText('Signed in as viewer (viewer)').waitFor();
 await page.getByText('This task may have been deleted. The relationship remains visible.').waitFor();
 await page.getByText('Self-reference').first().waitFor();
 await page.getByText('Other project: other-project').first().waitFor();
@@ -226,14 +237,11 @@ assert.ok((await page.evaluate(() => document.documentElement.scrollWidth)) <= 3
 await page.emulateMedia({ colorScheme: 'light' });
 await page.setViewportSize({ width: 1280, height: 900 });
 
-step('reload forgets the key; reconnecting returns to the quoted project with an escaped scoped scan');
+step('reload keeps the session and the quoted project with an escaped scoped scan');
 await appGo(`/ui/tasks?${new URLSearchParams({ project: quoted })}`);
 await page.reload();
-await page.waitForURL(/\/ui\/connect\?returnTo=/);
-await page.getByLabel('API key').fill('test-key');
-await page.getByRole('button', { name: 'Connect', exact: true }).click();
-await page.waitForURL(/\/ui\/tasks\?project=/);
 await page.getByText('scan complete').waitFor();
+assert.equal(await page.getByRole('heading', { name: 'Sign in to MemCan' }).count(), 0);
 assert.equal(new URL(page.url()).searchParams.get('project'), quoted);
 const filterCall = (await calls()).reverse().find((c) => c.tool === 'export_collection');
 assert.equal(filterCall.args.filter, "project = 'o''brien & co?#/x'");
@@ -241,9 +249,6 @@ assert.equal(filterCall.args.filter, "project = 'o''brien & co?#/x'");
 step('the staleness timer keeps focus on coverage actions during a slow scan');
 await fetch(`${BASE}/__slow?ms=25000`);
 await page.reload();
-await page.waitForURL(/\/ui\/connect\?returnTo=/);
-await page.getByLabel('API key').fill('test-key');
-await page.getByRole('button', { name: 'Connect', exact: true }).click();
 const stopButton = page.getByRole('button', { name: 'Stop loading' });
 await stopButton.waitFor();
 await stopButton.focus();
@@ -257,8 +262,8 @@ await page.keyboard.press('Enter');
 await page.getByText('scan complete').waitFor();
 
 step('fragment-only history changes keep the view; path changes with a fragment route');
-await appGo('/ui/connect#x');
-await page.getByRole('heading', { name: 'Connect to MemCan' }).waitFor();
+await appGo('/ui/tasks#x');
+await page.getByRole('heading', { name: 'Tasks', exact: true }).waitFor();
 await appGo('/ui/dashboard');
 await page.getByRole('heading', { name: 'Dashboard' }).waitFor();
 await page.evaluate(() => {
@@ -271,15 +276,13 @@ await page.goBack();
 await page.waitForTimeout(300);
 assert.equal(await page.evaluate(() => document.querySelector('main h1')?.dataset.marker), 'kept');
 await page.goBack();
-await page.getByRole('heading', { name: 'Connect to MemCan' }).waitFor();
+await page.getByRole('heading', { name: 'Tasks', exact: true }).waitFor();
 
 step('background refresh keeps focus on "Show updates" while newer data is staged again');
 {
   const timed = await context.newPage();
   await timed.clock.install();
   await timed.goto(`${BASE}/ui/tasks`);
-  await timed.getByLabel('API key').fill('test-key');
-  await timed.getByRole('button', { name: 'Connect', exact: true }).click();
   await timed.getByText('scan complete').waitFor();
   await fetch(`${BASE}/__retitle?title=${encodeURIComponent('Retitled once')}`);
   await timed.clock.runFor(62000);
@@ -297,29 +300,74 @@ step('background refresh keeps focus on "Show updates" while newer data is stage
   await fetch(`${BASE}/__retitle?title=${encodeURIComponent('Task 2: Resolve encoded IDs')}`);
 }
 
-step('disconnect clears key, data and storage; health-only dashboard still works');
-await page.getByRole('button', { name: 'Disconnect / forget key' }).click();
-await page.getByText('API connection cleared. Browser page login may remain active.').waitFor();
+step('an expired session stops work, explains why and returns after signing in again');
+await appGo('/ui/tasks?priority=high');
+await page.getByText('scan complete').waitFor();
+await fetch(`${BASE}/__expire`);
+await page.getByRole('button', { name: 'Refresh' }).click();
+await page.waitForURL(/\/ui\/login\?returnTo=/);
+await page.getByText('Session expired. Sign in to continue.').waitFor();
+await signIn(page);
+await page.waitForURL(/\/ui\/tasks\?priority=high/);
+await page.getByText('scan complete').waitFor();
+
+step('sign out revokes the session and clears data; health-only dashboard still works');
+await page.getByRole('button', { name: 'Sign out' }).click();
+await page.getByText('Signed out.', { exact: true }).waitFor();
 const storage = await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage }, cookie: document.cookie }));
-assert.ok(!JSON.stringify(storage).includes('test-key'), 'key never stored');
+assert.ok(!JSON.stringify(storage).includes(PASSWORD), 'password never stored');
 assert.deepEqual(storage.session, {});
-assert.equal(storage.cookie, '');
+assert.equal(storage.cookie, '', 'session cookie is HttpOnly');
 await page.goto(`${BASE}/ui/dashboard`);
 await page.getByText('Server: Degraded', { exact: true }).waitFor();
-assert.ok((await page.getByRole('link', { name: 'Connect' }).count()) >= 1);
+assert.ok((await page.getByRole('link', { name: 'Sign in' }).count()) >= 1);
 await shot('10-dashboard-health-only');
+await page.goto(`${BASE}/ui/tasks`);
+await page.waitForURL(/\/ui\/login/);
+
+step('valid proxy Basic credentials open the UI without the form; sign-out says how to finish');
+{
+  const proxied = await browser.newContext({ extraHTTPHeaders: { Authorization: basic(`viewer:${PASSWORD}`) } });
+  const viaProxy = await proxied.newPage();
+  viaProxy.on('dialog', (dialog) => {
+    problems.push(`unexpected dialog: ${dialog.message()}`);
+    dialog.dismiss();
+  });
+  await viaProxy.goto(`${BASE}/ui/tasks/${TASK1}`);
+  await viaProxy.getByRole('heading', { name: /Task 1: Review extraction/ }).waitFor();
+  assert.equal(await viaProxy.getByRole('heading', { name: 'Sign in to MemCan' }).count(), 0);
+  const basicCall = (await calls()).reverse().find((c) => c.tool === 'get_todo');
+  assert.equal(basicCall.sessionMethod, 'basic');
+  await viaProxy.getByRole('button', { name: 'Sign out' }).click();
+  await viaProxy.getByText(/close the browser to sign out completely/).waitFor();
+  await proxied.close();
+
+  const wrong = await browser.newContext({ extraHTTPHeaders: { Authorization: basic('viewer:wrong') } });
+  const wrongPage = await wrong.newPage();
+  wrongPage.on('dialog', (dialog) => {
+    problems.push(`unexpected dialog: ${dialog.message()}`);
+    dialog.dismiss();
+  });
+  await wrongPage.goto(`${BASE}/ui/tasks`);
+  await wrongPage.waitForURL(/\/ui\/login/);
+  await wrongPage.getByRole('heading', { name: 'Sign in to MemCan' }).waitFor();
+  await wrong.close();
+}
 
 step('network assertions');
 const all = await calls();
 for (const call of all) assert.ok(READ_TOOLS.has(call.tool), `unexpected tool ${call.tool}`);
 for (const request of requests) {
   assert.ok(request.url.startsWith(BASE), `external request ${request.url}`);
-  assert.ok(!request.url.includes('test-key'), 'key in URL');
-  if (request.url.endsWith('/health')) assert.equal(request.headers.authorization, undefined);
+  assert.ok(!request.url.includes(PASSWORD), 'password in URL');
+  assert.notEqual(new URL(request.url).pathname, '/mcp', 'the browser never calls the agent MCP endpoint');
+  if (request.body?.includes(PASSWORD)) assert.ok(request.url.endsWith('/ui/auth/login'), `password sent to ${request.url}`);
+  assert.equal(request.headers.authorization, undefined, `no Authorization header from the app: ${request.url}`);
 }
-const mcpRequests = requests.filter((r) => r.url.endsWith('/mcp'));
-assert.ok(mcpRequests.every((r) => r.method === 'POST' || r.method === 'DELETE'));
-assert.ok(mcpRequests.every((r) => /^Bearer /.test(r.headers.authorization ?? '')), 'explicit Bearer on every MCP request');
+const mcpRequests = requests.filter((r) => r.url.endsWith('/ui/api/mcp'));
+assert.ok(mcpRequests.length > 0);
+assert.ok(mcpRequests.every((r) => r.method === 'POST'));
+assert.ok(mcpRequests.every((r) => typeof r.headers['x-csrf-token'] === 'string' && r.headers['x-csrf-token'].length > 20), 'CSRF token on every API call');
 const initialRequests = new Set(requests.filter((r) => r.url.includes('/ui/static/')).map((r) => r.url));
 assert.ok(initialRequests.size < 20, `asset fan-out ${initialRequests.size}`);
 

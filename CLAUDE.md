@@ -211,12 +211,16 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 |---|---|---|
 | `MEMCAN_LISTEN` | `127.0.0.1:8191` | Server bind address (Docker overrides to `0.0.0.0:8191`) |
 | `MEMCAN_API_KEY` | *(none)* | Bearer token auth for MCP API. Required to use destructive tools (`delete_code_records` is refused when unset). |
-| `MEMCAN_WEBUI_USERNAME` | *(none)* | Shared username for the read-only task UI. Empty means unset; `/ui*` is not mounted unless both WebUI credentials are non-empty. |
-| `MEMCAN_WEBUI_PASSWORD` | *(none)* | Shared password for the read-only task UI. Empty means unset; the value is masked in `Settings` debug output. |
+| `MEMCAN_WEBUI_USERNAME` | *(none)* | Username of the web UI's single shared account (login form or proxy-passed `Authorization: Basic`). Empty means unset; `/ui*` is not mounted unless both WebUI credentials are non-empty. Must not contain `:`. |
+| `MEMCAN_WEBUI_PASSWORD` | *(none)* | Password of the shared web UI account. Empty means unset; the value is masked in `Settings` debug output. |
+| `MEMCAN_WEBUI_ROLE` | `viewer` | Role of the shared account: `viewer` \| `editor` \| `admin` (case-insensitive). Every role gets the read-only tool allowlist until write features ship; an unknown value leaves `/ui*` unmounted with a `warn!`. |
+| `MEMCAN_WEBUI_SESSION_IDLE_SECS` | `1800` | Web UI session idle timeout. Only foreground activity (`POST /ui/auth/activity`) extends it, never API polling. |
+| `MEMCAN_WEBUI_SESSION_ABSOLUTE_SECS` | `28800` | Web UI session absolute lifetime. Both timeouts must be positive with idle ≤ absolute, or `/ui*` stays unmounted with a `warn!`. |
+| `MEMCAN_WEBUI_ALLOW_INSECURE_HTTP` | `false` | Allow web UI sign-in over plain HTTP: cookie `memcan_ui` (`Path=/ui`, no `Secure`) instead of `__Host-memcan_ui`, `http://` origins accepted, UI warning banner, startup `warn!`. Only `true` enables it. Without it, plain HTTP shows "HTTPS required". |
 | `MEMCAN_URL` | `http://localhost:8190` | Server URL for thin clients (`memcan`) |
 | `MEMCAN_LOG_FILE` | *(none = stdout)* | Log file path (renamed from `LOG_FILE`) |
 | `MEMCAN_BODY_READ_TIMEOUT` | `30` | Seconds the `/mcp` route waits for the next chunk of an incoming request body. The clock resets on every chunk received, so a large body that keeps arriving is never cut off, while a stalled connection is answered `408` and logged at `error` instead of parking silently. Bounds only body ingestion — not handler execution, not the SSE response stream. `0` disables the bound; a non-numeric value logs a `warn!` and falls back to `30`. |
-| `MEMCAN_ALLOWED_HOSTS` | *(none)* | Comma-separated extra `Host` values (`host` or `host:port`) accepted on `/mcp`, added to the loopback defaults of the MCP transport's DNS-rebinding guard (other hosts get `403`). Bearer auth still applies; there is no allow-all switch. Logged at `info` on startup. |
+| `MEMCAN_ALLOWED_HOSTS` | *(none)* | Comma-separated extra `Host` values (`host` or `host:port`) accepted on `/mcp` and on the web UI backend (`/ui/auth/*`, `/ui/api/*`), added to the loopback defaults of the DNS-rebinding guard (other hosts get `403`). An entry without a port matches any port. Bearer auth still applies on `/mcp`; there is no allow-all switch. Logged at `info` on startup. |
 | `LANCEDB_PATH` | `~/.local/share/memcan/lancedb` | LanceDB storage directory |
 | `DEFAULT_USER_ID` | `global` | Default memory scope |
 | `DISTILL_MEMORIES` | `true` | Enable LLM fact extraction |
@@ -244,29 +248,35 @@ Environment variables (loaded from `~/.config/memcan/.env` or `.env`):
 ### Tasks web UI deployment
 
 The read-only task browser is available at `/ui/tasks` only when both
-`MEMCAN_WEBUI_USERNAME` and `MEMCAN_WEBUI_PASSWORD` are non-empty. The bundled Docker Compose
-entrypoint is plain HTTP and does not provide TLS out of the box. Its dedicated `/ui*` router bypasses
-the API's Bearer middleware so the application's Basic Auth can work, but it remains restricted by
-`TRAEFIK_IP_ALLOWLIST`.
+`MEMCAN_WEBUI_USERNAME` and `MEMCAN_WEBUI_PASSWORD` are non-empty. The UI is a static JavaScript
+SPA embedded via `include_str!` (`rs/memcan-server/src/ui/static/`, no Node build step); its shell
+and assets are public (no data), and every data path is session-gated:
 
-The UI is a static JavaScript SPA embedded via `include_str!` (`rs/memcan-server/src/ui/static/`, no
-Node build step). `ui::router` serves only the shell, allowlisted assets and security headers; the
-browser loads data from `/health` and `/mcp` with the API key the user enters (memory only, never
-persisted). Opening the UI via a non-localhost host name requires that name in
-`MEMCAN_ALLOWED_HOSTS`, or `/mcp` answers `403`. JS tests: `node --test 'rs/memcan-server/src/ui/tests-js/*.test.mjs'`; dev mock server
-and Playwright scenario live in the same directory.
+- `GET /ui/auth/session` returns the session (principal, role, CSRF token, expiry) or
+  `authenticated: false`; a valid `Authorization: Basic` for the shared account (e.g. Traefik
+  basicauth with `removeheader=false`) is exchanged for a session here. No route ever sends a
+  `WWW-Authenticate` challenge.
+- `POST /ui/auth/login` / `logout` / `activity`; `POST /ui/api/mcp` is the BFF: session cookie +
+  `X-CSRF-Token`, method/tool/argument allowlist (`initialize`, `notifications/initialized`,
+  `tools/list` filtered, `tools/call` for `get_todo`, `list_todos`, `export_collection` on todos with
+  at most a `project = '…'` filter, `list_collections`, `get_queue_status`), then in-process
+  dispatch to the MCP service (`ui_mcp_dispatch` in `serve.rs`). The browser never holds
+  `MEMCAN_API_KEY`; agent `/mcp` Bearer auth is unchanged.
+- Every UI POST needs an allowed Host (loopback or `MEMCAN_ALLOWED_HOSTS`), no cross-site
+  `Sec-Fetch-Site`, and `Origin` equal to `https://<Host>` (also `http://<Host>` with
+  `MEMCAN_WEBUI_ALLOW_INSECURE_HTTP=true`). Forwarding headers are never trusted.
+- Sessions are in memory (restart signs everyone out), capped at 256. Sign-in (form and Basic) is
+  throttled: 5 failures per username per 15 min, 60 attempts per minute overall, `429` +
+  `Retry-After`. Logout cannot clear browser-cached Basic credentials; the UI says so.
 
-Keep the allowlist at its default localhost-only setting (`127.0.0.1/32,::1/128`) until TLS is
-configured. Exposing `/ui*` beyond localhost requires the operator to add a Traefik TLS entrypoint
-and certificate resolver, or place another TLS-terminating reverse proxy upstream. Plain-HTTP
-Basic Auth is insecure because its credentials are merely base64-encoded.
+The bundled Docker Compose entrypoint is plain HTTP and does not provide TLS. Its `/ui*` router
+skips the Bearer middleware but keeps `TRAEFIK_IP_ALLOWLIST` and the `ratelimit` middleware
+(`average=10` req/s, `burst=20`); an optional, commented basicauth example passes the header
+through. Plain-HTTP sign-in requires `MEMCAN_WEBUI_ALLOW_INSECURE_HTTP=true` and exposes passwords
+and cookies; keep the allowlist at its localhost-only default until TLS is configured.
 
-Application-level login throttling is deferred for this trusted-network MVP. Rate limiting belongs
-at the proxy or network layer, where the deployment has an established client-IP trust model: the
-bundled `docker-compose.yml` enforces it on the `memcan-ui` router through the Traefik `ratelimit`
-middleware (`average=10` req/s, `burst=20`). Revisit those values, and the decision to keep
-throttling out of the application, before exposing the UI beyond trusted networks. Basic Auth also
-has no application logout operation: browsers retain the shared credentials for their session.
+JS tests: `node --test 'rs/memcan-server/src/ui/tests-js/*.test.mjs'`; the dev mock server and
+Playwright scenario live in the same directory.
 
 ## LLM Context Budget
 

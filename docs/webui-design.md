@@ -408,7 +408,7 @@ API gaps requiring server changes for a stronger guarantee; none is a P1 depende
 
 ## 12. Follow-up: authentication and authorization
 
-**Design only; not Phase 1.** Replace the two-credential flow with a UI login and server-side authorization. The browser must never receive `MEMCAN_API_KEY`. Scope: one MemCan instance and a small trusted operator group; no account self-registration or identity-management product. Agents keep their existing Bearer `/mcp` integration.
+**Auth foundation implemented (viewer BFF); see “Implemented (2026-11-06)” at the end of this section for where the build deviates from this design.** Replace the two-credential flow with a UI login and server-side authorization. The browser must never receive `MEMCAN_API_KEY`. Scope: one MemCan instance and a small trusted operator group; no account self-registration or identity-management product. Agents keep their existing Bearer `/mcp` integration.
 
 ### Decision and alternatives
 
@@ -499,3 +499,16 @@ These supersede conflicting defaults above.
 - **Sessions:** In-memory store accepted: restart logs everyone out. Idle 30 min, absolute 8 h.
 - **TLS:** Terminated by the reverse proxy (Traefik). Compose does not add TLS yet, so plain HTTP is allowed only via explicit opt-in `MEMCAN_WEBUI_ALLOW_INSECURE_HTTP=true` (default false): cookie without `Secure` and without the `__Host-` prefix, persistent warning banner in the UI, startup `warn!`. Without the opt-in, session mode on plain HTTP behaves as specified above (HTTPS-required page, no credential inputs).
 - **Audit retention:** Audit records are pruned after `MEMCAN_WEBUI_AUDIT_RETENTION_DAYS` (default 7).
+
+### Implemented (2026-11-06)
+
+The auth foundation (viewer BFF) shipped with these decisions; they supersede conflicting text above.
+
+- **Proxy Basic as a second sign-in method:** A valid `Authorization: Basic` header for the shared account (Traefik basicauth with `removeheader=false`, or browser-cached credentials) is accepted next to the login form and maps to the same principal and role. It only authenticates `GET /ui/auth/session`, which exchanges it for a normal session and CSRF token; `/ui/api/mcp` and every UI POST still require the session cookie, `X-CSRF-Token`, exact Origin and same-origin Fetch Metadata. Basic failures count toward the same login throttle. Invalid Basic means unauthenticated (login form); no route sends `WWW-Authenticate`. Sign-out revokes the session but cannot clear cached Basic credentials, so the UI tells the user to close the browser; an expired session is silently renewed from Basic at most every 30 s.
+- **No auth-mode switch:** Session sign-in replaces the API-key Connect flow outright; `MEMCAN_WEBUI_AUTH_MODE` is not implemented and the browser has no code path that asks for, stores or sends `MEMCAN_API_KEY`.
+- **Public shell, gated data:** The SPA shell and embedded assets are served without a session (they carry no data and the login view is part of the SPA); every data path is session-gated. Unknown assets stay 404 and the P1 CSP (including `form-action 'none'`) is unchanged. `returnTo` is validated client-side (known `/ui/` routes only); the server never redirects.
+- **Origin rule without public-origin/trusted-proxy settings:** `MEMCAN_WEBUI_PUBLIC_ORIGIN` and `MEMCAN_WEBUI_TRUSTED_PROXIES` are not implemented. The Host must be loopback or listed in `MEMCAN_ALLOWED_HOSTS` (same matching as the `/mcp` guard), and a UI POST’s `Origin` must equal `https://<Host>` (also `http://<Host>` with the insecure-HTTP opt-in). Forwarding headers are never read, so several host names (e.g. `localhost:8190` and `agentic.lan:8190`) work at once.
+- **Credentials and login:** The env password is compared as SHA-256 digests in constant time, username and password always both, instead of an Argon2 hash: the plaintext already sits in the environment, and online guessing is bounded by the throttle (5 failures per username per 15 min, 60 attempts per minute overall, `429` + `Retry-After`, bounded memory). Login needs no pre-login CSRF challenge: with one shared account there is nothing to forge, and exact Origin, Fetch Metadata and JSON-only checks still apply.
+- **BFF:** `POST /ui/api/mcp` parses the JSON-RPC message once (64 KiB cap, no batches), allows only `initialize`, `notifications/initialized`, `tools/list` (reply filtered) and `tools/call` for the P1 tools, accepts `export_collection` only for `todos` with at most a `project = '…'` literal filter, re-serializes the validated message and dispatches it in-process to a stateless JSON MCP transport over the same service; at most 8 calls run at once. Denied calls get JSON-RPC errors and are never dispatched.
+- **Cookies and sessions:** `__Host-memcan_ui` (`Path=/; HttpOnly; Secure; SameSite=Strict`), or `memcan_ui` (`Path=/ui; HttpOnly; SameSite=Strict`) with the insecure-HTTP opt-in. At most 256 sessions (least recently active evicted); `MEMCAN_WEBUI_SESSION_IDLE_SECS`/`MEMCAN_WEBUI_SESSION_ABSOLUTE_SECS` configure the timeouts.
+- **Deferred:** Users file, audit log (and its retention), reauthentication, confirmation nonces and every write tool.

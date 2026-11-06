@@ -62,7 +62,7 @@ function metaLine(meta, resource, interval, onRetry) {
 export function render(main, ctx) {
   const project = ctx.params.get('project') || null;
   ctx.setTitle(project ? `Dashboard · ${project}` : 'Dashboard');
-  const connectHref = `/ui/connect?${new URLSearchParams({ returnTo: location.pathname + location.search })}`;
+  const loginHref = `/ui/login?${new URLSearchParams({ returnTo: location.pathname + location.search })}`;
   const queue = { data: null, error: null, fetchedAt: null, loading: false };
   const counts = { data: null, error: null, fetchedAt: null, loading: false };
 
@@ -86,7 +86,7 @@ export function render(main, ctx) {
 
   function needConnection(target) {
     clear(target.body);
-    append(target.body, el('p', {}, 'Connect to the API to load this panel. ', navLink(connectHref, 'Connect')));
+    append(target.body, el('p', {}, 'Sign in to load this panel. ', navLink(loginHref, 'Sign in')));
   }
 
   // ---- overview + projects from the task scan

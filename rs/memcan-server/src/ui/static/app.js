@@ -1,5 +1,6 @@
-// Application shell: routing, connection lifecycle, polling, header, commands and shortcuts.
+// Application shell: routing, session lifecycle, polling, header, commands and shortcuts.
 
+import { createAuth, sessionAuth } from './auth.js';
 import { append, clear, el, navLink, openDialog } from './components.js';
 import { vocabulary } from './data.js';
 import { McpError, createMcpClient } from './mcp.js';
@@ -13,12 +14,14 @@ import {
   tasksUrl,
 } from './router.js';
 import { createTaskStore } from './store.js';
-import * as connectView from './views/connect.js';
 import * as dashboardView from './views/dashboard.js';
+import * as loginView from './views/login.js';
 import * as taskView from './views/task.js';
 import * as tasksView from './views/tasks.js';
 
 const HEALTH_INTERVAL_MS = 30000;
+const ACTIVITY_INTERVAL_MS = 60000;
+const RENEW_INTERVAL_MS = 30000;
 const LOOPBACK = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i;
 
 function storageOrNull() {
@@ -31,8 +34,15 @@ function storageOrNull() {
 
 const prefs = createPrefs(storageOrNull());
 const insecureHttp = location.protocol === 'http:' && !LOOPBACK.test(location.hostname);
+const auth = createAuth();
 
 const state = {
+  /** Signed-in principal from the backend (`username`, `role`, `method`, `csrfToken`), or null. */
+  session: null,
+  insecureHttpAllowed: false,
+  ready: false,
+  lastActivity: 0,
+  lastRenew: 0,
   client: null,
   store: null,
   missingTools: [],
@@ -140,7 +150,7 @@ const projectInput = el('input', {
   class: 'project-input',
 });
 const projectOptions = el('datalist', { id: 'project-options' });
-const disconnectButton = el('button', { type: 'button', class: 'button secondary', onclick: () => disconnect('user') }, 'Disconnect');
+const signOutButton = el('button', { type: 'button', class: 'button secondary', onclick: () => signOut() }, 'Sign out');
 const refreshButton = el('button', { type: 'button', class: 'button secondary', onclick: () => refreshView() }, 'Refresh');
 const commandsButton = el(
   'button',
@@ -173,7 +183,7 @@ function buildShell() {
         projectOptions,
         el('button', { type: 'submit', class: 'button secondary' }, 'Go'),
       ),
-      el('div', { class: 'header-actions' }, commandsButton, refreshButton, disconnectButton),
+      el('div', { class: 'header-actions' }, commandsButton, refreshButton, signOutButton),
     ),
     el(
       'div',
@@ -212,7 +222,7 @@ function renderBanners() {
         'p',
         { class: 'banner warning', role: 'note' },
         el('strong', {}, 'Unencrypted connection. '),
-        'Page credentials and the API key can be intercepted. Use HTTPS or a localhost tunnel.',
+        'Your password and session can be intercepted. Use HTTPS or a localhost tunnel.',
       ),
     );
   }
@@ -243,10 +253,10 @@ function renderHealthIndicator() {
 }
 
 function renderConnection() {
-  connectionIndicator.textContent = state.client ? 'API: connected' : 'API: not connected';
+  const { session } = state;
+  connectionIndicator.textContent = session ? `Signed in as ${session.username} (${session.role})` : 'Not signed in';
   connectionIndicator.dataset.tone = state.client ? 'good' : 'neutral';
-  disconnectButton.hidden = !state.client;
-  disconnectButton.textContent = 'Disconnect / forget key';
+  signOutButton.hidden = !session;
   renderBanners();
 }
 
@@ -324,14 +334,23 @@ function toast(message) {
   append(toastRegion, item);
 }
 
-// ---------------------------------------------------------------- connection
+// ---------------------------------------------------------------- session
 
-async function connect(key) {
-  disconnectQuietly();
-  const client = createMcpClient({ key, onAuthFailure: (error) => handleAuthFailure(client, error) });
-  const info = await client.connect();
+/** Open the MCP client for a signed-in session returned by the backend. */
+async function startSession(info) {
+  endSession();
+  const client = createMcpClient({ auth: sessionAuth(info.csrfToken), onAuthFailure: (error) => handleAuthFailure(client, error) });
+  state.session = info;
+  state.lastActivity = Date.now();
+  try {
+    const connected = await client.connect();
+    state.missingTools = connected.missing;
+  } catch (error) {
+    client.close();
+    if (state.session === info) state.session = null;
+    throw error;
+  }
   state.client = client;
-  state.missingTools = info.missing;
   state.store = createTaskStore({
     callTool: (name, args, options) => client.callTool(name, args, options),
     onChange: () => {
@@ -340,12 +359,25 @@ async function connect(key) {
     },
   });
   renderConnection();
-  return info;
 }
 
-function disconnectQuietly() {
+async function login(username, password) {
+  await startSession(await auth.login(username, password));
+}
+
+/** Ask the backend for the current session; valid proxy Basic credentials start one silently. */
+async function restoreSession() {
+  const info = await auth.session();
+  state.insecureHttpAllowed = info.insecureHttpAllowed === true;
+  if (info.authenticated) await startSession(info);
+  else endSession();
+}
+
+/** Forget the session and all loaded data in this tab (the server session is untouched). */
+function endSession() {
   state.client?.close();
   state.store?.clear();
+  state.session = null;
   state.client = null;
   state.store = null;
   state.missingTools = [];
@@ -353,33 +385,66 @@ function disconnectQuietly() {
   projectOptions.replaceChildren();
 }
 
-function handleAuthFailure(client, error) {
-  if (state.client !== client) return;
-  disconnectQuietly();
-  renderConnection();
-  state.connectionNotice = { kind: 'error', text: error.message };
+function loginUrl() {
   const returnTo = safeReturnTo(location.pathname + location.search);
-  navigate(`/ui/connect${returnTo ? `?${new URLSearchParams({ returnTo })}` : ''}`, { replace: true });
+  return `/ui/login${returnTo ? `?${new URLSearchParams({ returnTo })}` : ''}`;
 }
 
-function disconnect(reason) {
-  disconnectQuietly();
+async function handleAuthFailure(client, error) {
+  if (state.client !== client) return;
+  endSession();
   renderConnection();
-  if (reason === 'user') {
-    state.connectionNotice = { kind: 'info', text: 'API connection cleared. Browser page login may remain active.' };
-    navigate('/ui/connect', { replace: false });
+  // An expired session renews silently once in a while when the browser still sends valid Basic credentials.
+  if (error.reason === 'session' && Date.now() - state.lastRenew > RENEW_INTERVAL_MS) {
+    state.lastRenew = Date.now();
+    try {
+      await restoreSession();
+      if (state.session) {
+        render();
+        return;
+      }
+    } catch {
+      // Fall through to the sign-in page.
+    }
   }
+  state.connectionNotice = { kind: 'error', text: error.message };
+  navigate(loginUrl(), { replace: true });
 }
 
-window.addEventListener('pagehide', () => disconnect('pagehide'));
+async function signOut() {
+  const { session } = state;
+  if (!session) return;
+  await auth.logout(session.csrfToken).catch(() => {});
+  endSession();
+  renderConnection();
+  state.connectionNotice = {
+    kind: 'info',
+    text:
+      session.method === 'basic'
+        ? 'Signed out of this session. You signed in through the proxy’s Basic authentication, which this browser keeps until it closes: close the browser to sign out completely.'
+        : 'Signed out.',
+  };
+  navigate('/ui/login');
+}
+
+/** Foreground interaction extends the server's idle timeout; background polling never does. */
+function noteActivity() {
+  const { session } = state;
+  if (!session || Date.now() - state.lastActivity < ACTIVITY_INTERVAL_MS) return;
+  state.lastActivity = Date.now();
+  auth.activity(session.csrfToken).catch(() => {});
+}
+document.addEventListener('pointerdown', noteActivity, { passive: true });
+document.addEventListener('keydown', noteActivity, { passive: true });
+
+window.addEventListener('pagehide', () => endSession());
 window.addEventListener('pageshow', (event) => {
-  if (event.persisted) render();
+  if (event.persisted) start();
 });
 
-function requireConnection() {
+function requireSession() {
   if (state.client) return true;
-  const returnTo = safeReturnTo(location.pathname + location.search);
-  navigate(`/ui/connect${returnTo ? `?${new URLSearchParams({ returnTo })}` : ''}`, { replace: true });
+  navigate(loginUrl(), { replace: true });
   return false;
 }
 
@@ -440,6 +505,8 @@ function render() {
     client: state.client,
     store: state.store,
     connected: Boolean(state.client),
+    signedIn: Boolean(state.client),
+    httpsRequired: location.protocol === 'http:' && !state.insecureHttpAllowed,
     prefs,
     health: state.health,
     insecureHttp,
@@ -447,8 +514,7 @@ function render() {
     navigate,
     announce,
     toast,
-    connect,
-    requireConnection,
+    login,
     refreshHealth,
     every,
     takeNotice: () => {
@@ -471,12 +537,16 @@ function render() {
   clear(main);
   main.removeAttribute('aria-busy');
   const view = {
-    connect: connectView,
+    login: loginView,
     dashboard: dashboardView,
     tasks: tasksView,
     task: taskView,
   }[route.name];
-  if ((route.name === 'tasks' || route.name === 'task') && !requireConnection()) return;
+  if (!state.ready) {
+    append(main, el('p', { class: 'muted', role: 'status' }, 'Checking sign-in…'));
+    return;
+  }
+  if ((route.name === 'tasks' || route.name === 'task') && !requireSession()) return;
   if (view) state.view = view.render(main, ctx) ?? null;
   else renderNotFound();
 }
@@ -551,7 +621,7 @@ function commandList() {
     { label: 'Theme: Dark', run: () => setTheme('dark') },
     { label: 'Keyboard shortcuts', run: openShortcutHelp },
   );
-  if (state.client) commands.push({ label: 'Disconnect / forget key', run: () => disconnect('user') });
+  if (state.session) commands.push({ label: 'Sign out', run: () => signOut() });
   return commands;
 }
 
@@ -745,4 +815,17 @@ applyPrefs();
 renderHealthIndicator();
 every(HEALTH_INTERVAL_MS, refreshHealth, { scoped: false });
 refreshHealth();
-render();
+
+async function start() {
+  state.ready = false;
+  render();
+  try {
+    await restoreSession();
+  } catch (error) {
+    endSession();
+    state.connectionNotice = { kind: 'error', text: error instanceof McpError ? error.message : 'Sign-in status could not be checked.' };
+  }
+  state.ready = true;
+  render();
+}
+start();

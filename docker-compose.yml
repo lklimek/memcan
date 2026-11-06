@@ -64,6 +64,10 @@ services:
       MEMCAN_API_KEY: ${MEMCAN_API_KEY}
       MEMCAN_WEBUI_USERNAME: ${MEMCAN_WEBUI_USERNAME:-}
       MEMCAN_WEBUI_PASSWORD: ${MEMCAN_WEBUI_PASSWORD:-}
+      MEMCAN_WEBUI_ROLE: ${MEMCAN_WEBUI_ROLE:-}
+      MEMCAN_WEBUI_ALLOW_INSECURE_HTTP: ${MEMCAN_WEBUI_ALLOW_INSECURE_HTTP:-false}
+      MEMCAN_WEBUI_SESSION_IDLE_SECS: ${MEMCAN_WEBUI_SESSION_IDLE_SECS:-1800}
+      MEMCAN_WEBUI_SESSION_ABSOLUTE_SECS: ${MEMCAN_WEBUI_SESSION_ABSOLUTE_SECS:-28800}
       RUST_LOG: ${RUST_LOG:-info,memcan_core=debug,memcan_server=debug}
       MEMCAN_LOG_FILE: ""
       MEMCAN_LISTEN: 0.0.0.0:8191
@@ -80,8 +84,9 @@ services:
     # No ports: mapping — memcan is NOT directly accessible from host.
     # External access is only through Traefik (:8190).
     # This entrypoint is plain HTTP. Keep the default localhost allowlist until
-    # an operator adds TLS termination for /ui*; plain-HTTP Basic Auth is insecure.
-    # Apply login throttling at the trusted proxy/network layer, not in this container.
+    # an operator adds TLS termination for /ui*; sign-in over plain HTTP also needs
+    # MEMCAN_WEBUI_ALLOW_INSECURE_HTTP=true and exposes passwords and session cookies.
+    # The app throttles sign-in per username; the ratelimit middleware adds a per-client cap.
     labels:
       - "traefik.instance=ollama"
       - "traefik.enable=true"
@@ -100,7 +105,15 @@ services:
       - "traefik.http.routers.memcan-ui.rule=PathPrefix(`/ui/`) || Path(`/ui`)"
       - "traefik.http.routers.memcan-ui.entrypoints=memcan"
       - "traefik.http.routers.memcan-ui.service=memcan"
+      # /ui* (shell, /ui/auth/*, /ui/api/mcp) skips memcan-auth: the app authenticates the session
+      # itself and the browser never holds MEMCAN_API_KEY.
       - "traefik.http.routers.memcan-ui.middlewares=memcan-ipallow@docker,memcan-ui-ratelimit@docker"
+      # Optional proxy Basic auth for /ui*, not enabled by default. The app validates the passed-through
+      # header against MEMCAN_WEBUI_USERNAME/PASSWORD, so use that same account (htpasswd hash, `$`
+      # doubled as `$$`) and keep removeheader=false. To enable, uncomment and append
+      # `,memcan-ui-basic@docker` to the middlewares above:
+      # - "traefik.http.middlewares.memcan-ui-basic.basicauth.users=viewer:$$apr1$$...$$..."
+      # - "traefik.http.middlewares.memcan-ui-basic.basicauth.removeheader=false"
       - "traefik.http.routers.memcan-ui.priority=200"
       - "traefik.http.routers.memcan-health.rule=Path(`/health`)"
       - "traefik.http.routers.memcan-health.entrypoints=memcan"

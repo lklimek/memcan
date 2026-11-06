@@ -33,7 +33,7 @@ export function parseRoute(pathname) {
   if (path === '/ui') return { name: 'root' };
   if (path === '/ui/tasks') return { name: 'tasks' };
   if (path === '/ui/dashboard') return { name: 'dashboard' };
-  if (path === '/ui/connect') return { name: 'connect' };
+  if (path === '/ui/login') return { name: 'login' };
   const match = /^\/ui\/tasks\/([^/]+)$/.exec(path);
   if (match) {
     try {
@@ -160,7 +160,7 @@ export function builtInView(name, current) {
   return next;
 }
 
-/** Accept only a same-origin path to a known UI route (never Connect itself). */
+/** Accept only a same-origin path to a known UI route (never the sign-in page itself). */
 export function safeReturnTo(value) {
   if (typeof value !== 'string' || !value.startsWith('/ui/') || value.includes('\\')) return null;
   let url;

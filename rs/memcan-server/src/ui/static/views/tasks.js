@@ -381,7 +381,7 @@ export function render(main, ctx) {
             },
           }, 'Use Open as default'),
         ),
-        el('p', { class: 'muted small' }, 'Saved views keep filters on this device and may appear in browser history; never the API key.'),
+        el('p', { class: 'muted small' }, 'Saved views keep filters on this device and may appear in browser history; never your password.'),
       ),
     );
     savedViews.open = open;

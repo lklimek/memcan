@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { McpError, P1_TOOLS, createMcpClient, createSseParser, validateKey } from '../static/mcp.js';
+import { sessionAuth } from '../static/auth.js';
+import { McpError, P1_TOOLS, createMcpClient, createSseParser } from '../static/mcp.js';
 
-const KEY = 'test-key-not-real';
+const CSRF = 'csrf-token-not-real';
+const AUTH = sessionAuth(CSRF);
 const ALL_TOOLS = [...P1_TOOLS, 'add_todo', 'delete_todo'];
 
 function json(body, init = {}) {
@@ -63,7 +65,7 @@ function mockServer(handlers = {}) {
 function client(server, extra = {}) {
   const delays = [];
   const c = createMcpClient({
-    key: KEY,
+    auth: AUTH,
     fetch: server.fetch,
     sleep: async (ms) => {
       delays.push(ms);
@@ -86,13 +88,14 @@ test('stateless connect: initialize, initialized 202 without parse, tools/list; 
   assert.equal(info.protocolVersion, '2025-11-25');
   assert.deepEqual(info.missing, []);
   for (const call of server.calls) {
-    assert.equal(call.url, '/mcp');
+    assert.equal(call.url, '/ui/api/mcp');
     assert.equal(call.method, 'POST');
-    assert.equal(call.headers.get('authorization'), `Bearer ${KEY}`);
+    assert.equal(call.headers.get('authorization'), null);
+    assert.equal(call.headers.get('x-csrf-token'), CSRF);
     assert.equal(call.headers.get('content-type'), 'application/json');
     assert.equal(call.headers.get('accept'), 'application/json, text/event-stream');
     assert.equal(call.headers.get('mcp-session-id'), null);
-    assert.equal(call.init.credentials, 'omit');
+    assert.equal(call.init.credentials, 'same-origin');
     assert.equal(call.init.redirect, 'error');
     assert.equal(call.init.cache, 'no-store');
   }
@@ -144,11 +147,14 @@ test('sessionless 404 is endpoint unavailability, not a reconnect loop', async (
   assert.equal(server.calls.filter((call) => call.body.method === 'initialize').length, 1);
 });
 
-test('401 stops work, forgets the key and notifies once', async () => {
+test('401 stops work, signs the tab out and notifies once', async () => {
   let authFailures = 0;
   const server = mockServer({ tool: () => new Response('Unauthorized', { status: 401 }) });
   const { c } = client(server, { onAuthFailure: () => (authFailures += 1) });
-  await assert.rejects(c.callTool('get_todo', { todo_id: 'a' }), (e) => e.category === 'auth');
+  await assert.rejects(
+    c.callTool('get_todo', { todo_id: 'a' }),
+    (e) => e.category === 'auth' && e.reason === 'session' && e.message === 'Session expired. Sign in to continue.',
+  );
   assert.equal(authFailures, 1);
   const before = server.calls.length;
   await assert.rejects(c.callTool('get_todo', { todo_id: 'a' }), (e) => e.category === 'aborted');
@@ -167,28 +173,27 @@ async function forbidden(body, headers = {}) {
   }
   assert.ok(error instanceof McpError);
   assert.deepEqual(delays, [], 'a 403 is never retried');
-  assert.equal(failures.length, 1, 'polling stops and the key is forgotten');
+  assert.equal(failures.length, 1, 'polling stops and the tab is signed out');
   const before = server.calls.length;
   await assert.rejects(c.callTool('list_collections', {}), (e) => e.category === 'aborted');
   assert.equal(server.calls.length, before);
   return error;
 }
 
-test('403 from the token plugin means the key was rejected', async () => {
-  const error = await forbidden(JSON.stringify({ message: 'Access Denied. Provide a valid API Token header using either "Authorization: Bearer"' }), {
+test('403 for a rejected security token or origin is a policy denial', async () => {
+  const error = await forbidden(JSON.stringify({ error: 'csrf', message: 'The security token is missing or invalid.' }), {
     'content-type': 'application/json',
   });
   assert.equal(error.category, 'auth');
-  assert.equal(error.reason, 'key');
-  assert.match(error.message, /^API key rejected/);
+  assert.equal(error.reason, 'policy');
+  assert.match(error.message, /origin, security token or an IP allowlist/);
 });
 
-test('403 from the DNS-rebinding host guard explains localhost access and never blames the key', async () => {
-  const error = await forbidden('Forbidden: Host header is not allowed', { 'content-type': 'text/plain' });
+test('403 from the backend host guard explains localhost access', async () => {
+  const error = await forbidden(JSON.stringify({ error: 'host_not_allowed', message: 'x' }), { 'content-type': 'application/json' });
   assert.equal(error.reason, 'host');
-  assert.match(error.message, /only accepts API calls addressed to localhost/);
+  assert.match(error.message, /only accepts this UI on localhost/);
   assert.match(error.message, /http:\/\/localhost:8190/);
-  assert.doesNotMatch(error.message, /key/i);
 });
 
 test('any other 403 gets generic access-denied copy and its body is never echoed', async () => {
@@ -199,7 +204,7 @@ test('any other 403 gets generic access-denied copy and its body is never echoed
 });
 
 test('403 body reading is bounded', async () => {
-  const huge = `${'x'.repeat(1024 * 1024)}Host header is not allowed`;
+  const huge = `${'x'.repeat(1024 * 1024)}"host_not_allowed"`;
   const error = await forbidden(huge);
   assert.equal(error.reason, 'policy', 'markers beyond the read bound are ignored');
 });
@@ -419,7 +424,7 @@ test('close sends best-effort session DELETE only when a session exists', async 
   await c.connect();
   const deletes = [];
   const wrapped = createMcpClient({
-    key: KEY,
+    auth: AUTH,
     fetch: async (url, init) => {
       if (init.method === 'DELETE') {
         deletes.push(new Headers(init.headers).get('mcp-session-id'));
@@ -432,7 +437,7 @@ test('close sends best-effort session DELETE only when a session exists', async 
   await wrapped.connect();
   wrapped.close();
   assert.equal(deletes.length, 1);
-  const stateless = createMcpClient({ key: KEY, fetch: mockServer().fetch, maxStartsPerSecond: 1000 });
+  const stateless = createMcpClient({ auth: AUTH, fetch: mockServer().fetch, maxStartsPerSecond: 1000 });
   await stateless.connect();
   stateless.close();
 });
@@ -490,27 +495,17 @@ test('at most two requests run concurrently and high priority jumps the queue', 
   assert.ok(order.indexOf('urgent') <= 2, order.join());
 });
 
-test('validateKey rejects blank and control characters but no invented format', () => {
-  assert.equal(validateKey('abc'), null);
-  assert.equal(validateKey('  spaced key  '), null);
-  assert.match(validateKey(''), /Enter/);
-  assert.match(validateKey('   '), /Enter/);
-  assert.match(validateKey('a\nb'), /control/);
-  assert.match(validateKey('a\u0000b'), /control/);
-  assert.match(validateKey('ключ'), /characters/);
-});
-
-test('injected auth replaces the Bearer key without changing the protocol', async () => {
+test('injected auth and endpoint are used without changing the protocol', async () => {
   const server = mockServer();
   const c = createMcpClient({
-    endpoint: '/ui/api/mcp',
+    endpoint: '/ui/api/other',
     auth: { headers: () => ({ 'X-Test-Session': 'cookie-backed' }), credentials: 'same-origin' },
     fetch: server.fetch,
     maxStartsPerSecond: 1000,
   });
   await c.connect();
   for (const call of server.calls) {
-    assert.equal(call.url, '/ui/api/mcp');
+    assert.equal(call.url, '/ui/api/other');
     assert.equal(call.headers.get('authorization'), null);
     assert.equal(call.headers.get('x-test-session'), 'cookie-backed');
     assert.equal(call.init.credentials, 'same-origin');
