@@ -221,7 +221,7 @@ Refresh rules:
 - Task list has a 60 s freshness target. While visible, run at most one replacement scan per 60 s; no overlapping scans. Keep the previous snapshot while refreshing; stage refreshed data, show “Updated data available”, and apply on click to avoid rows moving under a pointer or keyboard focus. Manual Refresh applies when ready and restores focus by task ID. New/removed records invalidate derived counters and relationships together.
 - Mark individual resources Stale after two missed freshness intervals; retain last successful fetch time. Never claim that refresh locks the database or detects every concurrent write. Health age reflects server observation; UI fetch time is separate.
 - Timeout P1 reads after 20 s. Retry transient read failures at most twice with jittered 1 s/3 s delays; then wait for next scheduled refresh or manual Retry. Auth/validation/missing-record failures do not retry. Cancelled route requests are silent. Limit API concurrency to two and starts to four per second; user detail requests take priority over background scans.
-- UI's 10 rps/burst 20 limit applies to static assets under `/ui`, **not** `/mcp` in current Compose. Keep initial asset fan-out below that burst; avoid cache-busting reload loops. Request pacing is still useful for MCP server load.
+- The `/ui` flood-guard limit (50 rps/burst 100; `/ui/auth/*` has its own 30/min sign-in cap) covers static assets and `/ui/api/mcp`, **not** `/mcp`. Keep initial asset fan-out below that burst; avoid cache-busting reload loops. Request pacing is still useful for MCP server load.
 
 ## 6. Later phases
 

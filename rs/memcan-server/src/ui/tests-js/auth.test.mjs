@@ -7,13 +7,17 @@ function json(body, status = 200, headers = {}) {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
 }
 
-function recorder(reply) {
+function recorder(reply, options = {}) {
   const calls = [];
+  const delays = [];
   const fetch = async (url, init) => {
     calls.push({ url, init, headers: new Headers(init.headers) });
-    return reply(url, init);
+    return reply(url, init, calls.length);
   };
-  return { calls, auth: createAuth({ fetch }) };
+  const sleep = async (ms) => {
+    delays.push(ms);
+  };
+  return { calls, delays, auth: createAuth({ fetch, sleep, ...options }) };
 }
 
 test('session bootstrap is a same-origin GET that never sends credentials of its own', async () => {
@@ -84,4 +88,31 @@ test('session transport auth sends only the CSRF header with same-origin cookies
   const auth = sessionAuth('tok');
   assert.deepEqual(auth.headers(), { 'X-CSRF-Token': 'tok' });
   assert.equal(auth.credentials, 'same-origin');
+});
+
+test('a throttled or unreachable session bootstrap is retried, honouring Retry-After', async () => {
+  const limited = recorder((url, init, n) =>
+    n === 1 ? new Response('Too Many Requests', { status: 429, headers: { 'retry-after': '2' } }) : json({ authenticated: false }),
+  );
+  assert.deepEqual(await limited.auth.session(), { authenticated: false });
+  assert.deepEqual(limited.delays, [2000]);
+
+  const bursty = recorder((url, init, n) => (n < 3 ? new Response('No bursty traffic allowed', { status: 429 }) : json({ authenticated: false })));
+  await bursty.auth.session();
+  assert.deepEqual(bursty.delays, [1000, 3000]);
+
+  const down = recorder(() => new Response('', { status: 503 }));
+  await assert.rejects(down.auth.session(), (e) => e.category === 'unavailable');
+  assert.equal(down.calls.length, 3);
+
+  const long = recorder(() => new Response('', { status: 429, headers: { 'retry-after': '600' } }));
+  await assert.rejects(long.auth.session(), (e) => e.category === 'throttled' && e.retryAfter === 600);
+  assert.deepEqual(long.delays, [], 'never waits beyond 30 s');
+});
+
+test('login is never retried automatically', async () => {
+  const { calls, delays, auth } = recorder(() => new Response('', { status: 429, headers: { 'retry-after': '1' } }));
+  await assert.rejects(auth.login('a', 'b'), (e) => e.category === 'throttled');
+  assert.equal(calls.length, 1);
+  assert.deepEqual(delays, []);
 });

@@ -3923,9 +3923,10 @@ Data fetched 12:34:56 [Refresh]
             requests take priority over background scans.
           </li>
           <li>
-            UI's 10 rps/burst 20 limit applies to static assets under
-            <code>/ui</code>, <strong>not</strong> <code>/mcp</code> in current
-            Compose. Keep initial asset fan-out below that burst; avoid
+            The <code>/ui</code> flood-guard limit (50 rps/burst 100;
+            <code>/ui/auth/*</code> has its own 30/min sign-in cap) covers static
+            assets and <code>/ui/api/mcp</code>, <strong>not</strong>
+            <code>/mcp</code>. Keep initial asset fan-out below that burst; avoid
             cache-busting reload loops. Request pacing is still useful for MCP
             server load.
           </li>

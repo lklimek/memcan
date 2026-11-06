@@ -66,8 +66,9 @@ names by default: to use it via another name (e.g. `http://agentic.lan:8190`), a
 
 The bundled Docker Compose entrypoint is plain HTTP without TLS. Its dedicated `/ui*` router skips
 the API's Bearer middleware but keeps `TRAEFIK_IP_ALLOWLIST` (localhost only by default) and a
-`ratelimit` middleware (`average=10` req/s, `burst=20`); keep the allowlist at its default until TLS
-is configured. `docker-compose.yml` contains a commented example of an optional Traefik `basicauth`
+per-client rate limits: a tight one for the sign-in endpoints (`/ui/auth/*`, 30 requests/min after
+a burst of 10) and a flood guard for everything else (`average=50` req/s, `burst=100`) that normal
+use never reaches. Keep the allowlist at its default until TLS is configured. `docker-compose.yml` contains a commented example of an optional Traefik `basicauth`
 middleware that passes the header through.
 
 ### Stack

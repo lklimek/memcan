@@ -261,6 +261,53 @@ test('long Retry-After surfaces throttled without waiting', async () => {
   assert.deepEqual(delays, []);
 });
 
+test('a proxy 429 without Retry-After backs off and retries the read', async () => {
+  let attempts = 0;
+  const server = mockServer({
+    tool: () => {
+      attempts += 1;
+      // Traefik's ratelimit answers bursts beyond capacity like this, without Retry-After.
+      if (attempts < 3) return new Response('No bursty traffic allowed', { status: 429 });
+      return { ok: 1 };
+    },
+  });
+  const { c, delays } = client(server);
+  assert.deepEqual(await c.callTool('list_collections', {}), { ok: 1 });
+  assert.deepEqual(delays, [1000, 3000]);
+});
+
+test('a 429 during initialization is retried, not treated as a sign-in failure', async () => {
+  let initializes = 0;
+  const failures = [];
+  const server = mockServer({
+    raw: ({ body }) => {
+      if (body.method !== 'initialize') return null;
+      initializes += 1;
+      return initializes === 1 ? new Response('Too Many Requests', { status: 429, headers: { 'retry-after': '1' } }) : null;
+    },
+  });
+  const { c, delays } = client(server, { onAuthFailure: (error) => failures.push(error) });
+  await c.connect();
+  assert.equal(initializes, 2);
+  assert.deepEqual(delays, [1000]);
+  assert.deepEqual(failures, []);
+});
+
+test('persistent 429 surfaces a throttled error and keeps the session usable', async () => {
+  let limited = true;
+  const failures = [];
+  const server = mockServer({
+    tool: () => (limited ? new Response('Too Many Requests', { status: 429, headers: { 'retry-after': '1' } }) : { ok: 2 }),
+  });
+  const { c, delays } = client(server, { onAuthFailure: (error) => failures.push(error) });
+  await assert.rejects(c.callTool('list_collections', {}), (e) => e.category === 'throttled' && e.retryAfter === 1);
+  assert.deepEqual(delays, [1000, 1000]);
+  assert.deepEqual(failures, [], 'throttling never signs the tab out');
+  assert.equal(c.closed, false);
+  limited = false;
+  assert.deepEqual(await c.callTool('list_collections', {}), { ok: 2 });
+});
+
 test('tool allowlist blocks writes and non-todo exports without any request', async () => {
   const server = mockServer();
   const { c } = client(server);

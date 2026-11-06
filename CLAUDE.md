@@ -269,10 +269,21 @@ and assets are public (no data), and every data path is session-gated:
   throttled: 5 failures per username per 15 min, 60 attempts per minute overall, `429` +
   `Retry-After`. Logout cannot clear browser-cached Basic credentials; the UI says so.
 
-The bundled Docker Compose entrypoint is plain HTTP and does not provide TLS. Its `/ui*` router
-skips the Bearer middleware but keeps `TRAEFIK_IP_ALLOWLIST` and the `ratelimit` middleware
-(`average=10` req/s, `burst=20`); an optional, commented basicauth example passes the header
-through. Plain-HTTP sign-in requires `MEMCAN_WEBUI_ALLOW_INSECURE_HTTP=true` and exposes passwords
+The bundled Docker Compose entrypoint is plain HTTP and does not provide TLS. Its `/ui*` routers
+skip the Bearer middleware but keep `TRAEFIK_IP_ALLOWLIST` and per-client-IP `ratelimit`
+middlewares with separate buckets, sized so normal use never sees a `429`:
+
+- `memcan-ui-auth` (`/ui/auth/*`, priority 300): `average=30`, `period=1m`, `burst=10` — the
+  per-client brute-force cap on sign-in (form and Basic) on top of the app's per-username throttle;
+  normal use is one session check per page load plus one activity ping per minute.
+- `memcan-ui` (rest of `/ui*`: shell, assets, `/ui/api/mcp`): `average=50` req/s, `burst=100` — a
+  flood guard only. A first load is ~25 requests and the client paces MCP calls at ≤ 4 starts/s and
+  2 in flight per tab, so a full task scan, the dashboard and polling stay far below it.
+
+If a `429` still arrives, the client retries reads (Retry-After up to 30 s, else 1 s/3 s backoff),
+retries the session bootstrap the same way, and shows "The server is limiting requests" without
+signing out. An optional, commented basicauth example passes the header through (add it to both
+UI routers). Plain-HTTP sign-in requires `MEMCAN_WEBUI_ALLOW_INSECURE_HTTP=true` and exposes passwords
 and cookies; keep the allowlist at its localhost-only default until TLS is configured.
 
 JS tests: `node --test 'rs/memcan-server/src/ui/tests-js/*.test.mjs'`; the dev mock server and

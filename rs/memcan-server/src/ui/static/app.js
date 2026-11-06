@@ -1,7 +1,7 @@
 // Application shell: routing, session lifecycle, polling, header, commands and shortcuts.
 
 import { createAuth, sessionAuth } from './auth.js';
-import { append, clear, el, navLink, openDialog } from './components.js';
+import { append, clear, el, errorMessage, navLink, openDialog } from './components.js';
 import { vocabulary } from './data.js';
 import { McpError, createMcpClient } from './mcp.js';
 import { BUILT_IN_VIEWS, createPrefs } from './prefs.js';
@@ -823,7 +823,8 @@ async function start() {
     await restoreSession();
   } catch (error) {
     endSession();
-    state.connectionNotice = { kind: 'error', text: error instanceof McpError ? error.message : 'Sign-in status could not be checked.' };
+    // A throttled or unreachable server is reported as such, not as a sign-in problem.
+    state.connectionNotice = { kind: 'error', text: error instanceof McpError ? errorMessage(error) : 'Sign-in status could not be checked.' };
   }
   state.ready = true;
   render();
