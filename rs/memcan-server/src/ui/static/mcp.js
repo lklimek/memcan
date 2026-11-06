@@ -77,8 +77,9 @@ function parseRetryAfter(value) {
 function statusError(response) {
   const { status } = response;
   if (status === 401) return new McpError('auth', 'API key rejected. Reconnect with a valid key.', { status });
+  // The bundled Traefik token check answers a bad key with 403, so 403 also means "reconnect".
   if (status === 403) {
-    return new McpError('forbidden', 'Access denied by server/network policy.', { status });
+    return new McpError('auth', 'API key rejected or access denied by network policy. Reconnect with a valid key.', { status });
   }
   if (status === 429) {
     return new McpError('throttled', 'The server is limiting requests.', {

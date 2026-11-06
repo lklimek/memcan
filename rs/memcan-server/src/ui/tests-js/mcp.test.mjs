@@ -155,11 +155,17 @@ test('401 stops work, forgets the key and notifies once', async () => {
   assert.equal(server.calls.length, before);
 });
 
-test('403 is forbidden without retry', async () => {
+test('403 is treated as a rejected key: no retry, key forgotten, caller notified', async () => {
+  let failures = [];
   const server = mockServer({ tool: () => new Response('Forbidden', { status: 403 }) });
-  const { c, delays } = client(server);
-  await assert.rejects(c.callTool('list_collections', {}), (e) => e.category === 'forbidden');
+  const { c, delays } = client(server, { onAuthFailure: (error) => failures.push(error) });
+  await assert.rejects(c.callTool('list_collections', {}), (e) => e.category === 'auth' && e.status === 403);
   assert.deepEqual(delays, []);
+  assert.equal(failures.length, 1);
+  assert.match(failures[0].message, /access denied by network policy/);
+  const before = server.calls.length;
+  await assert.rejects(c.callTool('list_collections', {}), (e) => e.category === 'aborted');
+  assert.equal(server.calls.length, before);
 });
 
 test('transient failures retry twice with jittered 1s/3s delays', async () => {

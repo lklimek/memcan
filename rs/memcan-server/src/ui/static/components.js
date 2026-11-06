@@ -167,7 +167,7 @@ export function panelError(error, onRetry) {
 export function errorMessage(error) {
   switch (error?.category) {
     case 'auth':
-      return 'API key rejected. Reconnect with a valid key.';
+      return error.message;
     case 'forbidden':
       return 'Access denied by server/network policy. An IP allowlist or origin policy may be responsible, not necessarily the key.';
     case 'throttled':

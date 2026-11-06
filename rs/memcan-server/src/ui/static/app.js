@@ -320,7 +320,7 @@ function toast(message) {
 
 async function connect(key) {
   disconnectQuietly();
-  const client = createMcpClient({ key, onAuthFailure: () => handleAuthFailure(client) });
+  const client = createMcpClient({ key, onAuthFailure: (error) => handleAuthFailure(client, error) });
   const info = await client.connect();
   state.client = client;
   state.missingTools = info.missing;
@@ -345,11 +345,11 @@ function disconnectQuietly() {
   projectOptions.replaceChildren();
 }
 
-function handleAuthFailure(client) {
+function handleAuthFailure(client, error) {
   if (state.client !== client) return;
   disconnectQuietly();
   renderConnection();
-  state.connectionNotice = { kind: 'error', text: 'API key rejected. Reconnect with a valid key.' };
+  state.connectionNotice = { kind: 'error', text: error.message };
   const returnTo = safeReturnTo(location.pathname + location.search);
   navigate(`/ui/connect${returnTo ? `?${new URLSearchParams({ returnTo })}` : ''}`, { replace: true });
 }
