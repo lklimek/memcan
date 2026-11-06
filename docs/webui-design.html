@@ -5525,14 +5525,17 @@ Data fetched 12:34:56 [Refresh]
             their feature rollout. Decide OIDC/project ACLs separately.
           </li>
         </ol>
-        <p>
-          Open product decisions (recommended defaults above keep implementation
-          unblocked): Is one shared viewer sufficient or are named users needed
-          immediately? Which operators may edit/delete? Is all-project
-          visibility acceptable? Is an IdP already maintained? Are restart
-          logout and 30-minute/8-hour limits acceptable? Who owns TLS and audit
-          retention?
-        </p>
+        <h3 id="decisions-2026-11-06">Decisions (2026-11-06)</h3>
+        <p>These supersede conflicting defaults above.</p>
+        <ul>
+          <li><strong>Accounts:</strong> One shared account, bootstrapped from <code>MEMCAN_WEBUI_USERNAME</code>/<code>MEMCAN_WEBUI_PASSWORD</code>. The multi-user <code>MEMCAN_WEBUI_USERS_FILE</code> is deferred until named users are needed.</li>
+          <li><strong>Role:</strong> Configurable via <code>MEMCAN_WEBUI_ROLE=viewer|editor|admin</code>, default <code>viewer</code> (the first auth release is read-only anyway). Editor may change task status (e.g. mark resolved), assign and edit; only admin may delete.</li>
+          <li><strong>Project visibility:</strong> All roles see all projects; project ACLs are not planned.</li>
+          <li><strong>Identity provider:</strong> No OIDC/forward-auth; out of scope (overkill for this deployment).</li>
+          <li><strong>Sessions:</strong> In-memory store accepted: restart logs everyone out. Idle 30 min, absolute 8 h.</li>
+          <li><strong>TLS:</strong> Terminated by the reverse proxy (Traefik). Compose does not add TLS yet, so plain HTTP is allowed only via explicit opt-in <code>MEMCAN_WEBUI_ALLOW_INSECURE_HTTP=true</code> (default false): cookie without <code>Secure</code> and without the <code>__Host-</code> prefix, persistent warning banner in the UI, startup <code>warn!</code>. Without the opt-in, session mode on plain HTTP behaves as specified above (HTTPS-required page, no credential inputs).</li>
+          <li><strong>Audit retention:</strong> Audit records are pruned after <code>MEMCAN_WEBUI_AUDIT_RETENTION_DAYS</code> (default 7).</li>
+        </ul>
       </article>
     </main>
     <footer>

@@ -488,4 +488,14 @@ Preserve P1 CSP and text-only rendering: external same-origin JS/CSS, `connect-s
 3. **Deployment switch:** configure TLS/users, set session mode, restart and invalidate old browser state. Remove Connect key entry in this mode. Rollback is an explicit operator mode change/restart to Basic; users are told the old separate-key flow is restored. Never auto-fallback on failure.
 4. **Before P2 writes:** enable editor/admin policy, reauth/confirmations, per-item audit and failure reconciliation; test forged CSRF, editor deletion, expiry mid-edit and ambiguous mutation timeouts. P3/P4 extend the explicit allowlist only with their feature rollout. Decide OIDC/project ACLs separately.
 
-Open product decisions (recommended defaults above keep implementation unblocked): Is one shared viewer sufficient or are named users needed immediately? Which operators may edit/delete? Is all-project visibility acceptable? Is an IdP already maintained? Are restart logout and 30-minute/8-hour limits acceptable? Who owns TLS and audit retention?
+### Decisions (2026-11-06)
+
+These supersede conflicting defaults above.
+
+- **Accounts:** One shared account, bootstrapped from `MEMCAN_WEBUI_USERNAME`/`MEMCAN_WEBUI_PASSWORD`. The multi-user `MEMCAN_WEBUI_USERS_FILE` is deferred until named users are needed.
+- **Role:** Configurable via `MEMCAN_WEBUI_ROLE=viewer|editor|admin`, default `viewer` (the first auth release is read-only anyway). Editor may change task status (e.g. mark resolved), assign and edit; only admin may delete.
+- **Project visibility:** All roles see all projects; project ACLs are not planned.
+- **Identity provider:** No OIDC/forward-auth; out of scope (overkill for this deployment).
+- **Sessions:** In-memory store accepted: restart logs everyone out. Idle 30 min, absolute 8 h.
+- **TLS:** Terminated by the reverse proxy (Traefik). Compose does not add TLS yet, so plain HTTP is allowed only via explicit opt-in `MEMCAN_WEBUI_ALLOW_INSECURE_HTTP=true` (default false): cookie without `Secure` and without the `__Host-` prefix, persistent warning banner in the UI, startup `warn!`. Without the opt-in, session mode on plain HTTP behaves as specified above (HTTPS-required page, no credential inputs).
+- **Audit retention:** Audit records are pruned after `MEMCAN_WEBUI_AUDIT_RETENTION_DAYS` (default 7).
