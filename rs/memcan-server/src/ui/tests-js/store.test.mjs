@@ -280,3 +280,85 @@ test('stopScan pauses a running scan', async () => {
   assert.equal(store.coverage().status, 'stopped');
   assert.ok(store.coverage().records < 2000);
 });
+
+test('refresh with unchanged data stages nothing and only bumps the fetched time', async () => {
+  let clock = 1000;
+  const server = exportServer(many(3));
+  const store = createTaskStore({ callTool: server.callTool, now: () => clock });
+  await store.startScan(null);
+  assert.equal(store.coverage().fetchedAt, 1000);
+  clock = 5000;
+  await store.refresh();
+  assert.equal(store.stagedReady(), false);
+  assert.equal(store.coverage().fetchedAt, 5000);
+  assert.equal(store.coverage().status, 'complete');
+});
+
+test('refresh stages when only a field or a blocker changes', async () => {
+  const rows = many(2);
+  const server = exportServer(() => rows);
+  const store = createTaskStore({ callTool: server.callTool });
+  await store.startScan(null);
+  rows[1] = row(1, { blocked_by: ['id-00000'] });
+  await store.refresh();
+  assert.equal(store.stagedReady(), true);
+});
+
+test('a capped refresh after the collection outgrew the auto limit is not reported complete', async () => {
+  let rows = many(3);
+  const server = exportServer(() => rows);
+  const store = createTaskStore({ callTool: server.callTool, limits: { pageSize: 2, autoRecords: 4 } });
+  await store.startScan(null);
+  assert.equal(store.coverage().status, 'complete');
+  rows = many(9);
+  await store.refresh();
+  if (store.stagedReady()) store.applyStaged();
+  assert.equal(store.coverage().status, 'paused');
+  assert.equal(store.coverage().partial, true);
+  await store.continueScan();
+  await store.continueScan();
+  await store.continueScan();
+  assert.equal(store.coverage().status, 'complete');
+  assert.equal(store.tasks().length, 9);
+});
+
+test('a capped unchanged refresh does not announce updates every cycle', async () => {
+  const server = exportServer(many(9));
+  const store = createTaskStore({ callTool: server.callTool, limits: { pageSize: 2, autoRecords: 4 } });
+  await store.startScan(null);
+  assert.equal(store.coverage().status, 'paused');
+  await store.refresh();
+  assert.equal(store.stagedReady(), false);
+  assert.equal(store.coverage().status, 'paused');
+});
+
+test('direct lookups survive a scope switch triggered by a new scan', async () => {
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  const server = exportServer([row(1, { project: 'p' }), row(2, { project: 'other' })], {
+    before: async (name) => {
+      if (name === 'get_todo') await gate;
+    },
+  });
+  const store = createTaskStore({ callTool: server.callTool });
+  await store.startScan('p');
+  const lookup = store.fetchTask('id-00002');
+  const scan = store.startScan(null);
+  release();
+  const result = await lookup;
+  assert.equal(result.status, 'found');
+  await scan;
+  assert.equal(store.get('id-00002').project, 'other');
+});
+
+test('clear still invalidates in-flight direct lookups', async () => {
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  const server = exportServer([row(1)], { before: async () => gate });
+  const store = createTaskStore({ callTool: server.callTool });
+  const lookup = store.fetchTask('id-00001');
+  store.clear();
+  release();
+  await assert.rejects(lookup, (e) => e.category === 'aborted');
+  assert.equal(store.get('id-00001'), null);
+});

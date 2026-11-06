@@ -30,7 +30,10 @@ function scanState(scope) {
 export function createTaskStore({ callTool, limits = {}, onChange = () => {}, now = () => Date.now() }) {
   const L = { ...DEFAULT_LIMITS, ...limits };
   let seq = 0;
+  // `generation` invalidates scans on scope switches; `session` invalidates everything on clear().
   let generation = 0;
+  let session = 0;
+  let fetchedAt = null;
   let snapshot = new Map();
   let direct = new Map();
   let missingAt = new Map();
@@ -102,6 +105,7 @@ export function createTaskStore({ callTool, limits = {}, onChange = () => {}, no
       if (page.count < L.pageSize) state.status = 'complete';
       else if (state.bytes >= L.cacheBytes) state.status = 'budget';
       else if (mode === 'one' || state.records >= L.autoRecords || state.bytes >= L.autoBytes) state.status = 'paused';
+      if (target.live && state.status !== 'loading') fetchedAt = now();
       if (target.live) notify();
       if (state.status !== 'loading') return;
     }
@@ -158,6 +162,36 @@ export function createTaskStore({ callTool, limits = {}, onChange = () => {}, no
     }
   }
 
+  function sameTask(a, b) {
+    return (
+      a.title === b.title &&
+      a.description === b.description &&
+      a.project === b.project &&
+      a.priority === b.priority &&
+      a.status === b.status &&
+      a.owner === b.owner &&
+      a.createdAt === b.createdAt &&
+      a.completedAt === b.completedAt &&
+      a.blockedBy.length === b.blockedBy.length &&
+      a.blockedBy.every((id, index) => id === b.blockedBy[index])
+    );
+  }
+
+  /** True when applying `map` (a complete or partial replacement) would change what is shown. */
+  function differs(map, complete) {
+    if (complete && map.size !== snapshot.size) return true;
+    for (const [id, entry] of map) {
+      const current = snapshot.get(id);
+      if (!current || !sameTask(current.task, entry.task)) return true;
+    }
+    return false;
+  }
+
+  /** Adopt a capped replacement's coverage so Continue resumes from where it stopped. */
+  function adoptPartialCoverage(state) {
+    if (scan.status === 'complete' || state.records >= scan.records) scan = state;
+  }
+
   async function refresh() {
     if (running) return running.promise;
     if (scan.status === 'idle') return startScan(scan.scope);
@@ -167,8 +201,11 @@ export function createTaskStore({ callTool, limits = {}, onChange = () => {}, no
     await launch(target, 'auto');
     if (target.gen !== generation) return;
     if (state.status === 'complete' || state.status === 'paused' || state.status === 'budget') {
-      staged = target;
       refreshError = null;
+      fetchedAt = now();
+      if (differs(target.map, state.status === 'complete')) staged = target;
+      else if (state.status === 'complete') scan = state;
+      else adoptPartialCoverage(state);
     } else if (state.status === 'error') {
       refreshError = state.error;
     }
@@ -192,16 +229,16 @@ export function createTaskStore({ callTool, limits = {}, onChange = () => {}, no
         const current = snapshot.get(id);
         if (!current || current.stamp < entry.stamp) snapshot.set(id, entry);
       }
-      scan.finishedAt = state.finishedAt;
+      adoptPartialCoverage(state);
     }
     notify();
   }
 
   async function fetchTask(id, { signal } = {}) {
     const stamp = ++seq;
-    const gen = generation;
+    const started = session;
     const result = await callTool('get_todo', { todo_id: id }, { signal, priority: 'high' });
-    if (gen !== generation) throw new McpError('aborted', 'The request was superseded.');
+    if (started !== session) throw new McpError('aborted', 'The request was superseded.');
     if (result && typeof result === 'object' && result.error === 'todo not found') {
       missingAt.set(id, stamp);
       const removed = snapshot.delete(id) || direct.delete(id);
@@ -251,12 +288,15 @@ export function createTaskStore({ callTool, limits = {}, onChange = () => {}, no
       refreshError,
       startedAt: scan.startedAt,
       finishedAt: scan.finishedAt,
+      fetchedAt,
       refreshing: running?.kind === 'refresh',
       loading: running?.kind === 'initial',
     };
   }
 
   function clear() {
+    session += 1;
+    fetchedAt = null;
     evict();
     direct = new Map();
     missingAt = new Map();
