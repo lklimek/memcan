@@ -457,3 +457,20 @@ test('validateKey rejects blank and control characters but no invented format', 
   assert.match(validateKey('a\u0000b'), /control/);
   assert.match(validateKey('ключ'), /characters/);
 });
+
+test('injected auth replaces the Bearer key without changing the protocol', async () => {
+  const server = mockServer();
+  const c = createMcpClient({
+    endpoint: '/ui/api/mcp',
+    auth: { headers: () => ({ 'X-Test-Session': 'cookie-backed' }), credentials: 'same-origin' },
+    fetch: server.fetch,
+    maxStartsPerSecond: 1000,
+  });
+  await c.connect();
+  for (const call of server.calls) {
+    assert.equal(call.url, '/ui/api/mcp');
+    assert.equal(call.headers.get('authorization'), null);
+    assert.equal(call.headers.get('x-test-session'), 'cookie-backed');
+    assert.equal(call.init.credentials, 'same-origin');
+  }
+});

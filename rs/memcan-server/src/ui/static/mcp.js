@@ -1,5 +1,6 @@
 // MCP Streamable HTTP client limited to the Phase 1 read tools.
-// The API key lives only inside the client closure; close() forgets it.
+// Endpoint and authentication are injected (`endpoint`, `auth`) so a cookie-session backend can
+// replace the in-browser Bearer key without touching the protocol code. close() forgets the auth.
 
 export const P1_TOOLS = ['get_todo', 'list_todos', 'export_collection', 'list_collections', 'get_queue_status'];
 export const PROTOCOL_VERSION = '2025-11-25';
@@ -98,6 +99,11 @@ function rpcError(error) {
   return new McpError('tool', 'The server could not complete the request.', { code });
 }
 
+/** Auth that sends the API key as a Bearer token and never lets the browser add page credentials. */
+export function bearerAuth(key) {
+  return { headers: () => ({ Authorization: `Bearer ${key}` }), credentials: 'omit' };
+}
+
 export function createMcpClient(options) {
   const {
     fetch: doFetch = globalThis.fetch.bind(globalThis),
@@ -111,7 +117,7 @@ export function createMcpClient(options) {
     maxStartsPerSecond = 4,
     onAuthFailure = () => {},
   } = options;
-  let key = options.key;
+  let auth = options.auth ?? bearerAuth(options.key);
   let closed = false;
   let sessionId = null;
   let protocolVersion = null;
@@ -220,7 +226,7 @@ export function createMcpClient(options) {
     signal?.addEventListener('abort', onAbort, { once: true });
     if (signal?.aborted) onAbort();
     const headers = {
-      Authorization: `Bearer ${key}`,
+      ...auth.headers(),
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
     };
@@ -234,7 +240,7 @@ export function createMcpClient(options) {
           method: 'POST',
           headers,
           body: JSON.stringify(message),
-          credentials: 'omit',
+          credentials: auth.credentials,
           redirect: 'error',
           cache: 'no-store',
           signal: controller.signal,
@@ -429,8 +435,8 @@ export function createMcpClient(options) {
     if (closed) return;
     closed = true;
     const lastSession = sessionId;
-    const lastKey = key;
-    key = null;
+    const lastAuth = auth;
+    auth = null;
     sessionId = null;
     initPromise = null;
     available = null;
@@ -442,8 +448,8 @@ export function createMcpClient(options) {
       try {
         doFetch(endpoint, {
           method: 'DELETE',
-          headers: { Authorization: `Bearer ${lastKey}`, 'Mcp-Session-Id': lastSession },
-          credentials: 'omit',
+          headers: { ...lastAuth.headers(), 'Mcp-Session-Id': lastSession },
+          credentials: lastAuth.credentials,
           redirect: 'error',
           cache: 'no-store',
           keepalive: true,
