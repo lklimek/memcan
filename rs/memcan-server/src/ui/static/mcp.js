@@ -20,6 +20,8 @@ export class McpError extends Error {
     this.status = details.status ?? null;
     this.retryAfter = details.retryAfter ?? null;
     this.code = details.code ?? null;
+    /** For `auth`: 'key' (rejected key), 'host' (Host guard) or 'policy' (other 403). */
+    this.reason = null;
     this.at = new Date().toISOString();
   }
 }
@@ -74,13 +76,77 @@ function parseRetryAfter(value) {
   return Number.isNaN(date) ? null : Math.max(0, Math.ceil((date - Date.now()) / 1000));
 }
 
-function statusError(response) {
-  const { status } = response;
-  if (status === 401) return new McpError('auth', 'API key rejected. Reconnect with a valid key.', { status });
-  // The bundled Traefik token check answers a bad key with 403, so 403 also means "reconnect".
-  if (status === 403) {
-    return new McpError('auth', 'API key rejected or access denied by network policy. Reconnect with a valid key.', { status });
+const FORBIDDEN_BODY_BYTES = 4096;
+
+/** Read at most `limit` bytes of a body as text for classification only; never displayed. */
+async function readPrefix(response, limit) {
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (size < limit) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value.subarray(0, limit - size));
+      size += value.byteLength;
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
   }
+  const bytes = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+function localhostUrl() {
+  const loc = globalThis.location;
+  if (!loc) return 'http://localhost:8190';
+  return `${loc.protocol}//localhost${loc.port ? `:${loc.port}` : ''}`;
+}
+
+/**
+ * Every 403 stops API work and forgets the key; the body only selects the explanation:
+ * the bundled Traefik token check (bad key), rmcp's DNS-rebinding Host guard, or other policy.
+ */
+async function forbiddenError(response) {
+  const status = 403;
+  const body = await readPrefix(response, FORBIDDEN_BODY_BYTES).catch(() => '');
+  if (body.includes('Host header is not allowed')) {
+    const error = new McpError(
+      'auth',
+      `The server only accepts API calls addressed to localhost. Open the UI via ${localhostUrl()} (e.g. an SSH tunnel) or ask the operator to allow this host name.`,
+      { status },
+    );
+    error.reason = 'host';
+    return error;
+  }
+  if (body.includes('Access Denied. Provide a valid API Token')) {
+    const error = new McpError('auth', 'API key rejected. Reconnect with a valid key.', { status });
+    error.reason = 'key';
+    return error;
+  }
+  const error = new McpError(
+    'auth',
+    'Access denied by server or network policy. An IP allowlist or origin policy may be responsible; reconnect or ask the operator.',
+    { status },
+  );
+  error.reason = 'policy';
+  return error;
+}
+
+async function statusError(response) {
+  const { status } = response;
+  if (status === 401) {
+    const error = new McpError('auth', 'API key rejected. Reconnect with a valid key.', { status });
+    error.reason = 'key';
+    return error;
+  }
+  if (status === 403) return forbiddenError(response);
   if (status === 429) {
     return new McpError('throttled', 'The server is limiting requests.', {
       status,
@@ -256,7 +322,7 @@ export function createMcpClient(options) {
         error.sessionExpired = sentSession;
         throw error;
       }
-      if (!response.ok) throw statusError(response);
+      if (!response.ok) throw await statusError(response);
       if (message.method === 'initialize') sessionId = response.headers.get('mcp-session-id') || null;
       if (!('id' in message)) {
         await response.body?.cancel().catch(() => {});

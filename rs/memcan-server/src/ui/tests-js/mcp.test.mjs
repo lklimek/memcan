@@ -155,17 +155,53 @@ test('401 stops work, forgets the key and notifies once', async () => {
   assert.equal(server.calls.length, before);
 });
 
-test('403 is treated as a rejected key: no retry, key forgotten, caller notified', async () => {
-  let failures = [];
-  const server = mockServer({ tool: () => new Response('Forbidden', { status: 403 }) });
+async function forbidden(body, headers = {}) {
+  const failures = [];
+  const server = mockServer({ tool: () => new Response(body, { status: 403, headers }) });
   const { c, delays } = client(server, { onAuthFailure: (error) => failures.push(error) });
-  await assert.rejects(c.callTool('list_collections', {}), (e) => e.category === 'auth' && e.status === 403);
-  assert.deepEqual(delays, []);
-  assert.equal(failures.length, 1);
-  assert.match(failures[0].message, /access denied by network policy/);
+  let error;
+  try {
+    await c.callTool('list_collections', {});
+  } catch (caught) {
+    error = caught;
+  }
+  assert.ok(error instanceof McpError);
+  assert.deepEqual(delays, [], 'a 403 is never retried');
+  assert.equal(failures.length, 1, 'polling stops and the key is forgotten');
   const before = server.calls.length;
   await assert.rejects(c.callTool('list_collections', {}), (e) => e.category === 'aborted');
   assert.equal(server.calls.length, before);
+  return error;
+}
+
+test('403 from the token plugin means the key was rejected', async () => {
+  const error = await forbidden(JSON.stringify({ message: 'Access Denied. Provide a valid API Token header using either "Authorization: Bearer"' }), {
+    'content-type': 'application/json',
+  });
+  assert.equal(error.category, 'auth');
+  assert.equal(error.reason, 'key');
+  assert.match(error.message, /^API key rejected/);
+});
+
+test('403 from the DNS-rebinding host guard explains localhost access and never blames the key', async () => {
+  const error = await forbidden('Forbidden: Host header is not allowed', { 'content-type': 'text/plain' });
+  assert.equal(error.reason, 'host');
+  assert.match(error.message, /only accepts API calls addressed to localhost/);
+  assert.match(error.message, /http:\/\/localhost:8190/);
+  assert.doesNotMatch(error.message, /key/i);
+});
+
+test('any other 403 gets generic access-denied copy and its body is never echoed', async () => {
+  const error = await forbidden('<html><script>alert(1)</script>blocked by WAF</html>', { 'content-type': 'text/html' });
+  assert.equal(error.reason, 'policy');
+  assert.match(error.message, /Access denied by server or network policy/);
+  assert.doesNotMatch(error.message, /script|WAF/);
+});
+
+test('403 body reading is bounded', async () => {
+  const huge = `${'x'.repeat(1024 * 1024)}Host header is not allowed`;
+  const error = await forbidden(huge);
+  assert.equal(error.reason, 'policy', 'markers beyond the read bound are ignored');
 });
 
 test('transient failures retry twice with jittered 1s/3s delays', async () => {

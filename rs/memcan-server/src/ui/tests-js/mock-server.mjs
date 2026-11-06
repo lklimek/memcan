@@ -126,6 +126,12 @@ let sessionCounter = 0;
 const sessions = new Set();
 
 async function handleMcp(req, res) {
+  if (process.env.MOCK_HOST_GUARD === '1') {
+    // Mimics rmcp's DNS-rebinding guard for non-localhost Host headers.
+    res.writeHead(403, { 'content-type': 'text/plain' });
+    res.end('Forbidden: Host header is not allowed');
+    return;
+  }
   if (req.headers.authorization !== `Bearer ${API_KEY}`) {
     res.writeHead(401);
     res.end('Unauthorized');
