@@ -153,7 +153,9 @@ async function handleMcp(req, res) {
     session: req.headers['mcp-session-id'] ?? null,
     protocol: req.headers['mcp-protocol-version'] ?? null,
   });
-  if (scenario.slow) await new Promise((resolve) => setTimeout(resolve, scenario.slow));
+  if (scenario.slow && message.params?.name === 'export_collection') {
+    await new Promise((resolve) => setTimeout(resolve, scenario.slow));
+  }
   if (scenario.sessions && message.method !== 'initialize' && !sessions.has(req.headers['mcp-session-id'])) {
     res.writeHead(404);
     res.end('session not found');
@@ -214,6 +216,10 @@ const server = createServer(async (req, res) => {
       });
     }
     if (url.pathname === '/__calls') return json(res, 200, calls);
+    if (url.pathname === '/__slow') {
+      scenario.slow = Number(url.searchParams.get('ms') ?? 0);
+      return json(res, 200, { slow: scenario.slow });
+    }
     if (!url.pathname.startsWith('/ui')) {
       res.writeHead(404);
       return res.end();

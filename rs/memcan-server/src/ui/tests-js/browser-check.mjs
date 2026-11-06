@@ -238,6 +238,41 @@ assert.equal(new URL(page.url()).searchParams.get('project'), quoted);
 const filterCall = (await calls()).reverse().find((c) => c.tool === 'export_collection');
 assert.equal(filterCall.args.filter, "project = 'o''brien & co?#/x'");
 
+step('the staleness timer keeps focus on coverage actions during a slow scan');
+await fetch(`${BASE}/__slow?ms=25000`);
+await page.reload();
+await page.waitForURL(/\/ui\/connect\?returnTo=/);
+await page.getByLabel('API key').fill('test-key');
+await page.getByRole('button', { name: 'Connect', exact: true }).click();
+const stopButton = page.getByRole('button', { name: 'Stop loading' });
+await stopButton.waitFor();
+await stopButton.focus();
+await page.waitForTimeout(16500);
+assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'Stop loading', 'focus survives the staleness tick');
+await page.keyboard.press('Enter');
+await page.locator('.coverage').getByRole('button', { name: 'Continue loading' }).waitFor();
+assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'Continue loading', 'focus follows Stop → Continue');
+await fetch(`${BASE}/__slow?ms=0`);
+await page.keyboard.press('Enter');
+await page.getByText('scan complete').waitFor();
+
+step('fragment-only history changes keep the view; path changes with a fragment route');
+await appGo('/ui/connect#x');
+await page.getByRole('heading', { name: 'Connect to MemCan' }).waitFor();
+await appGo('/ui/dashboard');
+await page.getByRole('heading', { name: 'Dashboard' }).waitFor();
+await page.evaluate(() => {
+  document.querySelector('main h1').dataset.marker = 'kept';
+  location.hash = 'frag';
+});
+await page.waitForTimeout(300);
+assert.equal(await page.evaluate(() => document.querySelector('main h1')?.dataset.marker), 'kept', 'no re-render on hash change');
+await page.goBack();
+await page.waitForTimeout(300);
+assert.equal(await page.evaluate(() => document.querySelector('main h1')?.dataset.marker), 'kept');
+await page.goBack();
+await page.getByRole('heading', { name: 'Connect to MemCan' }).waitFor();
+
 step('disconnect clears key, data and storage; health-only dashboard still works');
 await page.getByRole('button', { name: 'Disconnect / forget key' }).click();
 await page.getByText('API connection cleared. Browser page login may remain active.').waitFor();

@@ -13,5 +13,5 @@ PLAYWRIGHT_CORE=/path/to/node_modules/playwright-core [CHROMIUM=/path/to/chrome]
 ```
 
 `mock-server.mjs` env: `MOCK_SESSIONS=1` (session-bearing MCP), `MOCK_SSE=1` (SSE replies),
-`MOCK_BASIC=1` (Basic Auth `ui:ui` on `/ui*`), `MOCK_SLOW_MS=<ms>`, `MOCK_HOST_GUARD=1` (every `/mcp`
+`MOCK_BASIC=1` (Basic Auth `ui:ui` on `/ui*`), `MOCK_SLOW_MS=<ms>` (delays task exports; also settable via `GET /__slow?ms=<ms>`), `MOCK_HOST_GUARD=1` (every `/mcp`
 call gets rmcp's `403 Forbidden: Host header is not allowed`).
