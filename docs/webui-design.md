@@ -1,6 +1,6 @@
 # MemCan web UI design
 
-Implement a static JavaScript SPA for one operator supervising agents across 10–30 projects. **Phase 1 ships read-only Tasks and Dashboard/status.** Preserve `/ui/tasks/<id>` links. No changes to core, MCP, health, authentication, or proxy configuration; the only server changes allowed are static asset serving, SPA fallback, and security headers within the existing UI module.
+Implement a static JavaScript SPA for one operator supervising agents across 10–30 projects. **Phase 1 ships read-only Tasks and Dashboard/status.** Preserve `/ui/tasks/<id>` links. For Phase 1, no changes to core, MCP, health, authentication, or proxy configuration; the only server changes allowed are static asset serving, SPA fallback, and security headers within the existing UI module.
 
 ## 1. Evidence and current usability
 
@@ -76,6 +76,8 @@ URL state wins over saved/default preferences. A bare Tasks route expands a chos
 ## 4. Phase 1 screens
 
 ### Connect
+
+This is the Phase 1 connection flow. [Section 12](#12-follow-up-authentication-and-authorization) proposes a later account login without browser-held master keys; it is not a P1 prerequisite.
 
 The browser's native Basic Auth challenge protects HTML and assets first. The SPA cannot replace it or reliably log it out. Once loaded, show an application connection form only when no usable MCP key exists; health can load independently.
 
@@ -303,6 +305,8 @@ UI response CSP: `default-src 'none'; script-src 'self'; style-src 'self'; conne
 
 ### MCP client contract
 
+Keep endpoint/credentials/auth-error handling inside `mcp.js`; the session transport seam is defined in [§12](#12-follow-up-authentication-and-authorization). P1 implements only the Bearer strategy below.
+
 Use same-origin `/mcp`, explicit Bearer Authorization, JSON Content-Type, Accept `application/json, text/event-stream`, `credentials:'omit'` (no browser-managed Basic credentials), `redirect:'error'`, and `cache:'no-store'`. Explicitly authored Authorization must be verified in browser tests. GET `/health` omits authorization. Asset requests use normal browser page authentication. See [Fetch credential behavior](https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API/Using_Fetch#including_credentials).
 
 1. POST JSON-RPC `initialize`, unique ID, `{protocolVersion:"2025-11-25",capabilities:{},clientInfo:{name:"memcan-webui",version:"1"}}`. Validate returned version against supported versions; do not guess compatibility.
@@ -401,3 +405,87 @@ API gaps requiring server changes for a stronger guarantee; none is a P1 depende
 - [ ] Given 320/768/1280 px viewport, both themes, reduced motion and zoom, controls remain reachable, titles readable and statuses non-color-dependent; required contrast is measured.
 - [ ] Network assertions show P1 calls only approved read tools plus MCP lifecycle; no task mutation, memory/indexing action or download-export UI appears.
 - [ ] Pure-module tests, mocked browser scenarios and actual UI-router smoke checks pass without live data; production Docker build requires no Node or CDN.
+
+## 12. Follow-up: authentication and authorization
+
+**Design only; not Phase 1.** Replace the two-credential flow with a UI login and server-side authorization. The browser must never receive `MEMCAN_API_KEY`. Scope: one MemCan instance and a small trusted operator group; no account self-registration or identity-management product. Agents keep their existing Bearer `/mcp` integration.
+
+### Decision and alternatives
+
+| Option | Benefit | Cost / decision |
+| --- | --- | --- |
+| **BFF `/ui/api/mcp`, opaque cookie session, server tool allowlist** | No API secret or bearer token readable by browser JS; immediate logout/revocation; roles enforced before dispatch | Adds login/session/policy code; same-origin XSS can still act as the signed-in user. **Recommended:** fits the existing Axum UI boundary and small deployment. |
+| Server-minted short-lived scoped tokens | Suitable for non-browser clients and independently hosted frontends | JS-held tokens remain stealable; refresh/revocation and audience/scope validation complicate `/mcp`. Not needed for a same-origin UI. |
+| Keep Basic Auth, proxy with username → role mapping | Smallest intermediate server change; removes the master key from the browser | Retains browser prompt, repeated credential transmission and unreliable logout; shared credentials weaken attribution. Optional transition only, not the target UX. |
+| OIDC / Traefik forward-auth | Central identity, MFA and account lifecycle when an IdP already exists | Additional service/configuration, callback/cookie policy and trusted-header boundary; identity alone does not authorize MCP tools. Defer; it can later supply a principal to the same BFF policy. |
+
+Use an **in-process BFF adapter**, not an open HTTP relay: reuse the existing typed tool dispatcher through a narrow internal interface. It needs no injected master key. If implementation constraints force HTTP forwarding, the destination must be a fixed private loopback service, with server-owned Bearer credentials; never accept client URLs or forward client Authorization/cookies upstream. Do not call back through the public Traefik router. Prefer reuse of the current MCP implementation over a second protocol implementation; keep session/auth state separate from MCP session IDs.
+
+### Identity, login and recovery
+
+Default rollout is explicit opt-in `MEMCAN_WEBUI_AUTH_MODE=session`; absence keeps current `basic` behavior. In session mode, an optional root-owned, read-only JSON users file contains `{username,password_hash,role,disabled}` records; hashes use Argon2id PHC encoding with unique salts (minimum 19 MiB, two iterations, parallelism one; benchmark higher cost under bounded concurrency). Do not place plaintext multi-user passwords in environment variables. Username is a stable audit identity; shared accounts cannot identify a person. See [OWASP password storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html).
+
+When no users file is configured, existing non-empty `MEMCAN_WEBUI_USERNAME/PASSWORD` bootstraps one **viewer** in session mode; hash the password at startup and warn that the plaintext environment secret should be replaced. Operators deliberately assign editor/admin in the users file. File presence takes precedence; unreadable/invalid file, duplicate users, unknown roles or missing credentials fail closed, never fall back silently to Basic/master-key access. Initial release reloads users on restart, invalidating all sessions; no live account-management UI. Basic mode retains its current mounting rules.
+
+`GET /ui/login` renders an accessible username/password form: “Sign in to MemCan”, “Your account determines what you can view or change”, **Sign in**, and “You will return to: task 81cbe927…” (never disclose a task title before authentication). Support paste, password managers, `autocomplete=username/current-password`, visible password toggle, generic invalid-credentials message and Retry-After feedback; never reveal whether an account exists. No remember-me option initially; browser password saving is distinct from a persistent session. Session restoration by browsers never overrides server expiry.
+
+Deep link flow (HTML mirror includes a sequence diagram):
+
+1. Browser → `GET /ui/tasks/<id>`; server validates/normalizes the relative destination and redirects an unauthenticated navigation to `/ui/login?returnTo=…`. Accept only known `/ui/` application routes and query keys; reject authority URLs, backslashes, control characters and auth endpoints. Never include secrets in returnTo.
+2. Browser → `GET /ui/auth/session`: obtain a short-lived pre-login CSRF challenge bound to an opaque `__Host-memcan_ui_pre` cookie with the same security flags as the session cookie. Login assets, login page and this bounded bootstrap endpoint are public; no task data is embedded. All application HTML/assets remain session-gated except the explicitly allowlisted login assets.
+3. Browser → `POST /ui/auth/login` with credentials and CSRF proof. Server checks origin/rate limits, verifies hash, destroys pre-auth state and creates a fresh session/CSRF token. Respond with cookie and validated destination, never an API key; client replaces the login history entry and opens the intended task.
+4. Browser → `POST /ui/api/mcp` with cookie and CSRF header. BFF authenticates, authorizes method/tool/arguments, then dispatches internally; return the normal MCP envelope. Unauthorized API requests return JSON 401 (not redirects/HTML/Basic challenges).
+5. Browser → `POST /ui/auth/logout`; revoke session, clear cookie using the same Path/flags, return to login. Clear cached records/drafts and abort in-flight reads in the client. Server ignores cached browser Basic credentials in session mode, so they cannot silently log the user back in.
+6. On expiry, stop polling, clear protected data, retain only the validated destination in RAM, and show “Session expired. Sign in to continue.” Warn before expiry while editing; no persistent draft storage, no automatic replay of writes. Other tabs clear on next 401 and may receive a credential-free logout signal; never share tokens/data across tabs.
+
+### Authorization boundary
+
+**Deny by default on every request.** `tools/list` returns only role- and phase-enabled tools, but discovery/UI visibility is not enforcement. Parse JSON-RPC once, reject batches/unknown methods, bound request size and concurrency, validate typed arguments before dispatch. Allow only `initialize`, `notifications/initialized`, `tools/list` and authorized `tools/call`; no arbitrary resources/prompts/import/admin escape hatch. Reject unsupported notifications and validate negotiated protocol/session ownership. UI role and enabled feature phase are intersected: enabling session auth does not enable P2–P4 writes.
+
+| Role | Tool allowlist (cumulative; only when its phase is enabled) |
+| --- | --- |
+| Viewer | P1: `get_todo`, `list_todos`, `export_collection` (todos only), `list_collections`, `get_queue_status`. P3: `get_memories`, `count_memories`, `search_memories`, `search`, export memories. P4: `search_code`, `search_standards`, export code/standards. Validate collection names and fixed equality predicates; enforce pagination/size limits. |
+| Editor | Viewer + P2 `add_todo`, `update_todo`, `complete_todo`; P3 `add_memory`, `update_memory`. No deletion/index administration. |
+| Admin | Editor + P2 `delete_todo`; P3 `delete_memory`; P4 `index_code_files`, `index_standards`, `delete_code_records`, `drop_indexed_standards`. `_import_records` and every unlisted tool remain denied. |
+
+Deletion requires admin, an exact scope/record confirmation and password reauthentication within five minutes, enforced by the BFF, not only a dialog. `POST /ui/auth/reauth` checks the same password/CSRF/rate controls and rotates the session; it grants no additional role. Issue via `POST /ui/auth/confirm` a short-lived, single-use server confirmation nonce bound to session, tool and canonical arguments; no replay after uncertain results. Bulk actions authorize each item and report individual outcomes. Audit success, denial and uncertain outcomes. Existing core restrictions (including destructive-tool configuration guards) remain effective. Role changes/revocation invalidate sessions rather than trusting a role cached forever in a cookie.
+
+Project restrictions are an **optional later extension**, not a claim of isolation in the first auth release: roles initially see all projects/scopes. A project ACL must constrain reads, export/search arguments and results, ID lookups, dependency labels, queue, counts and writes on the server; verify record ownership before ID operations and prevent project/user_id overrides. Hide global counts/queue where safe scoping is unavailable. Do not treat a client project filter or raw export SQL as authorization; disable unsupported scoped tools until core query support exists.
+
+### Session and deployment security
+
+- Opaque 256-bit random session ID; store only its digest plus principal, role/policy version, CSRF secret, creation/last-activity timestamps and recent-reauth time. Start with a bounded in-memory store and per-user session cap: restart logs everyone out. A persisted shared store is deferred until multi-replica/availability needs justify it; it needs TTLs, atomic rotation/revocation and secret protection. Never use the existing queue/history as a session store.
+- Cookie: `__Host-memcan_ui=<opaque>; Path=/; HttpOnly; Secure; SameSite=Strict`, no Domain or Max-Age. The `__Host-` prefix requires Path=/; it cannot be narrowed to `/ui`. `/mcp` ignores it and continues to require its existing Bearer auth. Use a dedicated origin; the cookie path does not isolate sibling apps. See [MDN Set-Cookie](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie).
+- Proposed defaults: idle 30 minutes, absolute 8 hours; background polls do not extend idle lifetime. A rate-limited `POST /ui/auth/activity` endpoint extends idle only after foreground user interaction; absolute expiry remains fixed. Rotate at login, reauthentication and privilege changes; invalidate the old ID atomically and never reissue it from stale responses. BFF requests bind to the current principal; serialize reauth with mutation submission. Logout revokes future calls but cannot cancel a write already dispatched. These are project policy choices informed by [OWASP session management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html).
+- Require exact configured Origin plus synchronizer CSRF token on **all UI POSTs**, including MCP reads, login, logout, activity, reauth and confirmation. Pre-login challenge expires after five minutes and is replaced on login. Send the CSRF token in `X-CSRF-Token`, keep it in RAM, never a URL; do not conflate it with the session cookie. Reject cross-site Fetch Metadata where supplied; JSON-only APIs, no permissive CORS, no GET mutations. SameSite is defense in depth, not the sole control. See [OWASP CSRF prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
+- App login controls: five failed attempts per normalized username per 15 minutes with bounded backoff, generic responses and equivalent hash work for unknown users; additionally cap all login attempts and Argon2 concurrency before hashing. Avoid permanent account lockout. Traefik adds per-client limits using only trusted proxy-derived IPs. Existing 10 rps/burst 20 UI limiting alone is not sufficient brute-force protection. Rate-limit the bootstrap/session store too; return 429 and Retry-After.
+- **TLS required in session mode**, including local testing via HTTPS. Plain HTTP serves a non-sensitive “HTTPS required” explanation without credential inputs and rejects login/API POSTs; no insecure-cookie fallback or “continue anyway”. Redirect only safe GET navigation to the configured HTTPS origin before secrets are entered. Behind Traefik, trust forwarding headers solely from configured proxy CIDRs, strip spoofed incoming identity/proto headers, block public access to the app port, and validate Host/Origin against the configured public origin. Do not infer TLS from arbitrary `X-Forwarded-Proto`. Deploy HSTS on the HTTPS host once operational.
+- Emit structured UI audit records: UTC time, request ID, stable username, role, tool, target IDs/project/scope, authorization decision, outcome and returned operation ID. Log before dispatch and after result; record timeout as uncertain and correlate async completion where possible. Exclude passwords, cookies, CSRF/API keys, record contents and raw arguments. Restrict log access/retention; shared bootstrap login cannot attribute individual humans. Make audit-storage failure visible and fail closed for destructive actions if an audit event cannot be recorded.
+
+Keep the higher-priority `/ui` Traefik router (including auth and `/ui/api/mcp`) free of the master-Bearer middleware; preserve IP allowlist and rate limits. `/mcp` retains both current application Bearer enforcement and proxy protection; `/health` retains its existing routing. Do not add a second Traefik Basic challenge in session mode. OIDC later requires trusted, stripped/replaced identity headers and a local role mapping; no browser-supplied identity headers. A top-level same-origin landing page can recover a session cookie withheld on an external deep link by Strict semantics; never expose data in that first unauthenticated response.
+
+Preserve P1 CSP and text-only rendering: external same-origin JS/CSS, `connect-src 'self'`, no inline script/eval. Login is JS-fetch based, so `form-action 'none'` can stay; a future native form fallback needs an explicit change to `'self'` plus CSRF validation. Keep `frame-ancestors 'none'`, `no-store`, `nosniff`, no-referrer on login/API responses too. The standalone visual HTML is a documentation artifact with inline CSS, not a production CSP template.
+
+### Change map and rollout
+
+| Proposed location / configuration | Responsibility |
+| --- | --- |
+| `rs/memcan-server/src/ui/mod.rs`; new `auth.rs`, `session.rs`, `policy.rs`, `api.rs` | Route separation, credentials, cookies, sessions/CSRF, rate limits, role/argument enforcement, internal MCP adapter, audit hooks; UI-local typed errors. |
+| `rs/memcan-server/src/serve.rs` | Expose/pass a narrow typed dispatcher/shared context into UI router; preserve `/mcp` Bearer middleware and protocol behavior. No generic bypass route. |
+| `rs/memcan-core/src/config.rs` | Parse/validate/redact new settings only; no domain/auth changes to core. |
+| `ui/static/mcp.js`, connection view and shell | Transport strategy, login/expiry/logout; unchanged data adapters and task views. |
+| `docker-compose.yml`, deployment docs/tests | Users-file secret mount, HTTPS/trusted-proxy settings, explicit auth mode, router/CSRF/role tests. |
+| `MEMCAN_WEBUI_AUTH_MODE=basic\|session` (default basic) | Explicit backward-compatible rollout; no per-request downgrade. |
+| `MEMCAN_WEBUI_USERS_FILE` (optional) | Absolute path to read-only JSON credential/role file; existing username/password fallback only when unset. |
+| `MEMCAN_WEBUI_PUBLIC_ORIGIN` (required in session mode) | Single canonical HTTPS origin for host/origin/return checks. |
+| `MEMCAN_WEBUI_TRUSTED_PROXIES` (empty by default) | Explicit proxy CIDRs allowed to assert forwarding metadata. |
+| `MEMCAN_WEBUI_SESSION_IDLE_SECS=1800`, `MEMCAN_WEBUI_SESSION_ABSOLUTE_SECS=28800` | Bounded, validated timeouts; idle must not exceed absolute. No remember-me setting initially. |
+
+**P1 migration seam:** centralize endpoint, credential mode, auth headers and auth-error handling in `mcp.js` behind a transport interface (`connect`, `call`, `disconnect`, connection state). P1 uses Bearer `/mcp`, `credentials:'omit'` and RAM key. Session mode uses same-origin `/ui/api/mcp`, `credentials:'same-origin'`, CSRF header and no Authorization. An allowlisted, non-sensitive server bootstrap auth-mode value selects the strategy; never guess by probing credentials or downgrade to master-key Connect after a session 401. Preserve JSON-RPC envelopes, data normalization and route state. A browser-readable `GET /ui/auth/session` returns principal/role, expiry and CSRF token only with a valid session; its unauthenticated form returns only pre-login challenge state. If this same-origin bootstrap recovers an existing session after an external deep link, return directly to the validated destination without prompting for the password again.
+
+1. **P1 now:** ship the current read-only design and transport seam; no new server auth or proxy dependency.
+2. **Auth foundation:** implement/test session store, TLS/CSRF/login and BFF viewer allowlist behind opt-in mode. Verify login → original task, revocation/restart, no API key in network/DOM/storage, forged role/project/JSON-RPC requests, and unchanged agent Bearer calls. Do not offer writes yet.
+3. **Deployment switch:** configure TLS/users, set session mode, restart and invalidate old browser state. Remove Connect key entry in this mode. Rollback is an explicit operator mode change/restart to Basic; users are told the old separate-key flow is restored. Never auto-fallback on failure.
+4. **Before P2 writes:** enable editor/admin policy, reauth/confirmations, per-item audit and failure reconciliation; test forged CSRF, editor deletion, expiry mid-edit and ambiguous mutation timeouts. P3/P4 extend the explicit allowlist only with their feature rollout. Decide OIDC/project ACLs separately.
+
+Open product decisions (recommended defaults above keep implementation unblocked): Is one shared viewer sufficient or are named users needed immediately? Which operators may edit/delete? Is all-project visibility acceptable? Is an IdP already maintained? Are restart logout and 30-minute/8-hour limits acceptable? Who owns TLS and audit retention?
