@@ -1,91 +1,71 @@
-//! Read-only task pages with fail-closed authentication and escaped HTML views.
+//! Static single-page web UI with fail-closed Basic Auth.
 //!
-//! Handlers render task fields only; settings and internal errors never enter page bodies.
-
-mod detail;
-mod list;
-#[cfg(test)]
-mod test_support;
+//! Serves only embedded, allowlisted assets. The browser loads all task and server data
+//! itself from `/health` and `/mcp`; nothing here reads the vector store.
 
 use axum::{
     Router,
-    extract::Request,
-    http::{HeaderValue, StatusCode, header},
+    extract::{Path, Request},
+    http::{HeaderValue, StatusCode, Uri, header},
     middleware,
     middleware::Next,
     response::{IntoResponse, Response},
     routing::get,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use chrono::Utc;
-use maud::{DOCTYPE, Markup, PreEscaped, html};
 use memcan_core::config::Settings;
-use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use subtle::ConstantTimeEq;
 use tracing::warn;
 
 const AUTH_CHALLENGE: HeaderValue = HeaderValue::from_static("Basic realm=\"MemCan Tasks\"");
 const CONTENT_SECURITY_POLICY: HeaderValue = HeaderValue::from_static(
-    "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
+    "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
 );
 const MAX_AUTH_HEADER_LEN: usize = 512;
-const PATH_SEGMENT_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
-    .remove(b'-')
-    .remove(b'.')
-    .remove(b'_')
-    .remove(b'~');
-const STYLES: &str = r#"
-:root {
-  color-scheme: light;
-  --paper: #f2f5f4;
-  --paper-raised: #ffffff;
-  --ink: #15181a;
-  --ink-soft: #454f4d;
-  --ink-faint: #6d7876;
-  --line: #d7deda;
-  --line-soft: #e6ebe8;
-  --accent: #2f6a64;
-  --danger: #a4432f;
-  --shadow: 0 1px 2px rgba(21, 24, 26, .04), 0 6px 20px rgba(21, 24, 26, .06);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-}
-* { box-sizing: border-box; }
-body { margin: 0; color: var(--ink); background: var(--paper); }
-header, main { width: min(72rem, calc(100% - 2rem)); margin-inline: auto; }
-header { padding-block: 1rem; }
-main { padding-bottom: 3rem; }
-a { color: var(--accent); }
-a:focus-visible, button:focus-visible, select:focus-visible, input[type="checkbox"]:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-.panel { background: var(--paper-raised); border: 1px solid var(--line); border-radius: .5rem; padding: 1rem; box-shadow: var(--shadow); }
-.filters { margin-block: 1rem; display: flex; flex-wrap: wrap; gap: .65rem; align-items: end; }
-label, legend { font-weight: 650; }
-fieldset { min-width: 0; margin: 0; border: 1px solid var(--line); border-radius: .35rem; padding: .35rem .5rem .5rem; }
-.status-options { display: flex; flex-wrap: wrap; gap: .35rem .75rem; }
-.status-option { display: inline-flex; gap: .3rem; align-items: center; font-weight: 500; }
-input[type="checkbox"] { accent-color: var(--accent); }
-select, button { font: inherit; border: 1px solid var(--line); border-radius: .35rem; padding: .35rem .5rem; }
-select { color: var(--ink); background: var(--paper-raised); }
-button { color: var(--paper-raised); background: var(--accent); border-color: var(--accent); cursor: pointer; }
-.table-wrap { overflow-x: auto; padding: 0; }
-table { width: 100%; border-collapse: collapse; }
-th, td { padding: .7rem; border-bottom: 1px solid var(--line-soft); text-align: left; vertical-align: top; }
-th { color: var(--ink-soft); white-space: nowrap; }
-.task-count { color: var(--ink-soft); }
-.task-detail { margin-top: 1rem; }
-.details { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .5rem 1rem; }
-.details dt { font-weight: 700; }
-.details dd { margin: 0; overflow-wrap: anywhere; }
-.description { white-space: pre-wrap; overflow-wrap: anywhere; }
-.badge { display: inline-flex; gap: .35rem; align-items: center; border-radius: 999px; padding: .1rem .55rem; font-size: .875rem; font-weight: 650; }
-.status-pending, .priority-low { background: #e3e9e6; color: #354541; }
-.status-in-progress, .priority-medium { background: #dce8e6; color: #28514c; }
-.status-blocked, .priority-high { background: #f0ded9; color: #743829; }
-.status-done { background: #dce8df; color: #2f5940; }
-.status-postponed { background: #e8e6dc; color: #5d5740; }
-.status-cancelled { background: #eee0dc; color: #793f32; }
-.neutral { background: #e7e9e7; color: #4f5957; }
-"#;
+
+const HTML: &str = "text/html; charset=utf-8";
+const JAVASCRIPT: &str = "text/javascript; charset=utf-8";
+const CSS: &str = "text/css; charset=utf-8";
+const SVG: &str = "image/svg+xml";
+
+const SHELL: &str = include_str!("static/index.html");
+
+/// Embedded assets served under `/ui/static/<path>`; anything else there is a 404.
+const ASSETS: &[(&str, &str, &str)] = &[
+    ("app.js", JAVASCRIPT, include_str!("static/app.js")),
+    (
+        "components.js",
+        JAVASCRIPT,
+        include_str!("static/components.js"),
+    ),
+    ("data.js", JAVASCRIPT, include_str!("static/data.js")),
+    ("mcp.js", JAVASCRIPT, include_str!("static/mcp.js")),
+    ("prefs.js", JAVASCRIPT, include_str!("static/prefs.js")),
+    ("router.js", JAVASCRIPT, include_str!("static/router.js")),
+    ("store.js", JAVASCRIPT, include_str!("static/store.js")),
+    (
+        "views/connect.js",
+        JAVASCRIPT,
+        include_str!("static/views/connect.js"),
+    ),
+    (
+        "views/dashboard.js",
+        JAVASCRIPT,
+        include_str!("static/views/dashboard.js"),
+    ),
+    (
+        "views/task.js",
+        JAVASCRIPT,
+        include_str!("static/views/task.js"),
+    ),
+    (
+        "views/tasks.js",
+        JAVASCRIPT,
+        include_str!("static/views/tasks.js"),
+    ),
+    ("styles.css", CSS, include_str!("static/styles.css")),
+    ("icon.svg", SVG, include_str!("static/icon.svg")),
+];
 
 /// Build the authenticated tasks UI when both shared credentials are configured.
 pub fn router(settings: &Settings) -> Option<Router> {
@@ -123,10 +103,10 @@ pub fn router(settings: &Settings) -> Option<Router> {
     }
     // Login throttling belongs at the TLS proxy layer, where trusted client IPs are available.
     let routes = Router::new()
-        .route("/ui", get(detail::redirect))
-        .route("/ui/", get(detail::redirect))
-        .route("/ui/tasks", get(list::tasks))
-        .route("/ui/tasks/{id}", get(detail::task))
+        .route("/ui", get(shell))
+        .route("/ui/", get(shell))
+        .route("/ui/static/{*path}", get(asset))
+        .route("/ui/{*rest}", get(shell))
         .layer(middleware::from_fn(move |request: Request, next: Next| {
             let expected = expected.clone();
             async move {
@@ -178,82 +158,40 @@ async fn security_headers(request: Request, next: Next) -> Response {
     response
         .headers_mut()
         .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    response.headers_mut().insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
     response
 }
 
-pub(super) fn layout(title: &str, body: Markup) -> Markup {
-    html! {
-        (DOCTYPE)
-        html lang="en" {
-            head {
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1";
-                meta name="color-scheme" content="light";
-                title { (title) }
-                style { (PreEscaped(STYLES)) }
-            }
-            body {
-                header {
-                    nav aria-label="Primary" { a href="/ui/tasks" { "MemCan · Tasks" } }
-                }
-                main { (body) }
-            }
+/// Routes the single-page app renders; any other `/ui/*` path gets the shell with a 404
+/// status so the app can show its own Not found page.
+fn is_app_route(path: &str) -> bool {
+    matches!(
+        path,
+        "/ui" | "/ui/" | "/ui/tasks" | "/ui/tasks/" | "/ui/dashboard" | "/ui/connect"
+    ) || path
+        .strip_prefix("/ui/tasks/")
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
+async fn shell(uri: Uri) -> Response {
+    let status = if is_app_route(uri.path()) {
+        StatusCode::OK
+    } else {
+        StatusCode::NOT_FOUND
+    };
+    (status, [(header::CONTENT_TYPE, HTML)], SHELL).into_response()
+}
+
+async fn asset(Path(path): Path<String>) -> Response {
+    match ASSETS.iter().find(|(name, _, _)| *name == path) {
+        Some((_, content_type, body)) => {
+            ([(header::CONTENT_TYPE, *content_type)], *body).into_response()
         }
+        None => StatusCode::NOT_FOUND.into_response(),
     }
-}
-
-pub(super) fn status_badge(status: &str) -> Markup {
-    let (class, glyph) = match status {
-        "pending" => ("status-pending", "○"),
-        "in_progress" => ("status-in-progress", "◐"),
-        "blocked" => ("status-blocked", "●"),
-        "done" => ("status-done", "✓"),
-        "postponed" => ("status-postponed", "⏸"),
-        "cancelled" => ("status-cancelled", "✕"),
-        _ => ("neutral", "◆"),
-    };
-    html! { span class={ "badge " (class) } { span aria-hidden="true" { (glyph) } " " (status) } }
-}
-
-pub(super) fn priority_badge(priority: &str) -> Markup {
-    let (class, glyph) = match priority {
-        "high" => ("priority-high", "▲"),
-        "medium" => ("priority-medium", "■"),
-        "low" => ("priority-low", "▽"),
-        _ => ("neutral", "◆"),
-    };
-    html! { span class={ "badge " (class) } { span aria-hidden="true" { (glyph) } " " (priority) } }
-}
-
-pub(super) fn encode_task_id(id: &str) -> impl std::fmt::Display + '_ {
-    utf8_percent_encode(id, PATH_SEGMENT_ENCODE_SET)
-}
-
-pub(super) fn url_with_query(path: &str, params: &[(String, String)]) -> String {
-    let mut url = String::from(path);
-    for (index, (key, value)) in params.iter().enumerate() {
-        url.push(if index == 0 { '?' } else { '&' });
-        url.push_str(&utf8_percent_encode(key, PATH_SEGMENT_ENCODE_SET).to_string());
-        url.push('=');
-        url.push_str(&utf8_percent_encode(value, PATH_SEGMENT_ENCODE_SET).to_string());
-    }
-    url
-}
-
-pub(super) fn fmt_date_long(value: &str) -> String {
-    chrono::DateTime::parse_from_rfc3339(value)
-        .map(|date| {
-            date.with_timezone(&Utc)
-                .format("%Y-%m-%d %H:%M UTC")
-                .to_string()
-        })
-        .unwrap_or_else(|_| value.to_string())
-}
-
-pub(super) fn fmt_date_short(value: &str) -> String {
-    chrono::DateTime::parse_from_rfc3339(value)
-        .map(|date| date.with_timezone(&Utc).format("%m-%d").to_string())
-        .unwrap_or_else(|_| value.to_string())
 }
 
 #[cfg(test)]
@@ -372,20 +310,32 @@ mod tests {
         }
     }
 
+    async fn body_text(response: Response) -> String {
+        String::from_utf8(
+            to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap()
+    }
+
+    fn authorized(uri: &str) -> Request<Body> {
+        request(uri, Some(&basic("testuser:testpass")))
+    }
+
     #[tokio::test]
     async fn webui_auth_accepts_full_user_password_pair() {
         for authorization in [
             basic("testuser:testpass"),
             basic("testuser:testpass").replacen("Basic", "basic", 1),
         ] {
-            // `/ui` needs no VectorStore extension, so a real 302 here proves the
-            // authorized path actually succeeds (not just "wasn't rejected").
             let response = mounted(&credentials())
-                .oneshot(request("/ui", Some(&authorization)))
+                .oneshot(request("/ui/tasks", Some(&authorization)))
                 .await
                 .unwrap();
 
-            assert_eq!(response.status(), StatusCode::FOUND);
+            assert_eq!(response.status(), StatusCode::OK);
         }
     }
 
@@ -399,10 +349,10 @@ mod tests {
         assert_eq!(oversized.status(), StatusCode::UNAUTHORIZED);
 
         let correct = mounted(&credentials())
-            .oneshot(request("/ui/tasks", Some(&basic("testuser:testpass"))))
+            .oneshot(authorized("/ui/tasks"))
             .await
             .unwrap();
-        assert_ne!(correct.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(correct.status(), StatusCode::OK);
 
         let incorrect = mounted(&credentials())
             .oneshot(request("/ui/tasks", Some(&basic("testuser:wrong"))))
@@ -446,170 +396,250 @@ mod tests {
             webui_password: Some("test:pass".into()),
             ..Settings::default()
         };
-        // `/ui` needs no VectorStore extension, so a real 302 proves the colon-bearing
-        // password was accepted. Against `/ui/tasks` the missing extension returns 500,
-        // which `assert_ne!(.., UNAUTHORIZED)` would accept without proving acceptance.
         let response = mounted(&settings)
-            .oneshot(request("/ui", Some(&basic("testuser:test:pass"))))
+            .oneshot(request("/ui/tasks", Some(&basic("testuser:test:pass"))))
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]
-    async fn webui_roots_redirect_to_tasks() {
-        for uri in ["/ui", "/ui/"] {
+    async fn webui_app_routes_serve_the_shell_including_legacy_task_links() {
+        for uri in [
+            "/ui",
+            "/ui/",
+            "/ui/tasks",
+            "/ui/tasks/",
+            "/ui/tasks?project=a%27b&status=pending&sort=created",
+            "/ui/tasks/81cbe927-0000-4000-8000-000000000000",
+            "/ui/tasks/a%2Fb%3Fc?project=memcan",
+            "/ui/dashboard",
+            "/ui/dashboard?project=x",
+            "/ui/connect?returnTo=%2Fui%2Ftasks",
+        ] {
             let response = mounted(&credentials())
-                .oneshot(request(uri, Some(&basic("testuser:testpass"))))
+                .oneshot(authorized(uri))
                 .await
                 .unwrap();
-
-            assert_eq!(response.status(), StatusCode::FOUND, "{uri}");
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
             assert_eq!(
-                response.headers().get(header::LOCATION).unwrap(),
-                "/ui/tasks"
+                response.headers().get(header::CONTENT_TYPE).unwrap(),
+                "text/html; charset=utf-8",
+                "{uri}"
             );
+            assert_eq!(body_text(response).await, SHELL, "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn webui_unknown_app_routes_serve_the_shell_as_not_found() {
+        for uri in [
+            "/ui/memories",
+            "/ui/tasks/a/edit",
+            "/ui/static",
+            "/ui/unknown/deep/path",
+        ] {
+            let response = mounted(&credentials())
+                .oneshot(authorized(uri))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+            assert_eq!(body_text(response).await, SHELL, "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn webui_assets_are_served_with_their_mime_type() {
+        for (path, content_type, body) in ASSETS {
+            let response = mounted(&credentials())
+                .oneshot(authorized(&format!("/ui/static/{path}")))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
             assert_eq!(
-                response.headers().get(header::CACHE_CONTROL).unwrap(),
-                "no-store"
+                response.headers().get(header::CONTENT_TYPE).unwrap(),
+                content_type,
+                "{path}"
+            );
+            assert_eq!(body_text(response).await, *body, "{path}");
+        }
+        let js = mounted(&credentials())
+            .oneshot(authorized("/ui/static/app.js"))
+            .await
+            .unwrap();
+        assert_eq!(
+            js.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/javascript; charset=utf-8"
+        );
+    }
+
+    #[tokio::test]
+    async fn webui_unknown_or_traversing_asset_paths_are_plain_404s() {
+        for uri in [
+            "/ui/static/missing.js",
+            "/ui/static/../mod.rs",
+            "/ui/static/%2e%2e/mod.rs",
+            "/ui/static/views/../app.js",
+            "/ui/static/index.html",
+            "/ui/static/views/",
+            "/ui/static/APP.JS",
+        ] {
+            let response = mounted(&credentials())
+                .oneshot(authorized(uri))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+            assert!(
+                response.headers().get(header::CONTENT_TYPE).is_none(),
+                "{uri} must not fall back to HTML"
             );
         }
     }
 
     #[tokio::test]
-    async fn webui_auth_runs_before_ui_redirect() {
-        for uri in ["/ui", "/ui/"] {
-            let unauthorized = mounted(&credentials())
+    async fn webui_assets_and_shell_require_basic_auth() {
+        for uri in [
+            "/ui/static/app.js",
+            "/ui/static/styles.css",
+            "/ui/tasks/x",
+            "/ui/nope",
+        ] {
+            let response = mounted(&credentials())
                 .oneshot(request(uri, None))
                 .await
                 .unwrap();
-            assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED, "{uri}");
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{uri}");
+            assert!(body_text(response).await.is_empty(), "{uri}");
         }
     }
 
     #[tokio::test]
-    async fn webui_security_headers_cover_success_and_auth_failure() {
-        let authorized = basic("testuser:testpass");
-        // `/ui` needs no VectorStore extension, so the expected-status assertion below
-        // proves the authorized case is a real success, not a masked handler failure.
-        for (authorization, expected_status) in [
-            (None, StatusCode::UNAUTHORIZED),
-            (Some(authorized.as_str()), StatusCode::FOUND),
-        ] {
-            let response = mounted(&credentials())
-                .oneshot(request("/ui", authorization))
+    async fn webui_routes_and_assets_are_absent_without_credentials() {
+        for uri in ["/ui/static/app.js", "/ui/tasks", "/ui/dashboard"] {
+            let response = mounted(&Settings::default())
+                .oneshot(authorized(uri))
                 .await
                 .unwrap();
-            assert_eq!(response.status(), expected_status);
-            assert_eq!(
-                response.headers().get("x-content-type-options").unwrap(),
-                "nosniff"
-            );
-            assert_eq!(
-                response.headers().get("content-security-policy").unwrap(),
-                "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
-            );
-            assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
-            assert_eq!(response.headers().get("pragma").unwrap(), "no-cache");
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
         }
     }
 
     #[tokio::test]
-    async fn webui_has_no_static_asset_route() {
-        let response = mounted(&credentials())
-            .oneshot(request(
-                "/ui/static/style.css",
-                Some(&basic("testuser:testpass")),
-            ))
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    async fn webui_does_not_capture_api_paths() {
+        for uri in ["/mcp", "/health"] {
+            let response = mounted(&credentials())
+                .oneshot(authorized(uri))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+            assert!(response.headers().get(header::CONTENT_TYPE).is_none());
+        }
     }
 
-    #[test]
-    fn webui_layout_and_badges_are_semantic_script_free_and_escape_unknown_values() {
-        let rendered = layout(
-            "Tasks",
-            maud::html! {
-                h1 { "Tasks" }
-                (status_badge("<script>future</script>"))
-                (priority_badge("urgent-plus"))
-            },
-        )
-        .into_string();
-
-        assert!(rendered.starts_with("<!DOCTYPE html>"));
-        assert!(rendered.contains("<html lang=\"en\">"));
-        assert_eq!(rendered.matches("<main").count(), 1);
-        assert_eq!(rendered.matches("<style").count(), 1);
-        assert!(!rendered.contains("<script"));
-        assert!(rendered.contains("&lt;script&gt;future&lt;/script&gt;"));
-        assert!(rendered.contains("urgent-plus"));
-        for token in [
-            "--paper: #f2f5f4",
-            "--paper-raised: #ffffff",
-            "--ink: #15181a",
-            "--ink-soft: #454f4d",
-            "--ink-faint: #6d7876",
-            "--line: #d7deda",
-            "--line-soft: #e6ebe8",
-            "--accent: #2f6a64",
-            "--danger: #a4432f",
-            "--shadow: 0 1px 2px rgba(21, 24, 26, .04), 0 6px 20px rgba(21, 24, 26, .06)",
-            "color-scheme: light",
-            "input[type=\"checkbox\"]:focus-visible",
+    #[tokio::test]
+    async fn webui_security_headers_cover_shell_assets_and_auth_failure() {
+        for (uri, authorization, expected_status) in [
+            ("/ui/tasks", None, StatusCode::UNAUTHORIZED),
+            (
+                "/ui/tasks",
+                Some(basic("testuser:testpass")),
+                StatusCode::OK,
+            ),
+            (
+                "/ui/static/app.js",
+                Some(basic("testuser:testpass")),
+                StatusCode::OK,
+            ),
+            (
+                "/ui/static/nope.js",
+                Some(basic("testuser:testpass")),
+                StatusCode::NOT_FOUND,
+            ),
         ] {
-            assert!(rendered.contains(token), "missing theme token {token}");
+            let response = mounted(&credentials())
+                .oneshot(request(uri, authorization.as_deref()))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected_status, "{uri}");
+            let headers = response.headers();
+            assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
+            assert_eq!(
+                headers.get("content-security-policy").unwrap(),
+                "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+            );
+            assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+            assert_eq!(headers.get("pragma").unwrap(), "no-cache");
+            assert_eq!(headers.get("referrer-policy").unwrap(), "no-referrer");
         }
-        for old_theme in [
-            "color-scheme: light dark",
-            "prefers-color-scheme",
-            "system-ui, sans-serif",
-            "#1f2933",
-            "#f5f7fa",
-            "#075985",
-            "#f59e0b",
-            "#cbd5e1",
-            "#475569",
-            "#e2e8f0",
-            "#dbeafe",
-            "#fee2e2",
-            "#dcfce7",
-            "#334155",
-            "#1e3a8a",
-            "#7f1d1d",
-            "#14532d",
-            "#e5e7eb",
-            "#374151",
-            "#111827",
-            "#1f2937",
-            "#7dd3fc",
-        ] {
+    }
+
+    /// Every asset the shell or a module references must be in the allowlist.
+    #[test]
+    fn webui_shell_and_module_references_resolve_to_embedded_assets() {
+        let names: Vec<&str> = ASSETS.iter().map(|(name, _, _)| *name).collect();
+        let mut referenced = Vec::new();
+        for part in SHELL.split("/ui/static/").skip(1) {
+            referenced.push(part.split('"').next().unwrap().to_string());
+        }
+        for (name, _, body) in ASSETS.iter().filter(|(name, _, _)| name.ends_with(".js")) {
+            let dir = name.rsplit_once('/').map_or("", |(dir, _)| dir);
+            for line in body.lines().filter(|line| line.contains(" from '")) {
+                let target = line
+                    .split(" from '")
+                    .nth(1)
+                    .unwrap()
+                    .split('\'')
+                    .next()
+                    .unwrap();
+                let resolved = if let Some(rest) = target.strip_prefix("../") {
+                    rest.to_string()
+                } else if let Some(rest) = target.strip_prefix("./") {
+                    if dir.is_empty() {
+                        rest.to_string()
+                    } else {
+                        format!("{dir}/{rest}")
+                    }
+                } else {
+                    panic!("{name} imports a non-relative module {target}");
+                };
+                referenced.push(resolved);
+            }
+        }
+        assert!(referenced.len() > ASSETS.len());
+        for reference in referenced {
             assert!(
-                !rendered.contains(old_theme),
-                "old theme remains: {old_theme}"
+                names.contains(&reference.as_str()),
+                "missing asset {reference}"
             );
         }
-        assert!(rendered.contains(
-            "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif"
-        ));
-        assert!(rendered.contains(
-            "a:focus-visible, button:focus-visible, select:focus-visible, input[type=\"checkbox\"]:focus-visible"
-        ));
-        assert!(!rendered.contains("outline:none"));
-        assert!(!rendered.contains("outline: none"));
+        assert!(
+            ASSETS.len() + 1 < 20,
+            "initial asset fan-out must stay under the proxy burst"
+        );
     }
 
     #[test]
-    fn webui_date_helpers_format_rfc3339_and_preserve_invalid_values() {
-        assert_eq!(fmt_date_short("2026-07-15T13:42:00Z"), "07-15");
-        assert_eq!(
-            fmt_date_long("2026-07-15T13:42:00+00:00"),
-            "2026-07-15 13:42 UTC"
-        );
-        assert_eq!(fmt_date_short("not-a-date"), "not-a-date");
-        assert_eq!(fmt_date_long("not-a-date"), "not-a-date");
+    fn webui_shell_has_no_inline_script_or_style() {
+        assert!(SHELL.contains("<script type=\"module\" src=\"/ui/static/app.js\"></script>"));
+        assert_eq!(SHELL.matches("<script").count(), 1);
+        assert!(!SHELL.contains("<style"));
+        assert!(!SHELL.contains("style="));
+        for (index, _) in SHELL.match_indices(" on") {
+            let attribute: String = SHELL[index + 1..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphabetic())
+                .collect();
+            assert!(
+                !SHELL[index + 1 + attribute.len()..].starts_with('='),
+                "inline event handler {attribute}"
+            );
+        }
+        assert!(SHELL.contains("<noscript>"));
+        for (name, _, body) in ASSETS {
+            assert!(!body.contains("innerHTML"), "{name} must not use innerHTML");
+            assert!(!body.contains("insertAdjacentHTML"), "{name}");
+            assert!(!body.contains("eval("), "{name}");
+        }
     }
 }
