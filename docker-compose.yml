@@ -64,10 +64,15 @@ services:
       MEMCAN_API_KEY: ${MEMCAN_API_KEY}
       MEMCAN_WEBUI_USERNAME: ${MEMCAN_WEBUI_USERNAME:-}
       MEMCAN_WEBUI_PASSWORD: ${MEMCAN_WEBUI_PASSWORD:-}
+      MEMCAN_WEBUI_ROLE: ${MEMCAN_WEBUI_ROLE:-}
+      MEMCAN_WEBUI_ALLOW_INSECURE_HTTP: ${MEMCAN_WEBUI_ALLOW_INSECURE_HTTP:-false}
+      MEMCAN_WEBUI_SESSION_IDLE_SECS: ${MEMCAN_WEBUI_SESSION_IDLE_SECS:-1800}
+      MEMCAN_WEBUI_SESSION_ABSOLUTE_SECS: ${MEMCAN_WEBUI_SESSION_ABSOLUTE_SECS:-28800}
       RUST_LOG: ${RUST_LOG:-info,memcan_core=debug,memcan_server=debug}
       MEMCAN_LOG_FILE: ""
       MEMCAN_LISTEN: 0.0.0.0:8191
       MEMCAN_BODY_READ_TIMEOUT: ${MEMCAN_BODY_READ_TIMEOUT:-30}
+      MEMCAN_ALLOWED_HOSTS: ${MEMCAN_ALLOWED_HOSTS:-}
       DISTILL_MEMORIES: ${DISTILL_MEMORIES:-true}
       EMBED_MODEL: ${EMBED_MODEL:-MultilingualE5Large}
     volumes:
@@ -79,8 +84,11 @@ services:
     # No ports: mapping — memcan is NOT directly accessible from host.
     # External access is only through Traefik (:8190).
     # This entrypoint is plain HTTP. Keep the default localhost allowlist until
-    # an operator adds TLS termination for /ui*; plain-HTTP Basic Auth is insecure.
-    # Apply login throttling at the trusted proxy/network layer, not in this container.
+    # an operator adds TLS termination for /ui*; sign-in over plain HTTP also needs
+    # MEMCAN_WEBUI_ALLOW_INSECURE_HTTP=true and exposes passwords and session cookies.
+    # Rate limits are per client IP with separate buckets per middleware: sign-in endpoints
+    # (/ui/auth/*) get a tight cap on top of the app's sign-in backoff; the rest of /ui
+    # (assets, /ui/api/mcp) only a flood guard well above normal use (see CLAUDE.md).
     labels:
       - "traefik.instance=ollama"
       - "traefik.enable=true"
@@ -93,14 +101,34 @@ services:
       - "traefik.http.middlewares.memcan-auth.plugin.traefik-api-token-middleware.bearerheadername=Authorization"
       - "traefik.http.middlewares.memcan-auth.plugin.traefik-api-token-middleware.tokens=${MEMCAN_API_KEY}"
       - "traefik.http.middlewares.memcan-auth.plugin.traefik-api-token-middleware.removeheadersonsuccess=false"
-      - "traefik.http.middlewares.memcan-ui-ratelimit.ratelimit.average=10"
-      - "traefik.http.middlewares.memcan-ui-ratelimit.ratelimit.burst=20"
+      # Normal use peaks at ~25 requests on first load (assets + bootstrap) and the client paces
+      # MCP calls at <= 4/s and 2 in flight per tab, so 50/s with a 100-request burst is never hit.
+      - "traefik.http.middlewares.memcan-ui-ratelimit.ratelimit.average=50"
+      - "traefik.http.middlewares.memcan-ui-ratelimit.ratelimit.burst=100"
+      # Sign-in: 30 requests/min per client after a burst of 10 (one session check per page
+      # load, an activity ping per minute, a few login attempts).
+      - "traefik.http.middlewares.memcan-ui-auth-ratelimit.ratelimit.average=30"
+      - "traefik.http.middlewares.memcan-ui-auth-ratelimit.ratelimit.period=1m"
+      - "traefik.http.middlewares.memcan-ui-auth-ratelimit.ratelimit.burst=10"
       - "traefik.http.routers.memcan.middlewares=memcan-ipallow@docker,memcan-auth@docker"
       - "traefik.http.routers.memcan-ui.rule=PathPrefix(`/ui/`) || Path(`/ui`)"
       - "traefik.http.routers.memcan-ui.entrypoints=memcan"
       - "traefik.http.routers.memcan-ui.service=memcan"
+      # /ui* (shell, /ui/auth/*, /ui/api/mcp) skips memcan-auth: the app authenticates the session
+      # itself and the browser never holds MEMCAN_API_KEY.
       - "traefik.http.routers.memcan-ui.middlewares=memcan-ipallow@docker,memcan-ui-ratelimit@docker"
+      # Optional proxy Basic auth for /ui*, not enabled by default. The app validates the passed-through
+      # header against MEMCAN_WEBUI_USERNAME/PASSWORD, so use that same account (htpasswd hash, `$`
+      # doubled as `$$`) and keep removeheader=false. To enable, uncomment and append
+      # `,memcan-ui-basic@docker` to the middlewares of both memcan-ui and memcan-ui-auth:
+      # - "traefik.http.middlewares.memcan-ui-basic.basicauth.users=viewer:$$apr1$$...$$..."
+      # - "traefik.http.middlewares.memcan-ui-basic.basicauth.removeheader=false"
       - "traefik.http.routers.memcan-ui.priority=200"
+      - "traefik.http.routers.memcan-ui-auth.rule=PathPrefix(`/ui/auth/`)"
+      - "traefik.http.routers.memcan-ui-auth.entrypoints=memcan"
+      - "traefik.http.routers.memcan-ui-auth.service=memcan"
+      - "traefik.http.routers.memcan-ui-auth.middlewares=memcan-ipallow@docker,memcan-ui-auth-ratelimit@docker"
+      - "traefik.http.routers.memcan-ui-auth.priority=300"
       - "traefik.http.routers.memcan-health.rule=Path(`/health`)"
       - "traefik.http.routers.memcan-health.entrypoints=memcan"
       - "traefik.http.routers.memcan-health.service=memcan"
