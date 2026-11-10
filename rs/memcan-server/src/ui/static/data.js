@@ -110,21 +110,35 @@ export function searchMatch(task, tokens) {
   return { descriptionOnly };
 }
 
-export function matchesFilters(task, state) {
+const DAY_MS = 86400000;
+
+/** Whether a task's creation date falls in an `AGE_FILTERS` window; undated tasks never match a window. */
+export function matchesAge(createdAt, age, now = Date.now()) {
+  const match = /^(lt|gt)(\d+)d$/.exec(age ?? 'any');
+  if (!match) return true;
+  const created = parseDate(createdAt);
+  if (created === null) return false;
+  const ageMs = now - created;
+  const limit = Number(match[2]) * DAY_MS;
+  return match[1] === 'lt' ? ageMs < limit : ageMs > limit;
+}
+
+export function matchesFilters(task, state, now = Date.now()) {
   if (state.project && task.project !== state.project) return false;
   if (state.statusMode === 'open' && !isOpenStatus(task.status)) return false;
   if (state.statusMode === 'selected' && !state.statuses.includes(task.status)) return false;
   if (state.priorities.length && !state.priorities.includes(task.priority)) return false;
   if (state.owner && task.owner !== state.owner) return false;
   if (state.unassigned && task.owner !== null) return false;
+  if (!matchesAge(task.createdAt, state.age, now)) return false;
   return true;
 }
 
-export function filterTasks(tasks, state) {
+export function filterTasks(tasks, state, now = Date.now()) {
   const tokens = searchTokens(state.q);
   const out = [];
   for (const task of tasks) {
-    if (matchesFilters(task, state) && searchMatch(task, tokens)) out.push(task);
+    if (matchesFilters(task, state, now) && searchMatch(task, tokens)) out.push(task);
   }
   return out;
 }

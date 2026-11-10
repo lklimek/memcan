@@ -145,6 +145,27 @@ test('priority, owner, unassigned and project filters intersect', () => {
   assert.deepEqual(ids({ owner: 'A' }), []);
 });
 
+test('age filter keeps tasks created within or before the window, never undated ones', () => {
+  const now = Date.parse('2026-11-10T12:00:00Z');
+  const daysAgo = (d) => new Date(now - d * 86400000).toISOString();
+  const tasks = [
+    task('fresh', { createdAt: daysAgo(0.5) }),
+    task('week', { createdAt: daysAgo(3) }),
+    task('month', { createdAt: daysAgo(20) }),
+    task('old', { createdAt: daysAgo(45) }),
+    task('ancient', { createdAt: daysAgo(400) }),
+    task('undated', { createdAt: '' }),
+  ];
+  const ids = (age) => filterTasks(tasks, query({ age }), now).map((t) => t.id);
+  assert.deepEqual(ids('any'), ['fresh', 'week', 'month', 'old', 'ancient', 'undated']);
+  assert.deepEqual(ids('lt1d'), ['fresh']);
+  assert.deepEqual(ids('lt7d'), ['fresh', 'week']);
+  assert.deepEqual(ids('lt30d'), ['fresh', 'week', 'month']);
+  assert.deepEqual(ids('gt7d'), ['month', 'old', 'ancient']);
+  assert.deepEqual(ids('gt30d'), ['old', 'ancient']);
+  assert.deepEqual(ids('gt90d'), ['ancient']);
+});
+
 test('search is literal, case-folded, all tokens across fields, no regex', () => {
   const tasks = [
     task('abc-1', { title: 'Fix task links', owner: 'agent-a' }),

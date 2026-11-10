@@ -17,7 +17,10 @@ import {
 import { BUILT_IN_VIEWS } from '../prefs.js';
 import {
   builtInView,
+  AGE_FILTERS,
   defaultDir,
+  SORTABLE_COLUMNS,
+  sortByColumn,
   defaultTaskQuery,
   parseTaskQuery,
   serializeTaskQuery,
@@ -40,6 +43,16 @@ const SORT_LABELS = new Map([
   ['created', ['Oldest first', 'Newest first']],
   ['project', ['A to Z', 'Z to A']],
   ['status', ['Workflow order', 'Reverse workflow order']],
+]);
+
+const AGE_LABELS = new Map([
+  ['any', 'Any age'],
+  ['lt1d', 'Under 1 day'],
+  ['lt7d', 'Under 1 week'],
+  ['lt30d', 'Under 30 days'],
+  ['gt7d', 'Over 1 week'],
+  ['gt30d', 'Over 30 days'],
+  ['gt90d', 'Over 90 days'],
 ]);
 
 const sameQuery = (a, b) => serializeTaskQuery(a).toString() === serializeTaskQuery(b).toString();
@@ -95,6 +108,11 @@ export function render(main, ctx) {
     const owner = ownerInput.value.trim() || null;
     setQuery({ ...query, owner, unassigned: owner ? false : query.unassigned, page: 1 });
   });
+  const ageSelect = el(
+    'select',
+    { id: 'age-filter', onchange: () => setQuery({ ...query, age: ageSelect.value, page: 1 }) },
+    ...AGE_FILTERS.map((value) => el('option', { value }, AGE_LABELS.get(value))),
+  );
   unassignedBox.addEventListener('change', () => setQuery({ ...query, unassigned: unassignedBox.checked, owner: unassignedBox.checked ? null : query.owner, page: 1 }));
 
   const groupSelect = el(
@@ -138,6 +156,7 @@ export function render(main, ctx) {
     priorityPopover,
     el('div', { class: 'field' }, el('label', { for: 'owner-filter' }, 'Owner (exact)'), ownerInput, ownerOptions),
     el('div', { class: 'field checkbox-field' }, unassignedBox, el('label', { for: 'unassigned-filter' }, 'Unassigned only')),
+    el('div', { class: 'field' }, el('label', { for: 'age-filter' }, 'Age'), ageSelect),
     el('div', { class: 'field' }, el('label', { for: 'group-select' }, 'Group'), groupSelect),
     el('div', { class: 'field' }, el('label', { for: 'sort-select' }, 'Sort'), el('div', { class: 'inline' }, sortSelect, dirButton)),
     el('div', { class: 'field field-actions' }, densityButton, clearButton),
@@ -278,6 +297,7 @@ export function render(main, ctx) {
     );
     if (document.activeElement !== ownerInput) ownerInput.value = query.owner ?? '';
     unassignedBox.checked = query.unassigned;
+    ageSelect.value = query.age;
     const owners = new Set(vocab.owners);
     if (query.owner) owners.add(query.owner);
     ownerOptions.replaceChildren(...[...owners].map((owner) => el('option', { value: owner })));
@@ -309,6 +329,7 @@ export function render(main, ctx) {
     if (query.priorities.length) list.push(`Priority: ${query.priorities.map(priorityLabel).join(', ')}`);
     if (query.owner) list.push(`Owner: ${query.owner}`);
     if (query.unassigned) list.push('Unassigned only');
+    if (query.age !== 'any') list.push(`Age: ${AGE_LABELS.get(query.age).toLowerCase()}`);
     if (query.q) list.push(`Search: ${query.q}`);
     return list;
   }
@@ -544,8 +565,34 @@ export function render(main, ctx) {
 
   function sortAttr(column) {
     if (query.sort !== column) return null;
-    if (column === 'priority' || column === 'status' || column === 'project') return query.dir === 'asc' ? 'ascending' : 'descending';
-    return query.dir === 'asc' ? 'ascending' : 'descending';
+    // The Age column shows elapsed time, so oldest-created first is descending age.
+    const ascending = column === 'created' ? query.dir === 'desc' : query.dir === 'asc';
+    return ascending ? 'ascending' : 'descending';
+  }
+
+  function columnHeader(key, label) {
+    const attrs = { scope: 'col', class: `col-${key}`, 'aria-sort': sortAttr(key) };
+    if (!SORTABLE_COLUMNS.includes(key)) return el('th', attrs, label);
+    const [ascLabel, descLabel] = SORT_LABELS.get(key);
+    const next = sortByColumn(query, key);
+    return el(
+      'th',
+      attrs,
+      el(
+        'button',
+        {
+          type: 'button',
+          class: 'sort-header',
+          title: `Sort: ${next.dir === 'asc' ? ascLabel : descLabel}`,
+          dataset: { sort: key },
+          onclick: () => {
+            setQuery(next);
+            results.querySelector(`.sort-header[data-sort="${key}"]`)?.focus();
+          },
+        },
+        label,
+      ),
+    );
   }
 
   function taskTable(matches) {
@@ -564,7 +611,7 @@ export function render(main, ctx) {
       'table',
       { class: 'task-table' },
       el('caption', { class: 'visually-hidden' }, `Tasks, page ${matches.page} of ${matches.pageCount}`),
-      el('thead', {}, el('tr', {}, ...columns.map(([key, label]) => el('th', { scope: 'col', class: `col-${key}`, 'aria-sort': sortAttr(key) }, label)))),
+      el('thead', {}, el('tr', {}, ...columns.map(([key, label]) => columnHeader(key, label)))),
     );
     for (const group of matches.groups) {
       const body = el('tbody', {});

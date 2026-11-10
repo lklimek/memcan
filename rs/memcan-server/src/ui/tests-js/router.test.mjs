@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  AGE_FILTERS,
   OPEN_STATUSES,
+  SORTABLE_COLUMNS,
+  sortByColumn,
   defaultTaskQuery,
   parseRoute,
   parseTaskQuery,
@@ -143,4 +146,36 @@ test('built-in views preserve project and reset other filters', () => {
   assert.deepEqual(blocked.statuses, ['blocked']);
   assert.equal(builtInView('unassigned', base).unassigned, true);
   assert.equal(builtInView('all', base).statusMode, 'all');
+});
+
+
+test('clicking the sorted column flips the direction and resets the page', () => {
+  const query = { ...defaultTaskQuery(), sort: 'priority', dir: 'asc', page: 3 };
+  assert.deepEqual(sortByColumn(query, 'priority'), { ...query, dir: 'desc', page: 1 });
+  assert.equal(sortByColumn({ ...query, dir: 'desc' }, 'priority').dir, 'asc');
+});
+
+test('clicking another column sorts by it in its default direction', () => {
+  const query = { ...defaultTaskQuery(), sort: 'priority', dir: 'desc', page: 2 };
+  assert.deepEqual(sortByColumn(query, 'created'), { ...query, sort: 'created', dir: 'desc', page: 1 });
+  assert.deepEqual(sortByColumn(query, 'project'), { ...query, sort: 'project', dir: 'asc', page: 1 });
+});
+
+test('non-sortable columns leave the query unchanged', () => {
+  const query = defaultTaskQuery();
+  assert.equal(sortByColumn(query, 'task'), query);
+  assert.equal(sortByColumn(query, 'owner'), query);
+  assert.deepEqual(SORTABLE_COLUMNS, ['priority', 'created', 'project', 'status']);
+});
+
+test('age filter round-trips through the URL and rejects unknown values', () => {
+  const query = { ...defaultTaskQuery(), age: 'gt30d' };
+  const params = serializeTaskQuery(query);
+  assert.equal(params.get('age'), 'gt30d');
+  assert.equal(parseTaskQuery(params).state.age, 'gt30d');
+  assert.equal(serializeTaskQuery(defaultTaskQuery()).has('age'), false);
+  const bad = parseTaskQuery(new URLSearchParams('age=forever'));
+  assert.equal(bad.state.age, 'any');
+  assert.equal(bad.notices.length, 1);
+  assert.deepEqual(AGE_FILTERS, ['any', 'lt1d', 'lt7d', 'lt30d', 'gt7d', 'gt30d', 'gt90d']);
 });

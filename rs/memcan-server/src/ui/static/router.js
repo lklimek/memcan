@@ -4,8 +4,11 @@ export const OPEN_STATUSES = ['pending', 'in_progress', 'blocked', 'postponed'];
 const STATUS_MODES = ['open', 'all', 'selected'];
 const GROUPS = ['none', 'project', 'status'];
 const SORTS = ['priority', 'created', 'project', 'status'];
+export const SORTABLE_COLUMNS = SORTS;
 const DIRS = ['asc', 'desc'];
 const SIZES = [25, 50, 100];
+/** Created-age windows: `lt` keeps tasks younger than N days, `gt` keeps older ones. */
+export const AGE_FILTERS = ['any', 'lt1d', 'lt7d', 'lt30d', 'gt7d', 'gt30d', 'gt90d'];
 
 export function defaultTaskQuery() {
   return {
@@ -15,6 +18,7 @@ export function defaultTaskQuery() {
     priorities: [],
     owner: null,
     unassigned: false,
+    age: 'any',
     q: '',
     group: 'none',
     sort: 'priority',
@@ -26,6 +30,13 @@ export function defaultTaskQuery() {
 
 export function defaultDir(sort) {
   return sort === 'created' ? 'desc' : 'asc';
+}
+
+/** Column-header click: flip the active sort, or switch to the column in its default direction. */
+export function sortByColumn(query, column) {
+  if (!SORTS.includes(column)) return query;
+  if (query.sort === column) return { ...query, dir: query.dir === 'asc' ? 'desc' : 'asc', page: 1 };
+  return { ...query, sort: column, dir: defaultDir(column), page: 1 };
 }
 
 export function parseRoute(pathname) {
@@ -95,6 +106,7 @@ export function parseTaskQuery(params) {
     state.unassigned = unassigned;
   }
 
+  state.age = choice('age', 'Age', AGE_FILTERS) ?? 'any';
   state.q = scalar('q', 'Search') ?? '';
   state.group = choice('group', 'Group', GROUPS) ?? 'none';
   state.sort = choice('sort', 'Sort', SORTS) ?? 'priority';
@@ -124,6 +136,7 @@ export function serializeTaskQuery(state) {
   for (const priority of state.priorities) params.append('priority', priority);
   if (state.owner) params.set('owner', state.owner);
   if (state.unassigned) params.set('unassigned', '1');
+  if (state.age !== 'any') params.set('age', state.age);
   if (state.q) params.set('q', state.q);
   if (state.group !== 'none') params.set('group', state.group);
   if (state.sort !== 'priority') params.set('sort', state.sort);
