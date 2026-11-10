@@ -151,6 +151,26 @@ assert.equal((await calls()).length, before, 'search/filter emit no MCP calls');
 await page.getByRole('button', { name: /o'brien & co\?#\/x/ }).first().waitFor();
 await shot('04-tasks-filtered-grouped');
 
+step('row disclosure buttons expand one description; the toggle shows first-line previews');
+await appGo('/ui/tasks');
+await page.getByText('scan complete').waitFor();
+assert.equal(await page.locator('.task-table .preview').count(), 0, 'previews are hidden by default');
+const descToggle = page.locator('.desc-toggle').first();
+assert.equal(await descToggle.getAttribute('aria-expanded'), 'false');
+const descPanel = page.locator(`[id="${await descToggle.getAttribute('aria-controls')}"]`);
+assert.equal(await descPanel.isVisible(), false);
+await descToggle.click();
+assert.equal(await descToggle.getAttribute('aria-expanded'), 'true');
+assert.equal(await descPanel.isVisible(), true);
+assert.equal(await page.evaluate(() => document.activeElement?.classList.contains('desc-toggle')), true, 'focus stays on the toggle');
+await descToggle.click();
+assert.equal(await descPanel.isVisible(), false);
+const previewsButton = page.getByRole('button', { name: 'Show descriptions' });
+await previewsButton.click();
+assert.ok((await page.locator('.task-table .preview').count()) > 0);
+await previewsButton.click();
+assert.equal(await page.locator('.task-table .preview').count(), 0);
+
 step('status checkboxes have their own labels; clicking a label toggles that box');
 await appGo('/ui/tasks');
 await page.getByText('scan complete').waitFor();

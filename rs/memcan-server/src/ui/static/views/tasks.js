@@ -62,6 +62,7 @@ export function render(main, ctx) {
   const parsed = parseTaskQuery(ctx.params);
   let query = parsed.state;
   const collapsed = new Set();
+  const expandedDescriptions = new Set();
   let searchTimer = null;
   let composing = false;
   let lastCoverageStatus = null;
@@ -593,10 +594,42 @@ export function render(main, ctx) {
     );
   }
 
+  /** Disclosure toggle + title link, then the optional first-line preview and the full description panel. */
+  function descriptionParts(task, tokens, panelId, showPreview, href) {
+    const link = navLink(href, highlighted(task.title || '(untitled)', tokens), { class: 'task-link', dataset: { taskId: task.id, nav: '' } });
+    if (!task.description) return [el('span', { class: 'desc-toggle-spacer', 'aria-hidden': 'true' }), link];
+    let expanded = expandedDescriptions.has(task.id);
+    const icon = el('span', { 'aria-hidden': 'true' });
+    const preview = showPreview ? el('div', { class: 'preview muted' }, highlighted(task.description.split('\n', 1)[0], tokens)) : null;
+    const panel = el('div', { id: panelId, class: 'description row-description' }, highlighted(task.description, tokens));
+    const toggle = el('button', {
+      type: 'button',
+      class: 'desc-toggle',
+      'aria-controls': panelId,
+      'aria-label': `Description: ${task.title || '(untitled)'}`,
+      onclick: () => {
+        expanded = !expanded;
+        if (expanded) expandedDescriptions.add(task.id);
+        else expandedDescriptions.delete(task.id);
+        sync();
+      },
+    }, icon);
+    function sync() {
+      toggle.setAttribute('aria-expanded', String(expanded));
+      toggle.title = expanded ? 'Hide description' : 'Show description';
+      icon.textContent = expanded ? '▾' : '▸';
+      panel.hidden = !expanded;
+      if (preview) preview.hidden = expanded;
+    }
+    sync();
+    return [toggle, link, preview, panel];
+  }
+
   function taskTable(matches) {
     const tokens = searchTokens(query.q);
     const showProject = query.group !== 'project';
     const showDescriptions = ctx.prefs.get().descriptions;
+    let descriptionSeq = 0;
     const columns = [
       ['priority', 'Priority'],
       ['task', 'Task'],
@@ -658,8 +691,7 @@ export function render(main, ctx) {
           el(
             'td',
             { class: 'col-task' },
-            navLink(href, highlighted(task.title || '(untitled)', tokens), { class: 'task-link', dataset: { taskId: task.id, nav: '' } }),
-            showDescriptions && task.description ? el('div', { class: 'preview muted' }, highlighted(task.description.split('\n', 1)[0], tokens)) : null,
+            ...descriptionParts(task, tokens, `task-description-${++descriptionSeq}`, showDescriptions, href),
             el(
               'div',
               { class: 'row-meta small' },
