@@ -310,7 +310,6 @@ function applyPrefs() {
   const root = document.documentElement;
   if (current.theme === 'system') delete root.dataset.theme;
   else root.dataset.theme = current.theme;
-  root.dataset.density = current.density;
   themeSelect.value = current.theme;
 }
 

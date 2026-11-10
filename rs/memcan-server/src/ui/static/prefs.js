@@ -1,22 +1,21 @@
-// Device-local preferences: theme, density, shortcuts and saved task views.
+// Device-local preferences: theme, description previews, shortcuts and saved task views.
 // Never stores credentials, sessions or fetched records.
 
 const STORAGE_KEY = 'memcan.ui.prefs';
 const VERSION = 1;
 const THEMES = ['system', 'light', 'dark'];
-const DENSITIES = ['comfortable', 'compact'];
 export const BUILT_IN_VIEWS = ['open', 'high', 'blocked', 'unassigned', 'all'];
 const MAX_VIEWS = 50;
 
 export function defaultPrefs() {
-  return { theme: 'system', density: 'comfortable', shortcuts: true, views: [], defaultView: null };
+  return { theme: 'system', descriptions: false, shortcuts: true, views: [], defaultView: null };
 }
 
 function validate(raw) {
   const prefs = defaultPrefs();
   if (!raw || typeof raw !== 'object' || raw.version !== VERSION) return prefs;
   if (THEMES.includes(raw.theme)) prefs.theme = raw.theme;
-  if (DENSITIES.includes(raw.density)) prefs.density = raw.density;
+  if (typeof raw.descriptions === 'boolean') prefs.descriptions = raw.descriptions;
   if (typeof raw.shortcuts === 'boolean') prefs.shortcuts = raw.shortcuts;
   if (Array.isArray(raw.views)) {
     const names = new Set();

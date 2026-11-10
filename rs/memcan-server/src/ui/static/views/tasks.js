@@ -136,17 +136,16 @@ export function render(main, ctx) {
     'aria-label': 'Sort direction',
     onclick: () => setQuery({ ...query, dir: query.dir === 'asc' ? 'desc' : 'asc', page: 1 }),
   });
-  const densityButton = el('button', {
+  const descriptionsButton = el('button', {
     type: 'button',
     class: 'button secondary',
     'aria-pressed': 'false',
     onclick: () => {
-      const compact = ctx.prefs.get().density !== 'compact';
-      ctx.prefs.update({ density: compact ? 'compact' : 'comfortable' });
-      ctx.applyPrefs();
+      ctx.prefs.update({ descriptions: !ctx.prefs.get().descriptions });
       syncControls();
+      renderResults({ announce: false });
     },
-  }, 'Compact rows');
+  }, 'Show descriptions');
   const clearButton = el('button', { type: 'button', class: 'button secondary', onclick: () => setQuery({ ...defaultTaskQuery(), project: query.project, group: query.group, sort: query.sort, dir: query.dir, size: query.size }) }, 'Clear filters');
 
   const filtersRegion = el(
@@ -159,7 +158,7 @@ export function render(main, ctx) {
     el('div', { class: 'field' }, el('label', { for: 'age-filter' }, 'Age'), ageSelect),
     el('div', { class: 'field' }, el('label', { for: 'group-select' }, 'Group'), groupSelect),
     el('div', { class: 'field' }, el('label', { for: 'sort-select' }, 'Sort'), el('div', { class: 'inline' }, sortSelect, dirButton)),
-    el('div', { class: 'field field-actions' }, densityButton, clearButton),
+    el('div', { class: 'field field-actions' }, descriptionsButton, clearButton),
   );
   const filtersToggle = el('button', {
     type: 'button',
@@ -306,8 +305,7 @@ export function render(main, ctx) {
     const [ascLabel, descLabel] = SORT_LABELS.get(query.sort);
     dirButton.textContent = query.dir === 'asc' ? ascLabel : descLabel;
     dirButton.setAttribute('aria-label', `Sort direction: ${dirButton.textContent}`);
-    const compact = ctx.prefs.get().density === 'compact';
-    densityButton.setAttribute('aria-pressed', String(compact));
+    descriptionsButton.setAttribute('aria-pressed', String(ctx.prefs.get().descriptions));
     if (document.activeElement !== searchInput && searchInput.value !== query.q) searchInput.value = query.q;
     for (const button of viewButtons) {
       button.setAttribute('aria-pressed', String(sameQuery(builtInView(button.dataset.view, query), { ...query, page: 1 })));
@@ -598,6 +596,7 @@ export function render(main, ctx) {
   function taskTable(matches) {
     const tokens = searchTokens(query.q);
     const showProject = query.group !== 'project';
+    const showDescriptions = ctx.prefs.get().descriptions;
     const columns = [
       ['priority', 'Priority'],
       ['task', 'Task'],
@@ -660,7 +659,7 @@ export function render(main, ctx) {
             'td',
             { class: 'col-task' },
             navLink(href, highlighted(task.title || '(untitled)', tokens), { class: 'task-link', dataset: { taskId: task.id, nav: '' } }),
-            task.description ? el('div', { class: 'preview muted' }, highlighted(task.description.split('\n', 1)[0], tokens)) : null,
+            showDescriptions && task.description ? el('div', { class: 'preview muted' }, highlighted(task.description.split('\n', 1)[0], tokens)) : null,
             el(
               'div',
               { class: 'row-meta small' },

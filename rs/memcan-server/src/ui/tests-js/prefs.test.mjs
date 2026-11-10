@@ -25,14 +25,14 @@ test('invalid fields are dropped individually', () => {
   const stored = {
     version: 1,
     theme: 'neon',
-    density: 'compact',
+    descriptions: 'yes',
     shortcuts: 'yes',
     views: [{ name: 'A', query: 'status_mode=all' }, { name: 'A', query: 'dup' }, { name: 5 }, null],
     defaultView: 'missing',
   };
   const prefs = createPrefs(memoryStorage({ 'memcan.ui.prefs': JSON.stringify(stored) })).get();
   assert.equal(prefs.theme, 'system');
-  assert.equal(prefs.density, 'compact');
+  assert.equal(prefs.descriptions, false);
   assert.equal(prefs.shortcuts, true);
   assert.deepEqual(prefs.views, [{ name: 'A', query: 'status_mode=all' }]);
   assert.equal(prefs.defaultView, null);
@@ -41,13 +41,14 @@ test('invalid fields are dropped individually', () => {
 test('updates persist, views can be saved, renamed, defaulted and deleted', () => {
   const storage = memoryStorage();
   const prefs = createPrefs(storage);
-  prefs.update({ theme: 'dark' });
+  prefs.update({ theme: 'dark', descriptions: true });
   assert.ok(prefs.saveView('  Mine  ', 'owner=me'));
   prefs.update({ defaultView: 'Mine' });
   assert.ok(prefs.renameView('Mine', 'Agent A'));
   assert.equal(prefs.get().defaultView, 'Agent A');
   const reloaded = createPrefs(storage).get();
   assert.equal(reloaded.theme, 'dark');
+  assert.equal(reloaded.descriptions, true);
   assert.deepEqual(reloaded.views, [{ name: 'Agent A', query: 'owner=me' }]);
   prefs.deleteView('Agent A');
   assert.equal(prefs.get().defaultView, null);
@@ -60,7 +61,7 @@ test('stored prefs never contain anything but the documented fields', () => {
   createPrefs(storage).update({ theme: 'light', apiKey: 'secret', session: 's' });
   assert.deepEqual(Object.keys(JSON.parse(storage.data.get('memcan.ui.prefs'))).sort(), [
     'defaultView',
-    'density',
+    'descriptions',
     'shortcuts',
     'theme',
     'version',

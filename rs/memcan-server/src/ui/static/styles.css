@@ -27,7 +27,7 @@
   --good: #166534;
   --warn: #854d0e;
   --bad: #991b1b;
-  --row-min: 56px;
+  --row-min: 44px;
   --control: 40px;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   font-size: 16px;
@@ -98,9 +98,6 @@
   --bad: #fecaca;
 }
 
-:root[data-density="compact"] {
-  --row-min: 40px;
-}
 
 @media (pointer: coarse) {
   :root {
