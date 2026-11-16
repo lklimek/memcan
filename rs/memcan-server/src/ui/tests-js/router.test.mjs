@@ -148,7 +148,6 @@ test('built-in views preserve project and reset other filters', () => {
   assert.equal(builtInView('all', base).statusMode, 'all');
 });
 
-
 test('clicking the sorted column flips the direction and resets the page', () => {
   const query = { ...defaultTaskQuery(), sort: 'priority', dir: 'asc', page: 3 };
   assert.deepEqual(sortByColumn(query, 'priority'), { ...query, dir: 'desc', page: 1 });

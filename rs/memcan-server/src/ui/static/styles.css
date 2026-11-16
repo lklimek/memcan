@@ -98,7 +98,6 @@
   --bad: #fecaca;
 }
 
-
 @media (pointer: coarse) {
   :root {
     --control: 44px;
@@ -864,17 +863,20 @@ thead th {
 
 .sort-header::after {
   content: " ↕";
+  content: " ↕" / "";
   font-size: 12px;
   opacity: 0.5;
 }
 
 th[aria-sort="ascending"] .sort-header::after {
   content: " ▲";
+  content: " ▲" / "";
   opacity: 1;
 }
 
 th[aria-sort="descending"] .sort-header::after {
   content: " ▼";
+  content: " ▼" / "";
   opacity: 1;
 }
 
@@ -904,13 +906,22 @@ th[aria-sort="descending"] .sort-header::after {
   max-width: 48rem;
 }
 
+.task-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.task-title-row .task-link {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .desc-toggle,
 .desc-toggle-spacer {
-  display: inline-block;
+  flex: none;
   width: 24px;
   height: 24px;
-  margin-right: 4px;
-  vertical-align: top;
 }
 
 .desc-toggle {
@@ -1246,12 +1257,9 @@ kbd {
     margin-top: 4px;
   }
 
+  /* Cards label each cell and the Sort select covers ordering, so the header and its buttons leave the tab order. */
   .task-table thead {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
+    display: none;
   }
 
   .task-table,

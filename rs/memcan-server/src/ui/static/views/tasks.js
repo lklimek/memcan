@@ -498,7 +498,8 @@ export function render(main, ctx) {
   }
 
   function renderResults({ announce = false } = {}) {
-    const focusedId = results.contains(document.activeElement) ? document.activeElement.closest?.('[data-task-id]')?.dataset.taskId : null;
+    // Every control in the table is rebuilt; restore focus to its replacement by key.
+    const focusKey = results.contains(document.activeElement) ? document.activeElement.closest?.('[data-focus-key]')?.dataset.focusKey : null;
     const coverage = store.coverage();
     const all = store.tasks();
     const filtered = filterTasks(all, query);
@@ -559,7 +560,7 @@ export function render(main, ctx) {
     append(results, taskTable(matches));
     renderPager(matches);
     if (announce) ctx.announce(`${matches.total} matching task${matches.total === 1 ? '' : 's'}${coverage.partial ? ' in loaded data' : ''}.`);
-    if (focusedId) results.querySelector(`a[data-task-id="${CSS.escape(focusedId)}"]`)?.focus();
+    if (focusKey) results.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus();
   }
 
   function sortAttr(column) {
@@ -583,7 +584,7 @@ export function render(main, ctx) {
           type: 'button',
           class: 'sort-header',
           title: `Sort: ${next.dir === 'asc' ? ascLabel : descLabel}`,
-          dataset: { sort: key },
+          dataset: { sort: key, focusKey: `sort:${key}` },
           onclick: () => {
             setQuery(next);
             results.querySelector(`.sort-header[data-sort="${key}"]`)?.focus();
@@ -596,8 +597,9 @@ export function render(main, ctx) {
 
   /** Disclosure toggle + title link, then the optional first-line preview and the full description panel. */
   function descriptionParts(task, tokens, panelId, showPreview, href) {
-    const link = navLink(href, highlighted(task.title || '(untitled)', tokens), { class: 'task-link', dataset: { taskId: task.id, nav: '' } });
-    if (!task.description) return [el('span', { class: 'desc-toggle-spacer', 'aria-hidden': 'true' }), link];
+    const link = navLink(href, highlighted(task.title || '(untitled)', tokens), { class: 'task-link', dataset: { taskId: task.id, nav: '', focusKey: `task:${task.id}` } });
+    const titleRow = (lead) => el('div', { class: 'task-title-row' }, lead, link);
+    if (!task.description) return [titleRow(el('span', { class: 'desc-toggle-spacer', 'aria-hidden': 'true' }))];
     let expanded = expandedDescriptions.has(task.id);
     const icon = el('span', { 'aria-hidden': 'true' });
     const preview = showPreview ? el('div', { class: 'preview muted' }, highlighted(task.description.split('\n', 1)[0], tokens)) : null;
@@ -605,6 +607,7 @@ export function render(main, ctx) {
     const toggle = el('button', {
       type: 'button',
       class: 'desc-toggle',
+      dataset: { focusKey: `desc:${task.id}` },
       'aria-controls': panelId,
       'aria-label': `Description: ${task.title || '(untitled)'}`,
       onclick: () => {
@@ -622,7 +625,7 @@ export function render(main, ctx) {
       if (preview) preview.hidden = expanded;
     }
     sync();
-    return [toggle, link, preview, panel];
+    return [titleRow(toggle), preview, panel];
   }
 
   function taskTable(matches) {
@@ -669,7 +672,7 @@ export function render(main, ctx) {
                     renderResults();
                     results.querySelector(`.group-toggle[data-key="${CSS.escape(group.key)}"]`)?.focus();
                   },
-                  dataset: { key: group.key },
+                  dataset: { key: group.key, focusKey: `group:${group.key}` },
                 },
                 el('span', { 'aria-hidden': 'true' }, expanded ? '▾ ' : '▸ '),
                 `${label} (${group.count} match${group.count === 1 ? '' : 'es'})${group.continued ? ' — continued' : ''}`,

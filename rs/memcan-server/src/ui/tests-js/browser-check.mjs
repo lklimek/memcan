@@ -171,6 +171,35 @@ assert.ok((await page.locator('.task-table .preview').count()) > 0);
 await previewsButton.click();
 assert.equal(await page.locator('.task-table .preview').count(), 0);
 
+step('column headers sort by click, flip direction and keep focus; age filter is URL-backed');
+await appGo('/ui/tasks');
+await page.getByText('scan complete').waitFor();
+const ageHeader = page.locator('th.col-created');
+assert.equal(await ageHeader.getByRole('button').getAttribute('data-sort'), 'created');
+assert.equal(await page.locator('th.col-created .sort-header').evaluate((b) => b.textContent), 'Age', 'sort glyph stays out of the button text');
+await page.locator('.sort-header[data-sort="created"]').click();
+await page.waitForURL(/sort=created/);
+assert.equal(await ageHeader.getAttribute('aria-sort'), 'ascending', 'newest first is ascending age');
+assert.equal(await page.evaluate(() => document.activeElement?.dataset.sort), 'created', 'focus stays on the header');
+await page.keyboard.press('Enter');
+await page.waitForURL(/dir=asc/);
+assert.equal(await ageHeader.getAttribute('aria-sort'), 'descending');
+{
+  // Mock tasks are dated relative to 2026-11-06T12:00Z, one every 7 hours.
+  // A separate context keeps the frozen clock away from the main context's shared storage.
+  const agedContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const aged = await agedContext.newPage();
+  await aged.clock.setFixedTime(new Date('2026-11-06T13:00:00Z'));
+  await aged.goto(`${BASE}/ui/tasks?status_mode=all`);
+  await signIn(aged);
+  await aged.getByText('scan complete').waitFor();
+  await aged.getByLabel('Age', { exact: true }).selectOption('lt1d');
+  await aged.waitForURL(/age=lt1d/);
+  const ages = await aged.locator('td.col-created').allTextContents();
+  assert.equal(ages.length, 4, `under 1 day keeps the four newest tasks (${ages.length})`);
+  await agedContext.close();
+}
+
 step('status checkboxes have their own labels; clicking a label toggles that box');
 await appGo('/ui/tasks');
 await page.getByText('scan complete').waitFor();
@@ -330,6 +359,26 @@ step('background refresh keeps focus on "Show updates" while newer data is stage
   await timed.getByRole('button', { name: 'Show updates' }).waitFor({ state: 'detached' });
   await timed.close();
   await fetch(`${BASE}/__retitle?title=${encodeURIComponent('Task 2: Resolve encoded IDs')}`);
+}
+
+step('background refresh keeps focus on a row disclosure button and a sort header');
+{
+  const timed = await context.newPage();
+  await timed.clock.install();
+  await timed.goto(`${BASE}/ui/tasks`);
+  await timed.getByText('scan complete').waitFor();
+  const focusedKey = () => timed.evaluate(() => document.activeElement?.dataset.focusKey ?? document.activeElement?.tagName);
+  const toggle = timed.locator('.desc-toggle').first();
+  await toggle.focus();
+  const toggleKey = await focusedKey();
+  await timed.clock.runFor(62000);
+  await timed.waitForTimeout(300);
+  assert.equal(await focusedKey(), toggleKey, 'disclosure focus survives the refresh');
+  await timed.locator('.sort-header[data-sort="status"]').focus();
+  await timed.clock.runFor(62000);
+  await timed.waitForTimeout(300);
+  assert.equal(await focusedKey(), 'sort:status', 'sort header focus survives the refresh');
+  await timed.close();
 }
 
 step('an expired session stops work, explains why and returns after signing in again');
