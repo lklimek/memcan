@@ -370,6 +370,14 @@ pub struct Settings {
     pub webui_username: Option<String>,
     /// Shared password for the read-only tasks web UI.
     pub webui_password: Option<String>,
+    /// Web UI role of the shared account (`viewer`, `editor`, `admin`); `None` means viewer.
+    pub webui_role: Option<String>,
+    /// Allow web UI sign-in over plain HTTP: non-`Secure` cookie, UI warning banner.
+    pub webui_allow_insecure_http: bool,
+    /// Web UI session idle timeout in seconds.
+    pub webui_session_idle_secs: u64,
+    /// Web UI session absolute lifetime in seconds.
+    pub webui_session_absolute_secs: u64,
     /// MemCan server URL for thin clients, e.g. `"http://localhost:8190"`.
     pub url: String,
     /// Run full compaction (compact fragments + prune versions) on every table
@@ -384,6 +392,21 @@ pub struct Settings {
     /// stalled connection without penalizing a large body that keeps arriving.
     /// `0` disables the bound.
     pub mcp_body_read_timeout_secs: u64,
+    /// Extra `Host` values (host or host:port) accepted on `/mcp` in addition to the
+    /// MCP transport's loopback defaults, which guard against DNS rebinding.
+    pub mcp_allowed_hosts: Vec<String>,
+    /// `MEMCAN_ALLOWED_HOSTS` entries skipped as malformed. Kept for the server to log once
+    /// its subscriber is installed; settings load before logging is set up.
+    pub mcp_rejected_hosts: Vec<RejectedHost>,
+}
+
+/// A malformed `MEMCAN_ALLOWED_HOSTS` entry and why it was skipped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedHost {
+    /// The entry as configured (trimmed).
+    pub entry: String,
+    /// Why it is not a `host` or `host:port` value.
+    pub reason: &'static str,
 }
 
 impl std::fmt::Debug for Settings {
@@ -410,6 +433,13 @@ impl std::fmt::Debug for Settings {
                 "webui_password",
                 &self.webui_password.as_ref().map(|_| "***"),
             )
+            .field("webui_role", &self.webui_role)
+            .field("webui_allow_insecure_http", &self.webui_allow_insecure_http)
+            .field("webui_session_idle_secs", &self.webui_session_idle_secs)
+            .field(
+                "webui_session_absolute_secs",
+                &self.webui_session_absolute_secs,
+            )
             .field("url", &self.url)
             .field("compact_on_startup", &self.compact_on_startup)
             .field(
@@ -420,6 +450,8 @@ impl std::fmt::Debug for Settings {
                 "mcp_body_read_timeout_secs",
                 &self.mcp_body_read_timeout_secs,
             )
+            .field("mcp_allowed_hosts", &self.mcp_allowed_hosts)
+            .field("mcp_rejected_hosts", &self.mcp_rejected_hosts)
             .finish()
     }
 }
@@ -442,10 +474,16 @@ impl Default for Settings {
             api_key: None,
             webui_username: None,
             webui_password: None,
+            webui_role: None,
+            webui_allow_insecure_http: false,
+            webui_session_idle_secs: 1800,
+            webui_session_absolute_secs: 28800,
             url: "http://localhost:8190".into(),
             compact_on_startup: true,
             compact_fragment_threshold: 64,
             mcp_body_read_timeout_secs: 30,
+            mcp_allowed_hosts: Vec::new(),
+            mcp_rejected_hosts: Vec::new(),
         }
     }
 }
@@ -550,6 +588,22 @@ impl Settings {
         let webui_password = std::env::var("MEMCAN_WEBUI_PASSWORD")
             .ok()
             .filter(|s| !s.is_empty());
+        let webui_role = env_non_blank("MEMCAN_WEBUI_ROLE");
+        let webui_allow_insecure_http = env_or(
+            "MEMCAN_WEBUI_ALLOW_INSECURE_HTTP",
+            &defaults.webui_allow_insecure_http.to_string(),
+        )
+        .trim()
+        .parse::<bool>()
+        .unwrap_or(defaults.webui_allow_insecure_http);
+        let webui_session_idle_secs = env_u64_or_warn(
+            "MEMCAN_WEBUI_SESSION_IDLE_SECS",
+            defaults.webui_session_idle_secs,
+        );
+        let webui_session_absolute_secs = env_u64_or_warn(
+            "MEMCAN_WEBUI_SESSION_ABSOLUTE_SECS",
+            defaults.webui_session_absolute_secs,
+        );
         let url = env_or("MEMCAN_URL", &defaults.url);
         let compact_on_startup = env_or(
             "COMPACT_ON_STARTUP",
@@ -567,6 +621,8 @@ impl Settings {
             "MEMCAN_BODY_READ_TIMEOUT",
             defaults.mcp_body_read_timeout_secs,
         );
+        let (mcp_allowed_hosts, mcp_rejected_hosts) =
+            parse_host_list(&env_or("MEMCAN_ALLOWED_HOSTS", ""));
 
         let settings = Settings {
             lancedb_path,
@@ -584,10 +640,16 @@ impl Settings {
             api_key,
             webui_username,
             webui_password,
+            webui_role,
+            webui_allow_insecure_http,
+            webui_session_idle_secs,
+            webui_session_absolute_secs,
             url,
             compact_on_startup,
             compact_fragment_threshold,
             mcp_body_read_timeout_secs,
+            mcp_allowed_hosts,
+            mcp_rejected_hosts,
         };
         settings.validate_with(&origins, &cwd_vars)?;
         Ok(settings)
@@ -819,6 +881,87 @@ impl Settings {
 /// Read an environment variable, falling back to a default.
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+/// Split `MEMCAN_ALLOWED_HOSTS`, trimming entries and dropping empties and duplicates.
+/// Malformed entries are returned separately (never fatal) so the server can warn about them.
+fn parse_host_list(value: &str) -> (Vec<String>, Vec<RejectedHost>) {
+    let mut hosts: Vec<String> = Vec::new();
+    let mut rejected = Vec::new();
+    for host in value
+        .split(',')
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+    {
+        if let Err(reason) = check_allowed_host(host) {
+            rejected.push(RejectedHost {
+                entry: host.to_string(),
+                reason,
+            });
+            continue;
+        }
+        if !hosts.iter().any(|existing| existing == host) {
+            hosts.push(host.to_string());
+        }
+    }
+    (hosts, rejected)
+}
+
+/// Accept a bare `Host` value: `host`, `host:port`, bare IPv6, or `[ipv6]` with optional port.
+fn check_allowed_host(entry: &str) -> std::result::Result<(), &'static str> {
+    if entry.chars().any(char::is_whitespace) {
+        return Err("contains whitespace");
+    }
+    if entry.contains("://") {
+        return Err("has a URL scheme");
+    }
+    if entry.contains('/') {
+        return Err("has a path");
+    }
+    if entry.contains('*') {
+        return Err("wildcard is not supported");
+    }
+    if let Some(c) = entry
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '[' | ']')))
+    {
+        return Err(if c == '@' {
+            "invalid character '@' (no user info)"
+        } else {
+            "invalid character"
+        });
+    }
+    let (host, port) = if let Some(rest) = entry.strip_prefix('[') {
+        let Some((ipv6, after)) = rest.split_once(']') else {
+            return Err("host has an unclosed '['");
+        };
+        if ipv6.is_empty() || !ipv6.contains(':') {
+            return Err("host in brackets must be an IPv6 address");
+        }
+        match after {
+            "" => (ipv6, None),
+            _ => match after.strip_prefix(':') {
+                Some(port) => (ipv6, Some(port)),
+                None => return Err("unexpected text after ']' (expected :port)"),
+            },
+        }
+    } else if entry.matches(':').count() > 1 {
+        (entry, None)
+    } else {
+        match entry.split_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (entry, None),
+        }
+    };
+    if host.is_empty() || host.contains(['[', ']']) {
+        return Err("host is empty or malformed");
+    }
+    if let Some(port) = port
+        && !port.parse::<u16>().is_ok_and(|port| port != 0)
+    {
+        return Err("port must be a number from 1 to 65535");
+    }
+    Ok(())
 }
 
 /// Read an unsigned integer setting from the environment, warning on garbage.
@@ -1335,7 +1478,7 @@ mod tests {
     }
 
     /// Variables `Settings::load` reads that a test may change.
-    const ISOLATED_VARS: [&str; 15] = [
+    const ISOLATED_VARS: [&str; 20] = [
         "LLM_PROVIDER",
         "LLM_MODEL",
         "LLM_API_KEY",
@@ -1351,6 +1494,11 @@ mod tests {
         "OLLAMA_API_KEY",
         "MEMCAN_WEBUI_USERNAME",
         "MEMCAN_WEBUI_PASSWORD",
+        "MEMCAN_WEBUI_ROLE",
+        "MEMCAN_WEBUI_ALLOW_INSECURE_HTTP",
+        "MEMCAN_WEBUI_SESSION_IDLE_SECS",
+        "MEMCAN_WEBUI_SESSION_ABSOLUTE_SECS",
+        "MEMCAN_ALLOWED_HOSTS",
     ];
 
     /// Isolate `Settings::load()` from the host's `.env` files and LLM env.
@@ -2565,6 +2713,134 @@ mod tests {
     #[test]
     fn test_validate_defaults_ok() {
         Settings::default().validate().unwrap();
+    }
+
+    #[test]
+    fn test_parse_host_list_trims_drops_empties_and_duplicates() {
+        assert_eq!(
+            parse_host_list(" agentic.lan , ,memcan.example:8190,agentic.lan,").0,
+            vec!["agentic.lan".to_string(), "memcan.example:8190".to_string()]
+        );
+        assert_eq!(parse_host_list(""), (vec![], vec![]));
+        assert_eq!(parse_host_list(" , "), (vec![], vec![]));
+    }
+
+    #[test]
+    fn test_allowed_host_validation_accepts_host_and_host_port() {
+        for entry in [
+            "agentic.lan",
+            "agentic.lan:8190",
+            "memcan-server",
+            "10.0.0.5",
+            "10.0.0.5:8190",
+            "::1",
+            "[::1]",
+            "[::1]:8190",
+            "Host_With.Mixed-Case",
+        ] {
+            assert_eq!(check_allowed_host(entry), Ok(()), "{entry}");
+        }
+    }
+
+    #[test]
+    fn test_allowed_host_validation_rejects_malformed_entries_with_reasons() {
+        for (entry, reason) in [
+            ("http://agentic.lan", "scheme"),
+            ("agentic.lan/mcp", "path"),
+            ("*.lan", "wildcard"),
+            ("*", "wildcard"),
+            ("agentic lan", "whitespace"),
+            ("agentic.lan:", "port"),
+            ("agentic.lan:0", "port"),
+            ("agentic.lan:99999", "port"),
+            ("agentic.lan:80a", "port"),
+            (":8190", "host"),
+            ("[::1", "host"),
+            ("[::1]:x", "port"),
+            ("user@agentic.lan", "character"),
+        ] {
+            let error = check_allowed_host(entry).unwrap_err();
+            assert!(error.contains(reason), "{entry}: {error}");
+        }
+    }
+
+    #[test]
+    fn test_parse_host_list_keeps_valid_entries_and_reports_invalid_ones() {
+        let (hosts, rejected) =
+            parse_host_list("agentic.lan, http://bad, *.lan, memcan.example:8190, x:0");
+        assert_eq!(
+            hosts,
+            vec!["agentic.lan".to_string(), "memcan.example:8190".to_string()]
+        );
+        let entries: Vec<&str> = rejected.iter().map(|r| r.entry.as_str()).collect();
+        assert_eq!(entries, vec!["http://bad", "*.lan", "x:0"]);
+        assert!(rejected[0].reason.contains("scheme"));
+        assert!(rejected[2].reason.contains("port"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_webui_session_settings_load_from_env_with_defaults() {
+        let settings = load_with(&[]).unwrap();
+        assert_eq!(settings.webui_role, None);
+        assert!(!settings.webui_allow_insecure_http);
+        assert_eq!(settings.webui_session_idle_secs, 1800);
+        assert_eq!(settings.webui_session_absolute_secs, 28800);
+
+        let settings = load_with(&[
+            ("MEMCAN_WEBUI_ROLE", Some(" editor ")),
+            ("MEMCAN_WEBUI_ALLOW_INSECURE_HTTP", Some("true")),
+            ("MEMCAN_WEBUI_SESSION_IDLE_SECS", Some("60")),
+            ("MEMCAN_WEBUI_SESSION_ABSOLUTE_SECS", Some("120")),
+        ])
+        .unwrap();
+        assert_eq!(settings.webui_role.as_deref(), Some("editor"));
+        assert!(settings.webui_allow_insecure_http);
+        assert_eq!(settings.webui_session_idle_secs, 60);
+        assert_eq!(settings.webui_session_absolute_secs, 120);
+
+        let settings = load_with(&[
+            ("MEMCAN_WEBUI_ALLOW_INSECURE_HTTP", Some("yes")),
+            ("MEMCAN_WEBUI_SESSION_IDLE_SECS", Some("soon")),
+        ])
+        .unwrap();
+        assert!(
+            !settings.webui_allow_insecure_http,
+            "anything but `true` keeps TLS required"
+        );
+        assert_eq!(settings.webui_session_idle_secs, 1800);
+    }
+
+    #[test]
+    #[serial]
+    fn test_allowed_hosts_load_from_env_and_default_to_none() {
+        let settings =
+            load_with(&[("MEMCAN_ALLOWED_HOSTS", Some("agentic.lan, 10.0.0.5:8190"))]).unwrap();
+        assert_eq!(
+            settings.mcp_allowed_hosts,
+            vec!["agentic.lan", "10.0.0.5:8190"]
+        );
+
+        assert!(settings.mcp_rejected_hosts.is_empty());
+
+        let settings =
+            load_with(&[("MEMCAN_ALLOWED_HOSTS", Some("ok.lan, http://bad.lan"))]).unwrap();
+        assert_eq!(settings.mcp_allowed_hosts, vec!["ok.lan"]);
+        assert_eq!(
+            settings.mcp_rejected_hosts,
+            vec![RejectedHost {
+                entry: "http://bad.lan".into(),
+                reason: "has a URL scheme",
+            }]
+        );
+
+        let settings = load_with(&[("MEMCAN_ALLOWED_HOSTS", Some(""))]).unwrap();
+        assert!(settings.mcp_allowed_hosts.is_empty());
+
+        let settings = load_with(&[]).unwrap();
+        assert!(settings.mcp_allowed_hosts.is_empty());
+        assert!(Settings::default().mcp_allowed_hosts.is_empty());
+        assert!(Settings::default().mcp_rejected_hosts.is_empty());
     }
 
     #[test]

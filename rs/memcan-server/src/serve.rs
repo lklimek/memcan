@@ -2203,12 +2203,22 @@ where
 
 // --- Entry point ---
 
-fn http_mcp_router(shared: Arc<SharedState>, body_read_timeout: Duration) -> Router {
+/// `extra_hosts` are added to rmcp's loopback `Host` allow-list (DNS-rebinding guard);
+/// they never replace it, so the list can't become empty (which would allow every host).
+fn http_mcp_router(
+    shared: Arc<SharedState>,
+    body_read_timeout: Duration,
+    extra_hosts: &[String],
+) -> Router {
+    let mut config = StreamableHttpServerConfig::default();
+    let mut allowed_hosts = config.allowed_hosts.clone();
+    allowed_hosts.extend(extra_hosts.iter().cloned());
+    config = config.with_allowed_hosts(allowed_hosts);
     let service = StreamableHttpService::new(
         move || Ok(MemcanService::new(Arc::clone(&shared))),
         Arc::new(LocalSessionManager::default()),
         // Tool state and queued writes belong to SharedState, not idle HTTP sessions.
-        StreamableHttpServerConfig::default()
+        config
             .with_legacy_session_mode(false)
             .with_json_response(true)
             // rmcp's 4 MiB default rejects `index_code_files` batches, which
@@ -2218,9 +2228,33 @@ fn http_mcp_router(shared: Arc<SharedState>, body_read_timeout: Duration) -> Rou
     mcp_router(service, body_read_timeout)
 }
 
+/// In-process MCP endpoint for the web UI backend: a stateless JSON transport over the same
+/// service, reached without HTTP, Traefik or Bearer auth. The UI enforces its own session and
+/// tool allowlist before calling it; it must never be mounted as a route.
+fn ui_mcp_dispatch(shared: Arc<SharedState>) -> crate::ui::McpDispatch {
+    let service = StreamableHttpService::new(
+        move || Ok(MemcanService::new(Arc::clone(&shared))),
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default()
+            .with_legacy_session_mode(false)
+            .with_json_response(true),
+    );
+    Arc::new(move |request| {
+        let service = service.clone();
+        Box::pin(async move { service.handle(request).await.into_response() })
+    })
+}
+
 pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
     let ctx = MemcanContext::init().await?;
     setup_logging(&ctx.settings.log_file);
+    for rejected in &ctx.settings.mcp_rejected_hosts {
+        warn!(
+            entry = %rejected.entry,
+            reason = rejected.reason,
+            "ignoring MEMCAN_ALLOWED_HOSTS entry: use `host` or `host:port` (e.g. agentic.lan or agentic.lan:8190)"
+        );
+    }
     let health = Arc::new(DependencyHealth::with_defaults());
     let (llm, llm_model) = create_llm_provider(&ctx.settings, Arc::clone(&health))?;
     if ctx.settings.distill_memories {
@@ -2329,7 +2363,17 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
             );
         }
 
-        let mcp_app_router = http_mcp_router(Arc::clone(&shared), body_read_timeout);
+        if !ctx.settings.mcp_allowed_hosts.is_empty() {
+            info!(
+                extra_hosts = ?ctx.settings.mcp_allowed_hosts,
+                "MCP Host allow-list extended beyond loopback (MEMCAN_ALLOWED_HOSTS)"
+            );
+        }
+        let mcp_app_router = http_mcp_router(
+            Arc::clone(&shared),
+            body_read_timeout,
+            &ctx.settings.mcp_allowed_hosts,
+        );
 
         let mcp_app_router = if let Some(ref key) = ctx.settings.api_key {
             let expected = format!("Bearer {key}");
@@ -2364,7 +2408,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), MemcanError> {
             .merge(mcp_app_router);
 
         // `ui::router` already warns with the specific reason when it declines to mount.
-        let app = match crate::ui::router(&ctx.settings) {
+        let app = match crate::ui::router(&ctx.settings, ui_mcp_dispatch(Arc::clone(&shared))) {
             Some(ui) => app.merge(ui),
             None => app,
         };
@@ -2962,7 +3006,70 @@ mod tests {
         use tower::ServiceExt;
 
         fn app(service: &MemcanService) -> Router {
-            http_mcp_router(Arc::clone(&service.state), Duration::from_secs(30))
+            http_mcp_router(Arc::clone(&service.state), Duration::from_secs(30), &[])
+        }
+
+        async fn initialize_with_host(app: &Router, host: &str) -> StatusCode {
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("/mcp")
+                .header("host", host)
+                .header("accept", "application/json, text/event-stream")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                        "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                            "clientInfo": {"name": "memcan-http-test", "version": "1"}}
+                    })
+                    .to_string(),
+                ))
+                .unwrap();
+            app.clone().oneshot(request).await.unwrap().status()
+        }
+
+        #[tokio::test]
+        async fn configured_extra_hosts_are_accepted_alongside_loopback() {
+            let service = make_test_service();
+            let extra = vec!["agentic.lan".to_string(), "memcan.example:8190".to_string()];
+            let app = http_mcp_router(Arc::clone(&service.state), Duration::from_secs(30), &extra);
+            for host in [
+                "agentic.lan:8190",
+                "agentic.lan",
+                "memcan.example:8190",
+                "localhost:8190",
+                "127.0.0.1",
+            ] {
+                assert_eq!(
+                    initialize_with_host(&app, host).await,
+                    StatusCode::OK,
+                    "{host}"
+                );
+            }
+            for host in [
+                "evil.example",
+                "memcan.example:9999",
+                "agentic.lan.evil.example",
+            ] {
+                assert_eq!(
+                    initialize_with_host(&app, host).await,
+                    StatusCode::FORBIDDEN,
+                    "{host}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn without_extra_hosts_only_loopback_is_accepted() {
+            let app = app(&make_test_service());
+            assert_eq!(
+                initialize_with_host(&app, "localhost:8190").await,
+                StatusCode::OK
+            );
+            assert_eq!(
+                initialize_with_host(&app, "agentic.lan:8190").await,
+                StatusCode::FORBIDDEN
+            );
         }
 
         async fn request(app: &Router, message: Value, session: Option<&str>) -> Response {
@@ -3048,6 +3155,117 @@ mod tests {
                     .iter()
                     .any(|t| t["name"] == "add_memory")
             );
+        }
+
+        /// The web UI backend reaches the real MCP service in-process, without the master key.
+        #[tokio::test]
+        async fn webui_backend_dispatches_in_process_to_the_mcp_service() {
+            let service = make_test_service();
+            let settings = Settings {
+                webui_username: Some("viewer".into()),
+                webui_password: Some("secret".into()),
+                api_key: Some("master-key".into()),
+                ..Settings::default()
+            };
+            let ui =
+                crate::ui::router(&settings, ui_mcp_dispatch(Arc::clone(&service.state))).unwrap();
+            let post = |body: Value, auth: Option<(&str, &str)>| {
+                let mut request = Request::builder()
+                    .method(Method::POST)
+                    .uri(if auth.is_some() {
+                        "/ui/api/mcp"
+                    } else {
+                        "/ui/auth/login"
+                    })
+                    .header("host", "localhost:8190")
+                    .header("origin", "https://localhost:8190")
+                    .header("content-type", "application/json");
+                if let Some((cookie, csrf)) = auth {
+                    request = request
+                        .header("cookie", cookie)
+                        .header("x-csrf-token", csrf)
+                        .header("mcp-protocol-version", "2025-11-25");
+                }
+                request.body(Body::from(body.to_string())).unwrap()
+            };
+            let login = ui
+                .clone()
+                .oneshot(post(
+                    json!({"username": "viewer", "password": "secret"}),
+                    None,
+                ))
+                .await
+                .unwrap();
+            let cookie = login.headers()["set-cookie"]
+                .to_str()
+                .unwrap()
+                .split(';')
+                .next()
+                .unwrap()
+                .to_string();
+            let csrf = json_response(login).await["csrfToken"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            let auth = Some((cookie.as_str(), csrf.as_str()));
+
+            let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                    "clientInfo": {"name": "memcan-webui", "version": "1"}}});
+            let response = ui.clone().oneshot(post(init, auth)).await.unwrap();
+            assert_eq!(
+                json_response(response).await["result"]["serverInfo"]["name"],
+                "memcan"
+            );
+            let response = ui
+                .clone()
+                .oneshot(post(
+                    json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+                    auth,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+            let response = ui
+                .clone()
+                .oneshot(post(
+                    json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+                    auth,
+                ))
+                .await
+                .unwrap();
+            let mut names: Vec<String> = json_response(response).await["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap().to_string())
+                .collect();
+            names.sort();
+            assert_eq!(
+                names,
+                [
+                    "export_collection",
+                    "get_queue_status",
+                    "get_todo",
+                    "list_collections",
+                    "list_todos"
+                ]
+            );
+
+            let response = ui
+                .clone()
+                .oneshot(post(
+                    json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                        "params": {"name": "export_collection",
+                            "arguments": {"collection": "todos", "filter": "project = 'memcan'"}}}),
+                    auth,
+                ))
+                .await
+                .unwrap();
+            let reply = json_response(response).await;
+            assert!(reply.get("error").is_none(), "{reply}");
+            assert_ne!(reply["result"]["isError"], true, "{reply}");
         }
 
         #[tokio::test]
