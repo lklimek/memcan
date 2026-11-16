@@ -556,17 +556,57 @@
         display: block;
       }
       .task-table td {
-        min-height: 56px;
+        min-height: 44px;
       }
-      .task-table.compact td {
-        padding: 4px 12px;
-        height: 40px;
+      .task-table thead th {
+        vertical-align: middle;
       }
-      .task-table.compact .task-title {
+      .task-table .sort-header {
+        border: 0;
+        background: transparent;
+        padding: 0;
+        font: inherit;
+        color: inherit;
+        cursor: pointer;
+      }
+      .task-table .sort-header::after {
+        content: " ↕";
+        content: " ↕" / "";
+        opacity: 0.5;
+      }
+      .task-table th[aria-sort="ascending"] .sort-header::after {
+        content: " ▲";
+        content: " ▲" / "";
+        opacity: 1;
+      }
+      .task-table th[aria-sort="descending"] .sort-header::after {
+        content: " ▼";
+        content: " ▼" / "";
+        opacity: 1;
+      }
+      .task-table .title-line {
+        display: flex;
+        align-items: flex-start;
+        gap: 4px;
+      }
+      .task-table .desc-toggle {
+        flex: none;
+        width: 24px;
+        height: 24px;
+        min-height: 24px;
+        border: 0;
+        padding: 0;
+        background: transparent;
+        color: var(--muted);
+      }
+      .task-table .preview,
+      .task-table .row-description {
+        display: block;
+        margin-left: 28px;
+      }
+      .task-table .row-description {
         font-size: 14px;
-      }
-      .task-table.compact .preview {
-        display: none;
+        white-space: pre-line;
       }
       .table-panel {
         background: var(--surface);
@@ -986,7 +1026,7 @@
               <a href="#mock-dashboard">02 · Dashboard: healthy / degraded</a>
             </li>
             <li>
-              <a href="#mock-tasks">03 · Tasks: desktop / compact / mobile</a>
+              <a href="#mock-tasks">03 · Tasks: desktop / descriptions / mobile</a>
             </li>
             <li>
               <a href="#mock-states">04 · Empty / partial / failure states</a>
@@ -1517,7 +1557,7 @@
         </p>
       </section>
       <section class="gallery-section" id="mock-tasks">
-        <h2>03 / Tasks — table, compact & mobile</h2>
+        <h2>03 / Tasks — table, descriptions & mobile</h2>
         <p class="muted">
           Phase 1 · Project grouping is explicit; titles are the primary links.
           The full table becomes cards below 640 px.
@@ -1590,9 +1630,11 @@
                   <option>Priority · high first</option>
                 </select></label
               ><label
-                >Density<select>
-                  <option>Comfortable</option>
+                >Age<select>
+                  <option>Any age</option>
                 </select></label
+              ><button type="button" class="" aria-pressed="false">
+                Show descriptions</button
               ><button type="button" class="">Clear filters</button>
             </div>
             <div class="mobile-filters">
@@ -1610,16 +1652,22 @@
             <div class="task-table-wrap table-panel">
               <table class="task-table">
                 <caption>
-                  Open tasks · grouped by project · Comfortable, 56 px minimum
-                  rows
+                  Open tasks · grouped by project · descriptions hidden, one
+                  expanded
                 </caption>
                 <thead>
                   <tr>
-                    <th scope="col" aria-sort="descending">Priority ↓</th>
+                    <th scope="col" aria-sort="ascending">
+                      <button type="button" class="sort-header">Priority</button>
+                    </th>
                     <th scope="col">Task / context</th>
-                    <th scope="col">Status</th>
+                    <th scope="col">
+                      <button type="button" class="sort-header">Status</button>
+                    </th>
                     <th scope="col">Owner</th>
-                    <th scope="col">Age</th>
+                    <th scope="col">
+                      <button type="button" class="sort-header">Age</button>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1637,10 +1685,10 @@
                       >
                     </td>
                     <td>
-                      <a class="task-title" href="#mock-detail"
-                        >Tighten review handoff</a
-                      ><span class="preview muted"
-                        >Preserve original findings and decisions.</span
+                      <span class="title-line"
+                        ><button type="button" class="desc-toggle" aria-expanded="false"
+                          aria-label="Description: Tighten review handoff">▸</button
+                        ><a class="task-title" href="#mock-detail">Tighten review handoff</a></span
                       >
                     </td>
                     <td><span class="badge">Pending</span></td>
@@ -1661,10 +1709,10 @@
                       >
                     </td>
                     <td>
-                      <a class="task-title" href="#mock-detail"
-                        >Verify identity import</a
-                      ><span class="preview muted"
-                        >Exercise the recovery path before release.</span
+                      <span class="title-line"
+                        ><button type="button" class="desc-toggle" aria-expanded="false"
+                          aria-label="Description: Verify identity import">▸</button
+                        ><a class="task-title" href="#mock-detail">Verify identity import</a></span
                       >
                     </td>
                     <td><span class="badge blocked">Blocked</span></td>
@@ -1678,10 +1726,10 @@
                       >
                     </td>
                     <td>
-                      <a class="task-title" href="#mock-detail"
-                        >Review wallet empty state</a
-                      ><span class="preview muted"
-                        >Check copy with a first-time operator.</span
+                      <span class="title-line"
+                        ><button type="button" class="desc-toggle" aria-expanded="false"
+                          aria-label="Description: Review wallet empty state">▸</button
+                        ><a class="task-title" href="#mock-detail">Review wallet empty state</a></span
                       >
                     </td>
                     <td><span class="badge progress">In progress</span></td>
@@ -1702,10 +1750,13 @@
                       >
                     </td>
                     <td>
-                      <a class="task-title" href="#mock-detail"
-                        >Fix task links</a
-                      ><span class="preview muted"
-                        >Resolve encoded IDs and restore list context.</span
+                      <span class="title-line"
+                        ><button type="button" class="desc-toggle" aria-expanded="true" aria-controls="mock-desc-fix-task-links"
+                          aria-label="Description: Fix task links">▾</button
+                        ><a class="task-title" href="#mock-detail">Fix task links</a></span
+                      ><span class="row-description" id="mock-desc-fix-task-links"
+                        >Resolve encoded IDs and restore list context.
+Keep the list query when opening a task and on Back.</span
                       >
                     </td>
                     <td><span class="badge">Pending</span></td>
@@ -1719,10 +1770,10 @@
                       >
                     </td>
                     <td>
-                      <a class="task-title" href="#mock-detail"
-                        >Review extraction</a
-                      ><span class="preview muted"
-                        >Keep source scope through deduplication.</span
+                      <span class="title-line"
+                        ><button type="button" class="desc-toggle" aria-expanded="false"
+                          aria-label="Description: Review extraction">▸</button
+                        ><a class="task-title" href="#mock-detail">Review extraction</a></span
                       >
                     </td>
                     <td><span class="badge progress">In progress</span></td>
@@ -1736,10 +1787,10 @@
                       >
                     </td>
                     <td>
-                      <a class="task-title" href="#mock-detail"
-                        >Document queue retention</a
-                      ><span class="preview muted"
-                        >Explain the retained operation sample.</span
+                      <span class="title-line"
+                        ><button type="button" class="desc-toggle" aria-expanded="false"
+                          aria-label="Description: Document queue retention">▸</button
+                        ><a class="task-title" href="#mock-detail">Document queue retention</a></span
                       >
                     </td>
                     <td><span class="badge postponed">Postponed</span></td>
@@ -1825,21 +1876,27 @@
         <div class="mock">
           <div class="app-body">
             <div class="title-row">
-              <h3>Same tasks · Compact density</h3>
-              <span class="badge">40 px minimum rows</span>
+              <h3>Same tasks · Show descriptions on</h3>
+              <span class="badge">First description line under each title</span>
             </div>
             <div class="task-table-wrap table-panel">
-              <table class="task-table compact">
+              <table class="task-table">
                 <caption>
-                  Open tasks · grouped by project · Compact, 40 px minimum rows
+                  Open tasks · grouped by project · description previews shown
                 </caption>
                 <thead>
                   <tr>
-                    <th scope="col" aria-sort="descending">Priority ↓</th>
+                    <th scope="col" aria-sort="ascending">
+                      <button type="button" class="sort-header">Priority</button>
+                    </th>
                     <th scope="col">Task / context</th>
-                    <th scope="col">Status</th>
+                    <th scope="col">
+                      <button type="button" class="sort-header">Status</button>
+                    </th>
                     <th scope="col">Owner</th>
-                    <th scope="col">Age</th>
+                    <th scope="col">
+                      <button type="button" class="sort-header">Age</button>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1857,8 +1914,10 @@
                       >
                     </td>
                     <td>
-                      <a class="task-title" href="#mock-detail"
-                        >Tighten review handoff</a
+                      <span class="title-line"
+                        ><button type="button" class="desc-toggle" aria-expanded="false"
+                          aria-label="Description: Tighten review handoff">▸</button
+                        ><a class="task-title" href="#mock-detail">Tighten review handoff</a></span
                       ><span class="preview muted"
                         >Preserve original findings and decisions.</span
                       >
@@ -1881,8 +1940,10 @@
                       >
                     </td>
                     <td>
-                      <a class="task-title" href="#mock-detail"
-                        >Verify identity import</a
+                      <span class="title-line"
+                        ><button type="button" class="desc-toggle" aria-expanded="false"
+                          aria-label="Description: Verify identity import">▸</button
+                        ><a class="task-title" href="#mock-detail">Verify identity import</a></span
                       ><span class="preview muted"
                         >Exercise the recovery path before release.</span
                       >
@@ -1898,8 +1959,10 @@
                       >
                     </td>
                     <td>
-                      <a class="task-title" href="#mock-detail"
-                        >Review wallet empty state</a
+                      <span class="title-line"
+                        ><button type="button" class="desc-toggle" aria-expanded="false"
+                          aria-label="Description: Review wallet empty state">▸</button
+                        ><a class="task-title" href="#mock-detail">Review wallet empty state</a></span
                       ><span class="preview muted"
                         >Check copy with a first-time operator.</span
                       >
@@ -1922,8 +1985,10 @@
                       >
                     </td>
                     <td>
-                      <a class="task-title" href="#mock-detail"
-                        >Fix task links</a
+                      <span class="title-line"
+                        ><button type="button" class="desc-toggle" aria-expanded="false"
+                          aria-label="Description: Fix task links">▸</button
+                        ><a class="task-title" href="#mock-detail">Fix task links</a></span
                       ><span class="preview muted"
                         >Resolve encoded IDs and restore list context.</span
                       >
@@ -1939,8 +2004,10 @@
                       >
                     </td>
                     <td>
-                      <a class="task-title" href="#mock-detail"
-                        >Review extraction</a
+                      <span class="title-line"
+                        ><button type="button" class="desc-toggle" aria-expanded="false"
+                          aria-label="Description: Review extraction">▸</button
+                        ><a class="task-title" href="#mock-detail">Review extraction</a></span
                       ><span class="preview muted"
                         >Keep source scope through deduplication.</span
                       >
@@ -1956,8 +2023,10 @@
                       >
                     </td>
                     <td>
-                      <a class="task-title" href="#mock-detail"
-                        >Document queue retention</a
+                      <span class="title-line"
+                        ><button type="button" class="desc-toggle" aria-expanded="false"
+                          aria-label="Description: Document queue retention">▸</button
+                        ><a class="task-title" href="#mock-detail">Document queue retention</a></span
                       ><span class="preview muted"
                         >Explain the retained operation sample.</span
                       >
@@ -3135,14 +3204,14 @@ Resolve encoded IDs and restore list context.</textarea>
             </tr>
             <tr>
               <td data-label="Current behavior">
-                Light-only styling; no density choice, saved views, copy
-                controls, or shortcut help
+                Light-only styling; no saved views, copy controls, or shortcut
+                help
               </td>
               <td data-label="Operator impact">
                 Repeated triage and sharing cost unnecessary effort
               </td>
               <td data-label="Design decision">
-                System/manual theme, compact mode, reusable views
+                System/manual theme, description toggle, reusable views
               </td>
             </tr>
             <tr>
@@ -3507,7 +3576,7 @@ After connecting: return to task 81cbe927…
             and fetched records. No key in localStorage, sessionStorage,
             IndexedDB, cookies, logs, analytics, error reports, URL, or service
             worker. A new tab/reload reconnects; internal navigation does not.
-            Persist only theme/density and explicitly saved view preferences.
+            Persist only theme/description-preview and explicitly saved view preferences.
             Explain that saved filters and URL queries may contain
             project/owner/search text and persist in browser history; never put
             credentials in them.
@@ -3617,15 +3686,16 @@ Project       Open   High   Blocked        [View tasks]
 Tasks                           Read-only   12:34  [Refresh]
 [Open] [High priority] [Blocked] [Unassigned] [All] [Saved v]
 Find title, description, project, owner or ID [____________]
-Status [4 selected] Priority [Any] Owner [Any] [Clear filters]
-Group [Project v] Sort [Priority v] [High first] Density [Compact]
+Status [4 selected] Priority [Any] Owner [Any] Age [Any age v] [Clear filters]
+Group [Project v] Sort [Priority v] [High first] [Show descriptions]
 Showing 1–50 of 86 matches · 246 scanned · scan complete
 
 v memcan (23 matches)
-Priority   Task / context              Status       Owner      Age
-High       Fix task links             Pending      Unassigned  3d
-           Resolve encoded IDs        Blockers: 2
-Medium     Review extraction          In progress  agent-a     1w
+[Priority ▲] Task / context            [Status ↕]   Owner      [Age ↕]
+High       ▾ Fix task links           Pending      Unassigned  3d
+             Resolve encoded IDs and restore list context.
+             Blockers: 2
+Medium     ▸ Review extraction        In progress  agent-a     1w
 v other-project (63 matches)
 …
 [Previous] Page 1 of 2 [Next]                Rows [50 v]
@@ -3651,7 +3721,10 @@ v other-project (63 matches)
           </li>
           <li>
             Status/priority are multi-select checkboxes in labeled popovers;
-            owner is exact selection with explicit Unassigned. Project/owner
+            owner is exact selection with explicit Unassigned. Age keeps tasks
+            created under 1 day, 1 week or 30 days ago, or over 1 week, 30 days
+            or 90 days ago (<code>age</code> URL parameter); tasks without a
+            valid creation date never match an age window. Project/owner
             choices derive from fetched records, include currently selected
             missing values, and permit typed exact values. Project picker has
             “All projects”, recent choices and local filtering, with “Projects
@@ -3673,7 +3746,12 @@ v other-project (63 matches)
             progress/blocked/postponed/done/cancelled/unknown. For non-created
             sorts tie-break by created oldest then ID; invalid dates last in
             either direction. Group order: project alphabetical or that status
-            order; none is default. Group headings are collapse buttons with
+            order; none is default. Sortable column headers (priority, project,
+            status, age) are buttons: clicking the active column flips the
+            direction, another column switches to it in its default direction,
+            and <code>aria-sort</code> reflects the displayed values
+            (newest-created first is ascending age). Group headings are
+            collapse buttons with
             counts and <code>aria-expanded</code>; collapse affects presentation
             only.
           </li>
@@ -3685,8 +3763,14 @@ v other-project (63 matches)
             Avoid infinite scroll/virtualized keyboard navigation in P1.
           </li>
           <li>
-            Comfortable rows minimum 56 px, Compact 40 px; both retain
-            accessible targets. Preference is device-local, not URL state.
+            Rows are a minimum of 44 px. Description previews are hidden by
+            default; a “Show descriptions” toggle (<code>aria-pressed</code>)
+            shows the first description line under each title. Each row with a
+            description also has a small disclosure button
+            (<code>aria-expanded</code>, <code>aria-controls</code>) before the
+            title that expands the full description in place; expansion is per
+            row, presentation-only and kept across data refreshes. The
+            preference is device-local, not URL state.
             Mobile uses readable cards and a Filters button with active-filter
             count; same logical order and data, no horizontal page scrolling.
           </li>
